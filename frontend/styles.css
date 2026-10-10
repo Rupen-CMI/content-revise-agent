@@ -1,0 +1,953 @@
+/* ---------- Design tokens ---------- */
+:root,
+[data-theme="light"] {
+  --bg: #f5f6f8;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #eef0f3;
+  --border: #dde1e7;
+  --border-strong: #c6cbd3;
+  --text: #1a1d23;
+  --text-muted: #5b6270;
+  --text-faint: #8b92a0;
+
+  --accent: #0f2a5e;
+  --accent-hover: #0a1c40;
+  --accent-contrast: #ffffff;
+  --accent-soft: #e9eef6;
+
+  --link: #1668b4;
+  --cta: #f39c12;
+  --cta-hover: #db8a0a;
+  --cta-contrast: #1a1d23;
+  --lime: #9acd32;
+
+  --success: #1f8a53;
+  --success-soft: #e6f5ec;
+  --danger: #b3321b;
+  --danger-soft: #fbe9e6;
+  --info: #1668b4;
+  --info-soft: #e7f0f9;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --sidebar-width: 320px;
+}
+
+[data-theme="dark"] {
+  --bg: #15171c;
+  --bg-elevated: #1d2026;
+  --bg-sunken: #101216;
+  --border: #2b2f38;
+  --border-strong: #3a3f4a;
+  --text: #e8eaed;
+  --text-muted: #a3aab8;
+  --text-faint: #6d7382;
+
+  --accent: #5b8ad6;
+  --accent-hover: #7aa2e2;
+  --accent-contrast: #0e1116;
+  --accent-soft: #202a3b;
+
+  --link: #7aa9e8;
+  --cta: #f5a623;
+  --cta-hover: #ffb84d;
+  --cta-contrast: #1a1d23;
+  --lime: #a6d93c;
+
+  --success: #4cc789;
+  --success-soft: #16261e;
+  --danger: #e26a52;
+  --danger-soft: #2b1a17;
+  --info: #5b8ad6;
+  --info-soft: #1b2634;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 14px 36px rgba(0, 0, 0, 0.45);
+}
+
+/* ---------- Slim themed scrollbars (replaces the chunky native ones) ---------- */
+html { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---------- Base ---------- */
+* { box-sizing: border-box; }
+
+/* The native [hidden] default (display:none) loses to any class rule on the same element
+   that also sets display (flex/inline-flex/etc.), since neither side has !important and the
+   class selector can win on source order — so every toggled section rendered simultaneously
+   until this was made to actually take precedence. */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+/* Elements whose colors are theme tokens get the same smooth swap on toggle, instead of
+   snapping instantly between light/dark. Kept short and GPU-cheap (color/background/border
+   only) so it never fights with the more deliberate transitions below. */
+.sidebar, .content-card, .scroll-box, .preview-box, .metric-card, .file-chip, .file-drop,
+.radio-option, .btn, .step-item, .theme-toggle, .banner, button.menu-toggle {
+  transition-property: background, background-color, border-color, color, box-shadow, transform;
+  transition-duration: 0.2s;
+  transition-timing-function: ease;
+}
+
+h1, h2, h3 { margin: 0; letter-spacing: -0.01em; }
+
+hr.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 28px 0;
+}
+
+a { color: var(--link); }
+
+svg { width: 18px; height: 18px; stroke-width: 2; flex-shrink: 0; }
+
+/* ---------- Layout ---------- */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+  padding: 24px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+  padding: 3rem clamp(1.5rem, 4vw, 5rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.main-content:has([data-panel="empty"]:not([hidden])) {
+  justify-content: center;
+}
+
+.panel {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  animation: panel-in 0.2s ease;
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Sidebar header ---------- */
+.brand {
+  font-size: 16.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.3;
+}
+
+.brand svg { color: var(--lime); flex-shrink: 0; }
+
+.brand-caption {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+/* Lives outside .sidebar (a direct <body> child) so it stays reachable even when the
+   sidebar itself is translated off-screen at mobile widths. */
+button.menu-toggle {
+  display: none;
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 25;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- Sidebar sections ---------- */
+.sidebar-section {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section-title { font-size: 13.5px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-muted); }
+
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.field-hint {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ---------- File drop ---------- */
+.file-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 14px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.file-drop:hover, .file-drop.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.file-drop:active { transform: scale(0.99); }
+
+.file-drop svg { color: var(--text-faint); width: 26px; height: 26px; }
+
+.file-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  animation: card-in 0.25s ease;
+}
+
+.file-chip span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip svg { color: var(--accent); }
+
+/* ---------- Radio list (sponsor / report candidates) ---------- */
+.radio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 13.5px;
+  transition: background 0.15s ease;
+}
+
+.radio-list .radio-option:last-child { border-bottom: none; }
+
+.radio-option:hover { background: var(--bg-sunken); }
+
+.radio-option.selected { color: var(--accent); font-weight: 600; }
+
+.radio-option input {
+  accent-color: var(--accent);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.radio-option input:checked { animation: radio-pop 0.25s ease; }
+
+@keyframes radio-pop {
+  0% { transform: scale(0.85); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+.option-caption {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.radio-option.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---------- Preview / details boxes ---------- */
+.preview-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  background: var(--bg-elevated);
+}
+
+.preview-box summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  color: var(--link);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  transition: background 0.15s ease;
+}
+
+.preview-box summary:hover { background: var(--bg-sunken); border-radius: var(--radius-md); }
+
+.preview-box summary::-webkit-details-marker { display: none; }
+
+.preview-box[open] summary svg { transform: rotate(90deg); }
+.preview-box summary svg { transition: transform 0.15s; }
+
+.preview-box p { padding: 0 12px 12px; margin: 0; color: var(--text-muted); }
+
+.preview-box[open] > *:not(summary) { animation: fade-in 0.2s ease; }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+}
+
+.btn:active:not(:disabled) { transform: translateY(1px); }
+
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-block { width: 100%; }
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+/* Conversion actions (start / continue / finish / download) use the CMI orange,
+   echoing their "Get Solution" CTA; everything else stays navy. */
+#start-btn,
+#step1-confirm-btn,
+#step2-confirm-btn,
+#step3-confirm-btn,
+#final-download-btn {
+  background: var(--cta);
+  border-color: transparent;
+  color: var(--cta-contrast);
+  box-shadow: var(--shadow-sm);
+}
+
+#start-btn:hover:not(:disabled),
+#step1-confirm-btn:hover:not(:disabled),
+#step2-confirm-btn:hover:not(:disabled),
+#step3-confirm-btn:hover:not(:disabled),
+#final-download-btn:hover:not(:disabled) { background: var(--cta-hover); }
+
+.btn-secondary {
+  background: var(--bg-sunken);
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) { border-color: var(--border-strong); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.btn-ghost:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+}
+.icon-btn:hover { background: var(--bg-sunken); color: var(--text); }
+
+/* ---------- Banners ---------- */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  animation: banner-in 0.25s ease;
+}
+
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.banner-info { background: var(--info-soft); color: var(--info); }
+.banner-success { background: var(--success-soft); color: var(--success); }
+.banner svg { flex-shrink: 0; }
+
+/* ---------- Error banner (toast-style, floats above whichever step is active) ---------- */
+.error-banner {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  left: var(--sidebar-width);
+  margin: 0 auto;
+  max-width: 560px;
+  z-index: 40;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 13px;
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.12));
+  animation: banner-in 0.25s ease;
+}
+.error-banner-row { display: flex; align-items: center; gap: 10px; }
+.error-banner-row svg { flex-shrink: 0; }
+.error-banner-message { flex: 1; font-weight: 500; line-height: 1.4; }
+.error-banner-close { color: inherit; }
+.error-banner-actions { display: flex; gap: 14px; margin-top: 8px; margin-left: 30px; }
+.link-btn {
+  background: none; border: none; padding: 0; color: inherit;
+  text-decoration: underline; font-size: 12px; cursor: pointer; opacity: 0.85;
+}
+.link-btn:hover { opacity: 1; }
+.error-banner-technical {
+  margin: 8px 0 0 30px;
+  padding: 8px 10px;
+  background: var(--bg-sunken, rgba(0, 0, 0, 0.05));
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.locked-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+  margin: 0;
+}
+
+/* ---------- Step nav ---------- */
+.step-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.step-item:hover:not(:disabled) { background: var(--bg-sunken); color: var(--text); }
+
+.step-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--lime);
+}
+
+.step-item:disabled { color: var(--text-faint); cursor: not-allowed; }
+
+.step-item .step-icon { transition: color 0.2s ease, transform 0.25s ease; }
+.step-item .step-icon.done { color: var(--success); animation: icon-pop 0.3s ease; }
+.step-item .step-icon.done.no-pop { animation: none; }
+.step-item .step-icon.in-progress { color: var(--accent); }
+.step-item .step-icon.locked { color: var(--text-faint); }
+
+@keyframes icon-pop {
+  0% { transform: scale(0.6); }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+/* ---------- Theme toggle ---------- */
+.sidebar-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); }
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.theme-toggle:hover { border-color: var(--border-strong); background: var(--bg); }
+
+.theme-icon-stack {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.theme-icon-stack svg {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.25s ease, transform 0.35s ease;
+}
+
+.theme-icon-dark { opacity: 0; transform: rotate(-90deg) scale(0.5); }
+.theme-icon-light { opacity: 1; transform: rotate(0deg) scale(1); }
+[data-theme="dark"] .theme-icon-light { opacity: 0; transform: rotate(90deg) scale(0.5); }
+[data-theme="dark"] .theme-icon-dark { opacity: 1; transform: rotate(0deg) scale(1); }
+
+/* ---------- Main panels ---------- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-faint);
+  padding: 80px 20px;
+  text-align: center;
+}
+
+.empty-state svg { width: 40px; height: 40px; }
+
+/* ---------- Upload hero (landing panel) ---------- */
+.upload-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 72px 48px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.upload-hero > svg { width: 44px; height: 44px; color: var(--accent); opacity: 0.8; }
+
+.upload-hero .panel-title { margin-top: 18px; }
+
+.upload-hero .panel-sub { max-width: 560px; }
+
+.file-drop-hero {
+  width: 100%;
+  max-width: 560px;
+  padding: 44px 20px;
+  font-size: 14px;
+}
+
+.panel-title { font-size: 23px; font-weight: 700; margin-bottom: 10px; }
+.panel-sub { color: var(--text-muted); font-size: 13.5px; line-height: 1.6; margin: 0 0 24px; }
+.subheading { font-size: 14.5px; font-weight: 700; letter-spacing: 0.01em; margin: 24px 0 10px; }
+.subheading-first { margin-top: 0; }
+
+.scroll-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px 24px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.scroll-box p { margin: 0 0 14px; }
+.scroll-box p:last-child { margin-bottom: 0; }
+
+/* Article tab: file card on top, bounded scrollable body, sponsor + run below */
+[data-panel="article"] .file-chip { margin-bottom: 16px; }
+
+.article-scroll { max-height: 42vh; overflow-y: auto; }
+
+/* External (sponsor-candidate) links stand out from CMI's own internal links in the preview,
+   so the paid backlink is easy to spot at a glance without opening the .docx. */
+.article-scroll a.sponsor-link {
+  font-weight: 600;
+  text-decoration-style: dashed;
+}
+
+[data-panel="article"] #sponsor-section,
+[data-panel="article"] #run-controls { margin-top: 28px; }
+
+.plain-list { margin: 0; padding-left: 20px; color: var(--text-muted); font-size: 13.5px; }
+.plain-list li { margin-bottom: 6px; line-height: 1.55; }
+.plain-list li:last-child { margin-bottom: 0; }
+.plain-list .empty-note { list-style: none; margin-left: -20px; color: var(--text-faint); }
+
+/* ---------- Content card (groups a step's narrative/data into one surface) ---------- */
+.content-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px 24px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 20px;
+  animation: card-in 0.3s ease backwards;
+}
+
+.content-card:last-child { margin-bottom: 0; }
+
+/* Cards in the same panel cascade in slightly offset, instead of all popping at once. */
+.content-card:nth-of-type(1) { animation-delay: 0s; }
+.content-card:nth-of-type(2) { animation-delay: 0.05s; }
+.content-card:nth-of-type(3) { animation-delay: 0.1s; }
+.content-card:nth-of-type(4) { animation-delay: 0.15s; }
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Key/value block (label + value pairs inside a content card) ---------- */
+.kv-block {
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kv-block.kv-block-last,
+.kv-block:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+
+.kv-label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.kv-value { margin: 0; color: var(--text); line-height: 1.6; font-size: 14px; }
+
+/* ---------- Tag list (markets considered, etc.) ---------- */
+.tag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-list li {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 5px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* Step panels: one consistent rhythm — 12px between blocks, never browser defaults */
+.report-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 14px 0 0;
+}
+
+.status-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 18px;
+}
+
+/* ---------- Spinner ---------- */
+.spinner-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 24px 0;
+  animation: fade-in 0.2s ease;
+}
+
+.spinner-block span { animation: text-pulse 1.8s ease-in-out infinite; }
+
+@keyframes text-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.spin { animation: spin 1s linear infinite; color: var(--accent); }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- Metrics ---------- */
+.metric-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+
+.metric-card {
+  flex: 1;
+  min-width: 180px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  animation: card-in 0.3s ease backwards;
+}
+
+.metric-row .metric-card:nth-child(2) { animation-delay: 0.06s; }
+
+.metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+
+.metric-label { font-size: 11.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--text-faint); }
+.metric-value { font-size: 21px; font-weight: 700; }
+
+/* ---------- Article render (final/draft content) ---------- */
+.article-render h4 {
+  margin: 28px 0 10px;
+  font-size: 15.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--accent);
+}
+.article-render > h4:first-child { margin-top: 4px; }
+.article-render p { margin: 0 0 14px; color: var(--text); line-height: 1.65; }
+
+#final-download-btn { margin-top: 20px; }
+#final-content .preview-box { margin-top: 20px; }
+
+/* ---------- Checklist ---------- */
+.checklist { list-style: none; margin: 0; padding: 4px 14px 14px; }
+.checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  animation: checklist-in 0.25s ease backwards;
+}
+.checklist li:last-child { border-bottom: none; }
+.checklist .pass { color: var(--success); }
+.checklist .fail { color: var(--danger); }
+
+/* Stagger only the first handful — beyond that the delay would make the list feel sluggish
+   to finish revealing, so later items just fade in together with the last staggered one. */
+.checklist li:nth-child(1) { animation-delay: 0s; }
+.checklist li:nth-child(2) { animation-delay: 0.03s; }
+.checklist li:nth-child(3) { animation-delay: 0.06s; }
+.checklist li:nth-child(4) { animation-delay: 0.09s; }
+.checklist li:nth-child(5) { animation-delay: 0.12s; }
+.checklist li:nth-child(n+6) { animation-delay: 0.15s; }
+
+@keyframes checklist-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ---------- Full-page drag-and-drop overlay ---------- */
+/* Covers the content pane only, not the sidebar — left offset matches the sidebar's width so
+   it reads as "this is where the drop lands", not a full-screen takeover. On narrow viewports
+   the sidebar is an off-canvas drawer (not persistently on screen), so the overlay goes edge
+   to edge there instead. */
+.page-drop-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--sidebar-width);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+/* [hidden] still gates layout (display:none, so it never blocks clicks/drops while inactive);
+   .visible is what actually fades it in — toggling display can't be transitioned, so JS flips
+   this class a frame after un-hiding, and reverses the order on the way out. */
+.page-drop-overlay.visible { opacity: 1; }
+
+.page-drop-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 64px;
+  border: 2.5px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  margin: 24px;
+  transform: scale(0.96);
+  transition: transform 0.2s ease;
+  animation: drop-overlay-pulse 1.6s ease-in-out infinite;
+}
+
+.page-drop-overlay.visible .page-drop-overlay-inner { transform: scale(1); }
+
+@keyframes drop-overlay-pulse {
+  0%, 100% { box-shadow: var(--shadow-lg); border-color: var(--accent); }
+  50% { box-shadow: 0 0 0 6px var(--accent-soft), var(--shadow-lg); border-color: var(--cta); }
+}
+
+.page-drop-overlay-inner svg {
+  width: 40px;
+  height: 40px;
+  color: var(--accent);
+  animation: drop-overlay-bob 1.6s ease-in-out infinite;
+}
+
+@keyframes drop-overlay-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.page-drop-overlay-inner p {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ---------- Responsive ---------- */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 15;
+}
+
+@media (max-width: 900px) {
+  button.menu-toggle { display: inline-flex; }
+
+  .sidebar {
+    position: fixed;
+    z-index: 20;
+    left: 0;
+    top: 0;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    box-shadow: var(--shadow-md);
+  }
+
+  .sidebar.open { transform: translateX(0); }
+
+  .sidebar-overlay {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .sidebar-overlay.visible { display: block; opacity: 1; }
+
+  .main-content { padding: 4rem 1rem 2.5rem; }
+
+  .metric-row { flex-direction: column; }
+}
+
+@media (max-width: 520px) {
+  .sidebar { width: 88vw; }
+  .btn-row { flex-direction: column; }
+  .btn-row .btn { width: 100%; }
+  .panel-title { font-size: 19px; }
+}

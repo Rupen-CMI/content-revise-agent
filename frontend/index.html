@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CMI Blog Revamp Agent</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+</head>
+<body data-theme="light">
+
+<div class="page-drop-overlay" id="page-drop-overlay" hidden>
+  <div class="page-drop-overlay-inner">
+    <i data-lucide="upload-cloud"></i>
+    <p>Drop your .docx file anywhere to upload</p>
+  </div>
+</div>
+
+<div class="error-banner" id="error-banner" role="alert" hidden>
+  <div class="error-banner-row">
+    <i data-lucide="alert-triangle"></i>
+    <span class="error-banner-message"></span>
+    <button class="icon-btn error-banner-close" id="error-banner-close" aria-label="Dismiss"><i data-lucide="x"></i></button>
+  </div>
+  <div class="error-banner-actions">
+    <button class="link-btn error-banner-toggle">Show technical details</button>
+    <button class="link-btn error-banner-copy">Copy for support</button>
+  </div>
+  <pre class="error-banner-technical" hidden></pre>
+</div>
+
+<button class="icon-btn menu-toggle" id="menu-toggle" aria-label="Toggle menu">
+  <i data-lucide="menu"></i>
+</button>
+
+<div class="app-shell">
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h1 class="brand"><i data-lucide="file-edit"></i> CMI Blog Revamp Agent</h1>
+      <p class="brand-caption">Rewrites a guest blog into a market-intelligence article per the SOP, keeping the sponsor's paid paragraph and backlink intact.</p>
+    </div>
+
+    <input type="file" id="file-input" accept=".docx" hidden>
+
+    <nav class="step-nav" id="step-nav">
+      <button class="step-item" data-nav="article">
+        <i data-lucide="file-text"></i> <span>Article</span>
+      </button>
+      <button class="step-item" data-nav="step1" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 1 · Identify Market</span>
+      </button>
+      <button class="step-item" data-nav="step2" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 2 · Fetch Evidence Online</span>
+      </button>
+      <button class="step-item" data-nav="step3" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 3 · Fetch Report Facts</span>
+      </button>
+      <button class="step-item" data-nav="step4" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 4 · Write</span>
+      </button>
+      <button class="step-item" data-nav="final" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Final</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">
+        <span class="theme-icon-stack">
+          <i data-lucide="sun" class="theme-icon-light"></i>
+          <i data-lucide="moon" class="theme-icon-dark"></i>
+        </span>
+        <span id="theme-toggle-label">Light mode</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+  <main class="main-content">
+
+    <section class="panel" data-panel="empty">
+      <div class="upload-hero">
+        <i data-lucide="file-up"></i>
+        <h2 class="panel-title">Upload a blog to be revamped!</h2>
+        <p class="panel-sub">Drop a .docx file here or click to browse. The agent will find the sponsor paragraph and walk you through the revamp step by step.</p>
+        <label class="file-drop file-drop-hero" id="file-drop" for="file-input">
+          <i data-lucide="upload-cloud"></i>
+          <span id="file-drop-text">Click or drop a .docx file</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="article" hidden>
+      <div class="file-chip" id="file-chip">
+        <i data-lucide="file-text"></i>
+        <span id="file-chip-name"></span>
+        <button class="icon-btn" id="file-replace" aria-label="Replace file"><i data-lucide="refresh-cw"></i></button>
+        <button class="icon-btn" id="file-remove" aria-label="Remove file"><i data-lucide="x"></i></button>
+      </div>
+      <h2 class="panel-title" id="article-title"></h2>
+      <p class="panel-sub" id="article-meta"></p>
+      <div class="scroll-box article-scroll" id="article-body"></div>
+
+      <section class="sidebar-section" id="sponsor-section" hidden>
+        <h2 class="section-title">Sponsor paragraph</h2>
+        <p class="field-hint">Paragraphs with an outside link — pick the one with the paid backlink:</p>
+        <div class="radio-list" id="sponsor-candidates"></div>
+        <details class="preview-box">
+          <summary><i data-lucide="chevron-right"></i> Preview selected paragraph</summary>
+          <p id="sponsor-preview-text"></p>
+        </details>
+        <p class="locked-note" id="sponsor-locked-note" hidden><i data-lucide="lock"></i> Locked while a run is in progress.</p>
+      </section>
+
+      <section class="sidebar-section" id="run-controls" hidden>
+        <button class="btn btn-primary btn-block" id="start-btn">
+          <i data-lucide="play"></i> Start revamp
+        </button>
+        <div class="banner banner-info" id="run-active-banner" hidden>
+          <i data-lucide="loader-circle" class="spin"></i>
+          <span id="run-active-text">Run in progress</span>
+        </div>
+        <button class="btn btn-ghost btn-block" id="cancel-btn" hidden>
+          <i data-lucide="x-circle"></i> Cancel run
+        </button>
+        <div class="banner banner-success" id="run-complete-banner" hidden>
+          <i data-lucide="check-circle-2"></i>
+          <span>Run complete — see Final for the revised article.</span>
+        </div>
+        <button class="btn btn-secondary btn-block" id="new-run-btn" hidden>
+          <i data-lucide="rotate-ccw"></i> Start a new run
+        </button>
+      </section>
+    </section>
+
+    <section class="panel" data-panel="step1" hidden>
+      <h2 class="panel-title">Market identification</h2>
+      <div class="spinner-block" id="step1-spinner" hidden>
+        <i data-lucide="loader-circle" class="spin"></i>
+        <span>Step 1: identifying the market…</span>
+      </div>
+      <div id="step1-content" hidden>
+        <div class="content-card">
+          <div class="kv-block">
+            <span class="kv-label">What your article is about</span>
+            <p class="kv-value" id="step1-topic"></p>
+          </div>
+          <div class="kv-block">
+            <span class="kv-label">How it connects to a market</span>
+            <p class="kv-value" id="step1-bridge"></p>
+          </div>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Markets considered</span>
+            <ul class="tag-list" id="step1-markets"></ul>
+          </div>
+        </div>
+
+        <div id="step1-confirm-block" class="content-card">
+          <h3 class="subheading subheading-first">Confirm the market</h3>
+          <p class="field-hint">The top match is selected by default. Review the matched reports below and change the selection if a different one is the better fit.</p>
+          <div class="radio-list" id="step1-report-candidates"></div>
+          <p class="report-link"><i data-lucide="external-link"></i> <a id="step1-report-link" href="#" target="_blank" rel="noopener"></a></p>
+          <hr class="divider">
+          <div class="btn-row">
+            <button class="btn btn-primary" id="step1-confirm-btn"><i data-lucide="arrow-right"></i> Confirm market and continue to Step 2</button>
+            <button class="btn btn-ghost" id="step1-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
+          </div>
+        </div>
+
+        <div id="step1-done-block" class="content-card" hidden>
+          <div class="kv-block">
+            <span class="kv-label">Confirmed market</span>
+            <p class="kv-value"><a id="step1-confirmed-link" href="#" target="_blank" rel="noopener"></a></p>
+          </div>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">All matched CMI reports considered</span>
+            <ul class="plain-list" id="step1-all-candidates"></ul>
+          </div>
+          <p class="status-note"><i data-lucide="check"></i> Step 1 complete — continue in the next section.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="step2" hidden>
+      <h2 class="panel-title">Market evidence</h2>
+      <div class="spinner-block" id="step2-spinner" hidden>
+        <i data-lucide="loader-circle" class="spin"></i>
+        <span>Step 2: searching the web for supporting evidence (this can take a little while)…</span>
+      </div>
+      <div id="step2-content" hidden>
+        <div class="content-card">
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Confirmed report</span>
+            <p class="kv-value"><a id="step2-report-link" href="#" target="_blank" rel="noopener"></a></p>
+          </div>
+        </div>
+        <div class="content-card" id="step2-done-block">
+          <p class="status-note"><i data-lucide="check"></i> <span id="step2-hits-count"></span> supporting web result(s) gathered for this market.</p>
+        </div>
+        <div id="step2-confirm-block" class="btn-row">
+          <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 (report facts)</button>
+          <button class="btn btn-ghost" id="step2-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="step3" hidden>
+      <h2 class="panel-title">Report facts</h2>
+      <div class="spinner-block" id="step3-spinner" hidden>
+        <i data-lucide="loader-circle" class="spin"></i>
+        <span>Step 3: selecting usable facts from the gathered evidence…</span>
+      </div>
+      <div id="step3-content" hidden>
+        <div class="content-card">
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">CMI report used by the writer</span>
+            <p class="kv-value"><a id="step3-report-link" href="#" target="_blank" rel="noopener"></a></p>
+            <p class="field-hint" style="margin-top: 6px;">The writer draws market sizing, segmentation and trend language directly from this report.</p>
+          </div>
+        </div>
+        <div class="content-card">
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Supporting facts from web search</span>
+            <p class="field-hint">Supplementary evidence pulled from open web sources (not the CMI report) to support specific claims. Each fact shows where it came from.</p>
+            <ul class="plain-list" id="step3-evidence"></ul>
+          </div>
+        </div>
+        <div id="step3-confirm-block" class="btn-row">
+          <button class="btn btn-primary" id="step3-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 4 (write)</button>
+          <button class="btn btn-ghost" id="step3-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
+        </div>
+        <p class="status-note" id="step3-done-note" hidden><i data-lucide="check"></i> Step 3 complete — continue in the next section.</p>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="step4" hidden>
+      <h2 class="panel-title">Draft</h2>
+      <div class="spinner-block" id="step4-spinner" hidden>
+        <i data-lucide="loader-circle" class="spin"></i>
+        <span>Step 4: writing the article (this takes a while)…</span>
+      </div>
+      <div id="step4-content" hidden>
+        <div class="kv-block">
+          <span class="kv-label">New title</span>
+          <p class="kv-value" id="step4-title"></p>
+        </div>
+        <div class="content-card article-render" id="step4-sections"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="step4-confirm-btn"><i data-lucide="check"></i> Finish</button>
+          <button class="btn btn-ghost" id="step4-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="final" hidden>
+      <div class="spinner-block" id="final-spinner" hidden>
+        <i data-lucide="loader-circle" class="spin"></i>
+        <span>Checking the draft against the SOP + writing .docx…</span>
+      </div>
+      <div id="final-content" hidden>
+        <div class="metric-row">
+          <div class="metric-card">
+            <span class="metric-label">SOP checks passed</span>
+            <span class="metric-value" id="final-checks-passed"></span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Confirmed report</span>
+            <span class="metric-value" id="final-report-name"></span>
+          </div>
+        </div>
+        <hr class="divider">
+        <h2 class="panel-title" id="final-title"></h2>
+        <p class="panel-sub" id="final-caption"></p>
+        <div class="scroll-box article-render" id="final-article"></div>
+        <button class="btn btn-primary" id="final-download-btn"><i data-lucide="download"></i> Download revised .docx</button>
+        <details class="preview-box">
+          <summary><i data-lucide="chevron-right"></i> SOP compliance checklist</summary>
+          <ul class="checklist" id="final-checklist"></ul>
+        </details>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
