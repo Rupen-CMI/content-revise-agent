@@ -3,6 +3,10 @@ setlocal enabledelayedexpansion
 title CMI Blog Revamp Agent
 cd /d "%~dp0"
 
+rem APP_PORT / APP_NO_BROWSER exist so the launcher can be tested without touching a copy that is
+rem already running; a normal double-click uses port 8000 and opens the browser.
+if not defined APP_PORT set "APP_PORT=8000"
+
 echo ============================================
 echo   CMI Blog Revamp Agent - starting up
 echo ============================================
@@ -80,6 +84,7 @@ set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 if exist "%VENV_PY%" goto have_venv
 
 echo First-time setup: creating a private Python environment...
+set "FIRST_RUN=1"
 "%PY_EXE%" -m venv "%VENV_DIR%"
 if not exist "%VENV_PY%" (
     echo Could not create the Python environment. Try running this file again.
@@ -91,11 +96,19 @@ if not exist "%VENV_PY%" (
 
 rem ---------------------------------------------------------------
 rem 3. Install/update dependencies. Safe to run every time -- pip
-rem    skips anything already installed, so after the first run this
-rem    takes a few seconds.
+rem    skips anything already installed. The first install shows pip's live download
+rem    progress (it takes several minutes, and a silent window looks frozen); later runs
+rem    are quiet so the window isn't flooded with "already satisfied" lines.
 rem ---------------------------------------------------------------
-echo Checking dependencies (first time may take a few minutes to download)...
-"%VENV_PY%" -m pip install --quiet --disable-pip-version-check -r "%~dp0backend\requirements.txt"
+set "PIP_FLAGS=--quiet"
+if defined FIRST_RUN (
+    set "PIP_FLAGS="
+    echo Installing components for the first time - this takes several minutes, progress below...
+    echo.
+) else (
+    echo Checking components...
+)
+"%VENV_PY%" -m pip install %PIP_FLAGS% --disable-pip-version-check -r "%~dp0backend\requirements.txt"
 if errorlevel 1 (
     echo.
     echo Could not install dependencies. Check your internet connection and try again.
@@ -114,14 +127,42 @@ if not exist "%~dp0.env" (
     exit /b 1
 )
 
+rem The language model used to match your article to CMI reports lives in a per-user cache outside
+rem this folder. Checked on every launch: instant and silent when it is already there, downloaded
+rem (with progress) only when it is missing. Not fatal if it fails -- the app falls back to
+rem text matching -- so a missing connection doesn't stop you from starting.
+"%VENV_PY%" -c "import sys; sys.path.insert(0, r'%~dp0backend'); import reports; reports.ensure_embedding_model(say=print)"
+if errorlevel 1 (
+    echo.
+    echo WARNING: could not download the language model. The app will still run, but matching
+    echo reports to your article will be less accurate. Check the internet connection and run
+    echo this file again to retry.
+    echo.
+)
+
+rem Every run starts a fresh server: stop a previous copy of THIS app still holding the port
+rem (e.g. the browser tab was closed long ago on an older version). Something else on the port is
+rem not ours to kill -- exit code 2 tells us to stop and say so.
+echo Closing any previous copy of the app...
+powershell -NoProfile -Command "$c = Get-NetTCPConnection -LocalPort %APP_PORT% -State Listen -ErrorAction SilentlyContinue; foreach ($x in $c) { $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $x.OwningProcess); if ($p.CommandLine -like '*main:app*' -and $p.CommandLine -like '*%~dp0backend*') { taskkill /PID $x.OwningProcess /T /F | Out-Null } else { exit 2 } }; exit 0"
+if errorlevel 2 (
+    echo.
+    echo Port %APP_PORT% is being used by another program, not by this app.
+    echo Close that program and run this file again.
+    pause
+    exit /b 1
+)
+timeout /t 1 /nobreak >nul
+
 echo Starting the server...
+set "CMI_AUTOSHUTDOWN=1"
 start "CMI Blog Revamp Agent - server (do not close while using the app)" /min ^
-    "%VENV_PY%" -m uvicorn main:app --host 127.0.0.1 --port 8000 --app-dir "%~dp0backend"
+    "%VENV_PY%" -m uvicorn main:app --host 127.0.0.1 --port %APP_PORT% --app-dir "%~dp0backend"
 
 echo Waiting for the server to come up...
 set "READY="
 for /l %%i in (1,1,30) do (
-    powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:8000/health' -UseBasicParsing -TimeoutSec 1).StatusCode } catch { exit 1 }" >nul 2>nul
+    powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:%APP_PORT%/health' -UseBasicParsing -TimeoutSec 1).StatusCode } catch { exit 1 }" >nul 2>nul
     if !errorlevel!==0 (
         set "READY=1"
         goto server_ready
@@ -138,11 +179,11 @@ if not defined READY (
     exit /b 1
 )
 
-start "" "http://127.0.0.1:8000"
+if not defined APP_NO_BROWSER start "" "http://127.0.0.1:%APP_PORT%"
 
 echo.
-echo The app is running at http://127.0.0.1:8000 and should have opened in your browser.
-echo Keep the minimized "CMI Blog Revamp Agent - server" window open while you use the app.
-echo Closing that window stops the app. This window can be closed.
+echo The app is running at http://127.0.0.1:%APP_PORT% and should have opened in your browser.
+echo When you close the browser tab the app shuts itself down a few seconds later.
+echo Running this file again always starts a fresh copy.
 echo.
-pause
+timeout /t 6 >nul

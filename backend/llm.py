@@ -52,7 +52,7 @@ def chat_json(
             logger.error(f"[{call_name}] could not reach the model server at {LLM_BASE_URL}: {e}", exc_info=True)
             raise LLMError(
                 f"'{call_name}' call could not reach the model server at {LLM_BASE_URL}. "
-                "Is Ollama running? Is there an internet connection for the cloud model?"
+                "Check the internet connection and that the API key/balance is valid."
             ) from e
         elapsed = time.time() - t0
         content = resp.choices[0].message.content

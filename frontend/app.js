@@ -1,6 +1,21 @@
 // ---------------------------------------------------------------- config
 const API_BASE = window.API_BASE || "http://localhost:8000";
 
+// ---------------------------------------------------------------- tab heartbeat
+// Lets a server started by start.bat notice when the last tab closes and stop itself. A
+// reload sends "closing" then a fresh heartbeat within seconds, well inside the server's grace
+// period. Harmless against a server that doesn't use it (errors are swallowed).
+const TAB_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Math.random()).slice(2);
+const heartbeatUrl = (extra = "") => `${API_BASE}/app/heartbeat?tab=${TAB_ID}${extra}`;
+function sendHeartbeat() {
+  fetch(heartbeatUrl(), { method: "POST", keepalive: true }).catch(() => {});
+}
+sendHeartbeat();
+setInterval(sendHeartbeat, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) sendHeartbeat(); });
+window.addEventListener("pageshow", sendHeartbeat);
+window.addEventListener("pagehide", () => { navigator.sendBeacon(heartbeatUrl("&closing=1")); });
+
 // ---------------------------------------------------------------- theme
 const THEME_KEY = "cmi-revamp-theme";
 

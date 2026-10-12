@@ -13,10 +13,6 @@ from bs4 import BeautifulSoup
 
 from config import CMI_SITE, DB_URL
 
-# Without this, sentence-transformers checks Hugging Face Hub for model updates on every
-# load; on a slow/flaky connection that check alone can take 100+ seconds before falling
-# back to the local cache. The model is already downloaded, so skip the network entirely.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 _null_logger = logging.getLogger("revamp.null")
 _null_logger.addHandler(logging.NullHandler())
@@ -171,11 +167,38 @@ def match_markets_grouped(names: list[str], per_name: int = 3) -> list[list[tupl
     return groups
 
 
+def ensure_embedding_model(model_name: str = _EMBED_MODEL_NAME, say=lambda msg: None) -> bool:
+    """Make sure the embedding model is in the local Hugging Face cache. Checks the cache first
+    (no network) and only downloads when it is missing or incomplete. Returns True if it had to
+    download. start.bat calls this on every launch so a fresh laptop gets the model up front, with
+    visible progress, instead of stalling the first Step 1."""
+    from huggingface_hub import snapshot_download
+    try:
+        path = snapshot_download(model_name, local_files_only=True)
+        if any(os.path.exists(os.path.join(path, w)) for w in ("model.safetensors", "pytorch_model.bin")):
+            return False
+    except Exception:
+        pass  # not cached yet
+    # Let SentenceTransformer do the fetch rather than snapshot_download: the repo also ships
+    # ONNX/OpenVINO/TF copies of the weights that snapshot_download would pull too (several GB
+    # for bge-large); SentenceTransformer downloads only the files it actually loads.
+    say(f"Downloading the report-matching language model ({model_name}) - one time only, this can take a few minutes...")
+    from sentence_transformers import SentenceTransformer
+    SentenceTransformer(model_name)
+    return True
+
+
 def _get_embedder():
     global _embedder
     if _embedder is None:
         from sentence_transformers import SentenceTransformer
-        _embedder = SentenceTransformer(_EMBED_MODEL_NAME)
+        # local_files_only: never ask the Hub whether there is a newer copy (on a slow connection
+        # that check alone took 100+ seconds); fetch from the network only if the cache is empty.
+        try:
+            _embedder = SentenceTransformer(_EMBED_MODEL_NAME, local_files_only=True)
+        except Exception:
+            ensure_embedding_model()
+            _embedder = SentenceTransformer(_EMBED_MODEL_NAME, local_files_only=True)
     return _embedder
 
 

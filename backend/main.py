@@ -36,8 +36,11 @@ Requires the root ``.env`` (``DB_URL`` plus optional ``LLM_*`` settings).
 
 import json
 import logging
+import os
 import re
 import secrets
+import signal
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -80,6 +83,76 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------- auto-shutdown when the browser tab closes
+# Active only when start.bat launches the server (CMI_AUTOSHUTDOWN=1), so a developer running
+# uvicorn by hand, tests, and CI never get a server that stops itself. The page sends a heartbeat
+# every few seconds (and a "closing" beacon on pagehide); once no tab has been seen for a short
+# grace period — and no request is mid-flight — the server exits.
+
+_AUTOSHUTDOWN = os.environ.get("CMI_AUTOSHUTDOWN") == "1"
+_TAB_TTL_S = 150        # background tabs get timers throttled to ~1/min; a quiet tab is not a closed one
+_EMPTY_GRACE_S = 20     # no tabs left: wait this long (covers a page reload) before stopping
+_STARTUP_GRACE_S = 180  # the browser never connected after launch
+_tabs: dict[str, float] = {}
+_tabs_lock = threading.Lock()
+_inflight = 0
+
+
+@app.middleware("http")
+async def _count_inflight(request, call_next):
+    global _inflight
+    _inflight += 1
+    try:
+        return await call_next(request)
+    finally:
+        _inflight -= 1
+
+
+@app.post("/app/heartbeat")
+def heartbeat(tab: str, closing: int = 0) -> dict:
+    with _tabs_lock:
+        if closing:
+            _tabs.pop(tab, None)
+        else:
+            _tabs[tab] = time.time()
+    return {"ok": True}
+
+
+def _shutdown() -> None:
+    log.info("[autoshutdown] no browser tab connected — shutting the server down")
+    signal.raise_signal(signal.SIGINT)  # uvicorn's own handler: graceful stop
+    time.sleep(8)
+    os._exit(0)  # graceful stop didn't take (e.g. Windows signal delivery) — exit anyway
+
+
+def _watchdog() -> None:
+    started = time.time()
+    empty_since: float | None = None
+    ever_connected = False
+    while True:
+        time.sleep(2)
+        now = time.time()
+        with _tabs_lock:
+            for t in [t for t, seen in _tabs.items() if now - seen > _TAB_TTL_S]:
+                del _tabs[t]
+            has_tabs = bool(_tabs)
+        if has_tabs:
+            ever_connected, empty_since = True, None
+            continue
+        if empty_since is None:
+            empty_since = now
+        idle_since = empty_since if ever_connected else started
+        grace = _EMPTY_GRACE_S if ever_connected else _STARTUP_GRACE_S
+        if now - idle_since >= grace and _inflight == 0:
+            _shutdown()
+            return
+
+
+if _AUTOSHUTDOWN:
+    threading.Thread(target=_watchdog, daemon=True, name="autoshutdown").start()
+    log.info("[autoshutdown] enabled — the server stops when the last browser tab closes")
 
 
 # Most error bodies are a plain string detail, read by the frontend with resp.text(). Pipeline
