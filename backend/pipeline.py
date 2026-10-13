@@ -1,7 +1,6 @@
 import logging
 import re
 from dataclasses import dataclass
-from itertools import zip_longest
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -88,7 +87,7 @@ def _format_hits(hits: list[search.SearchHit]) -> str:
             date = h.date.strftime("%Y-%m-%d") if h.date else "undated"
             tag = f"NEWS, {date}"
         else:
-            tag = "BACKGROUND, undated"
+            tag = f"BACKGROUND, {h.date.strftime('%Y-%m-%d')}" if h.date else "BACKGROUND, undated"
         lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}\n      {h.snippet[:300]}")
     return "\n".join(lines) or "(no results)"
 
@@ -101,6 +100,25 @@ def _report_text(report: reports.Report) -> str:
 # Each step logs exactly as the monolithic run does; _revamp_inner below is now
 # just these steps chained together, so CLI / non-gated behaviour is unchanged.
 
+_SEGMENT_SUFFIX_RE = re.compile(r",\s*by\s+", re.IGNORECASE)
+
+
+def _bare_market_names(names) -> list[str]:
+    """Strip ", By <Segment> (...)" report-title suffixes and dedupe, keeping order. The catalog
+    matches on bare report names ("Wealth Management Platform Market"); the extra segmentation
+    words dilute the word-overlap score so the exact catalog report stops matching at all."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for n in names or []:
+        if not isinstance(n, str):
+            continue
+        bare = _SEGMENT_SUFFIX_RE.split(n, maxsplit=1)[0].strip()
+        if bare and bare.lower() not in seen:
+            seen.add(bare.lower())
+            out.append(bare)
+    return out
+
+
 def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logger) -> dict:
     """CALL 1: identify the market and plan research. Returns the parsed JSON."""
     section(logger, "CALL 1: ORIENT")
@@ -110,6 +128,7 @@ def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logge
         body=article.body[:_BODY_CHARS],
         sponsor=sponsor.text,
     ), call_name="orient", logger=logger)
+    orient["candidate_markets"] = _bare_market_names(orient.get("candidate_markets"))
     names = [n for n in orient.get("candidate_markets") or [] if isinstance(n, str)]
     keywords = [k for k in orient.get("scope_keywords") or [] if isinstance(k, str)]
     if not names and not keywords:
@@ -138,12 +157,18 @@ def run_match_catalog(
     logger.info(f"scope keywords from LLM: {keywords}")
     logger.info(f"candidate market names from LLM: {names}")
 
-    # Rank-ordered merge: the LLM returns candidate_markets most-fitting-first, so matches
-    # for guess #1 outrank matches for guess #2, and so on. Within one guess, near-exact
-    # text matches come before semantic neighbors; the unranked scope-keyword pool goes last
-    # as its own source. (Previously every guess pooled into one list, so a lower guess's
-    # exact title overlap — e.g. CRM at guess #2 — outranked the top guess's neighborhood.)
+    # Score-ranked merge, not positional round-robin. The LLM returns candidate_markets
+    # most-fitting-first, so earlier guesses get a small rank bonus — but it must stay small:
+    # a real production failure was Healthcare Automation Market (0.33 text-match, a 3-way TIE
+    # with no real tiebreak, for guess #1 "Marketing Automation Market" — no catalog report by
+    # that bare name exists) ranking #1 purely by guess-position, even though guess #2's "Marketing
+    # Software Market" matched Digital Marketing Software Market at 1.00 text / 0.92 semantic — an
+    # unrelated market won ahead of a near-exact one because position, not score, decided rank.
     PER_GUESS = 3
+    GUESS_RANK_BONUS = 0.05  # per guess position back from #1 — enough to prefer guess #1 between
+    # otherwise-comparable matches, never enough for a weak match to outrank a strong one two or
+    # three guesses later (a real near-exact 1.00/0.92 match beats a bare-threshold 0.33 one even
+    # at guess #7, since 7 * 0.05 = 0.35 < 0.67, the gap between those two real scores).
     text_groups = reports.match_markets_grouped(names, per_name=PER_GUESS) if names else []
     for i, group in enumerate(text_groups):
         logger.info(f"text-match guess #{i + 1} {names[i]!r}: "
@@ -163,19 +188,26 @@ def run_match_catalog(
         logger.warning("keyword semantic match failed", exc_info=True)
         keyword_matches = []
 
-    guess_buckets: list[list[reports.CatalogEntry]] = []
-    for text_group, name_group in zip_longest(text_groups, name_groups, fillvalue=[]):
-        guess_buckets.append([e for _, e in text_group] + [e for _, e in name_group])
-    # Round-robin across [guess #1, guess #2, …, keywords] so every guess's best pick
-    # precedes every guess's second pick, while the keyword pool keeps representation.
-    sources: list[list[reports.CatalogEntry]] = guess_buckets + ([keyword_matches] if keyword_matches else [])
+    # (score + rank bonus, entry) for every text/semantic hit across every guess position, plus
+    # the unranked keyword pool at a fixed modest score (it was never a head-to-head match against
+    # one candidate_markets guess, so it can't be scored on the same scale — kept as a supplementary
+    # source, not allowed to outrank an actual scored match).
+    scored_candidates: list[tuple[float, reports.CatalogEntry]] = []
+    for i, group in enumerate(text_groups):
+        bonus = (len(text_groups) - i) * GUESS_RANK_BONUS
+        scored_candidates += [(s + bonus, e) for s, e in group]
+    for i, group in enumerate(name_groups):
+        bonus = (len(name_groups) - i) * GUESS_RANK_BONUS
+        scored_candidates += [(s + bonus, e) for s, e in group]
+    scored_candidates += [(0.01, e) for e in keyword_matches]
+
+    scored_candidates.sort(key=lambda x: x[0], reverse=True)
     seen: set[int] = set()
     candidates: list[reports.CatalogEntry] = []
-    for i in range(max((len(s) for s in sources), default=0)):
-        for s in sources:
-            if i < len(s) and s[i].news_id not in seen:
-                seen.add(s[i].news_id)
-                candidates.append(s[i])
+    for _, e in scored_candidates:
+        if e.news_id not in seen:
+            seen.add(e.news_id)
+            candidates.append(e)
     candidates = candidates[:25]
     logger.info("ranked candidates: " + ", ".join(f"{c.news_id}:{c.keyword}" for c in candidates))
 
@@ -189,18 +221,57 @@ def _market_search_queries(market_name: str) -> list[str]:
     LLM's pre-confirmation guess, which may differ if a human picked a different candidate
     than the model's top pick. No LLM call needed; this is template substitution.
 
-    Each query targets ONE specific angle and is phrased the way a market analyst searches
-    (naming a concrete kind of event — funding, launch, adoption, regulation), not the way a
-    marketer searches ("guide", "best tools") — that generic phrasing reliably surfaces
-    buyer's-guide/listicle pages that filter_hits rejects anyway, wasting the request."""
+    Every query is a NEWS search for the market's own subject, as one exact quoted phrase, plus
+    ONE kind of company event (launch, acquisition, funding round, partnership, regulation, U.S.
+    expansion). Rules that keep out the junk earlier versions pulled in:
+      - the phrase is quoted, so the subject is REQUIRED. Unquoted, a news engine happily returns
+        anything matching the event word;
+      - no "OR": engines treat each OR branch as an independent search, so "… launches OR unveils
+        new product OR service" matched any article containing "service" — a live test returned
+        sports and celebrity news once a recency limit was applied;
+      - the trailing "Market" is dropped ("<X> Market … trend/analyst" is how research firms title
+        their own report PR, and lets an engine do a topic lookup on the first word of the name);
+      - no explainer words ("trend", "adoption drivers", "overview"): they invite definitions and
+        how-to pages, which are not evidence that anything happened.
+
+    The six event-type queries (launch/acquisition/funding/partnership/regulation/expansion) assume
+    a consumer-tech-shaped market with vendors doing those things — a real failure found live:
+    for a niche B2B/chemical/pharma-treatment market (e.g. "Calcium Propionate", "Tourette Syndrome
+    Treatment") almost none of those six phrases match any real news at all, since "funding round"
+    or "launch" in that phrasing is simply not how coverage of that market is written. A 7th,
+    deliberately generic query (no event word, just "news") is added as a catch-all so a market
+    with no fundable/launchable events still has a chance at SOMETHING concrete and recent, rather
+    than zero queries ever returning a hit.
+
+    An 8th query drops the quotes entirely (still no "OR" — unquoted multi-word terms are an
+    implicit AND, not the independent-branch problem quoting was added to fix). Compound
+    category names built from individually-common words ("digital marketing software") rarely
+    appear as that exact 3-word string in real coverage, which tends to paraphrase ("digital
+    marketing platform", "martech") or just name a company — so the quoted queries above starved
+    this kind of market down to a handful of raw hits. The unquoted query recovers that volume;
+    relevance is now enforced downstream by filter_hits's stricter all-tokens gate, not by the
+    query's own precision, so widening the query here is safe rather than reopening the old bug."""
+    phrase = f'"{_market_core(market_name)}"'
     return [
-        f"{market_name} market trend 2026 analyst",
-        f"{market_name} adoption drivers",
-        f"{market_name} vendor product launch OR acquisition OR funding",
-        f"{market_name} United States market developments",
-        f"{market_name} regulatory OR compliance development",
-        f"{market_name} industry announcement 2026",
+        f"{phrase} launch",
+        f"{phrase} acquisition",
+        f"{phrase} funding round",
+        f"{phrase} partnership",
+        f"{phrase} regulation",
+        f"{phrase} U.S. expansion",
+        f"{phrase} news",
+        f"{_market_core(market_name)} news",
     ]
+
+
+def _market_core(market_name: str) -> str:
+    """'Global Wealth Management Platform Market' -> 'wealth management platform'.
+    A trailing "(ACRONYM)" is dropped too — news rarely repeats it, and inside an exact phrase
+    it would make the quoted match fail."""
+    core = re.sub(r"\s+markets?\s*$", "", market_name.strip(), flags=re.IGNORECASE)
+    core = re.sub(r"^global\s+", "", core, flags=re.IGNORECASE)
+    core = re.sub(r"\s*\([^)]*\)", "", core)
+    return core.strip().lower() or market_name.strip()
 
 
 def run_search_evidence(
@@ -214,9 +285,12 @@ def run_search_evidence(
     queries = _market_search_queries(market_name)
     progress(f"Searching the web for {market_name} ({len(queries)} queries)")
     sponsor_hosts = tuple(_host(link.url) for link in sponsor.links if link.is_external)
-    gate_phrases = [market_name] + [c.keyword for c in candidates[:5]]
+    # Gate on the CONFIRMED market name only. candidates[] are OTHER markets the human did not
+    # pick — mixing their tokens in here (e.g. "Network Automation", "Logistics Automation") let
+    # hits about those rejected markets pass the topical filter on borrowed vocabulary, directly
+    # contradicting this function's own job of never surfacing evidence for a rejected market.
     raw_hits = search.run_searches(queries, logger=logger)
-    hits = search.filter_hits(raw_hits, gate_phrases, sponsor_hosts, logger=logger)
+    hits = search.filter_hits(raw_hits, [market_name], sponsor_hosts, logger=logger)
     return hits
 
 
@@ -283,6 +357,7 @@ def run_write(
         sponsor_token=prompts.SPONSOR_TOKEN,
         report_name=report.name,
         report_text=report_text,
+        cmi_keywords=", ".join(prompts.CMI_KEYWORDS),
         evidence=evidence,
     ), temperature=0.5, call_name="write", logger=logger)
 

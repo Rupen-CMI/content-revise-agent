@@ -340,7 +340,7 @@ async function handleFile(file) {
 function resetForNewUpload() {
   state.article = null;
   state.filename = null;
-  state.sponsorIdx = 0;
+  state.sponsorIdx = -1;
   state.run = null;
   state.result = null;
   localStorage.removeItem(RUN_KEY);
@@ -369,7 +369,16 @@ function renderSponsorCandidates() {
     return;
   }
 
+  // Exactly one candidate is unambiguous — safe to auto-select. With 2+, a silent default
+  // previously let an unreviewed run lock in the wrong paragraph as "sponsor" (it defaulted to
+  // the first candidate, which is sometimes just the article's own opening paragraph, not the
+  // actual paid-backlink paragraph) — so here the user must actively pick one before continuing.
+  if (candidates.length === 1 && state.sponsorIdx !== 0) {
+    state.sponsorIdx = 0;
+  }
+
   const runActive = state.run && !state.result;
+  const needsChoice = candidates.length > 1 && state.sponsorIdx < 0;
 
   candidates.forEach((p, i) => {
     const externalLinks = p.links.filter((l) => l.isExternal).map((l) => l.anchor || l.url).join(", ");
@@ -387,15 +396,18 @@ function renderSponsorCandidates() {
     container.appendChild(label);
   });
 
+  const hint = document.getElementById("sponsor-choice-hint");
+  if (hint) hint.hidden = !needsChoice;
+
   updateSponsorPreview();
-  document.getElementById("start-btn").disabled = runActive;
+  document.getElementById("start-btn").disabled = runActive || needsChoice;
   document.getElementById("sponsor-locked-note").hidden = !runActive;
 }
 
 function updateSponsorPreview() {
   const candidates = sponsorCandidates();
   const chosen = candidates[state.sponsorIdx];
-  document.getElementById("sponsor-preview-text").textContent = chosen ? chosen.text : "";
+  document.getElementById("sponsor-preview-text").textContent = chosen ? chosen.text : "Select a paragraph above to preview it.";
 }
 
 function currentSponsor() {
@@ -765,6 +777,19 @@ function renderStep2Panel() {
 
   const hits = state.run.hits || [];
   document.getElementById("step2-hits-count").textContent = hits.length;
+  document.getElementById("step2-hits").innerHTML = hits.length
+    ? hits.map((h) => {
+        let host = "web";
+        try { host = new URL(h.url).hostname.replace(/^www\./, ""); } catch { /* keep "web" */ }
+        const kind = h.is_news ? "News" : "Background";
+        const date = h.date ? h.date.slice(0, 10) : "undated";
+        const snippet = (h.snippet || "").trim();
+        return `<li><a href="${escapeHtml(h.url)}" target="_blank" rel="noopener">${escapeHtml(h.title)}</a>`
+          + ` <span class="option-caption">${kind} &middot; ${escapeHtml(date)} &middot; ${escapeHtml(h.source || host)}</span>`
+          + (snippet ? `<span class="option-caption">${escapeHtml(snippet.length > 220 ? snippet.slice(0, 220) + "…" : snippet)}</span>` : "")
+          + `</li>`;
+      }).join("")
+    : `<li class="empty-note">No results survived filtering for this market (too old, off-topic, or the search returned nothing). You can still continue — the writer will rely on the CMI report alone.</li>`;
 
   const isSearchDone = state.run.stage === "search_done";
   document.getElementById("step2-confirm-block").hidden = !isSearchDone;
@@ -786,6 +811,10 @@ function renderStep3Panel() {
   const report = state.run.report;
   const link = document.getElementById("step3-report-link");
   if (report) { link.textContent = report.name; link.href = report.url; }
+  const reportTextEl = document.getElementById("step3-report-text");
+  reportTextEl.innerHTML = report && report.text
+    ? report.text.split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${escapeHtml(p)}</p>`).join("")
+    : `<p class="empty-note">No report text available.</p>`;
 
   const evidenceList = document.getElementById("step3-evidence");
   const facts = (state.run.selection && state.run.selection.evidence) || [];

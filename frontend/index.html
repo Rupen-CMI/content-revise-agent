@@ -106,6 +106,7 @@
       <section class="sidebar-section" id="sponsor-section" hidden>
         <h2 class="section-title">Sponsor paragraph</h2>
         <p class="field-hint">Paragraphs with an outside link — pick the one with the paid backlink:</p>
+        <p class="field-hint" id="sponsor-choice-hint" style="color:var(--danger)" hidden>Select which paragraph is the paid backlink before starting — more than one paragraph has an outside link, so this can't be guessed for you.</p>
         <div class="radio-list" id="sponsor-candidates"></div>
         <details class="preview-box">
           <summary><i data-lucide="chevron-right"></i> Preview selected paragraph</summary>
@@ -198,6 +199,10 @@
         </div>
         <div class="content-card" id="step2-done-block">
           <p class="status-note"><i data-lucide="check"></i> <span id="step2-hits-count"></span> supporting web result(s) gathered for this market.</p>
+          <div class="kv-block kv-block-last">
+            <p class="field-hint">Raw results from the web search, before Step 3 picks which facts to use. News results carry a publish date; Background results are undated reference pages and are never used as trend evidence.</p>
+            <ul class="plain-list" id="step2-hits"></ul>
+          </div>
         </div>
         <div id="step2-confirm-block" class="btn-row">
           <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 (report facts)</button>
@@ -218,6 +223,10 @@
             <span class="kv-label">CMI report used by the writer</span>
             <p class="kv-value"><a id="step3-report-link" href="#" target="_blank" rel="noopener"></a></p>
             <p class="field-hint" style="margin-top: 6px;">The writer draws market sizing, segmentation and trend language directly from this report.</p>
+            <details class="preview-box">
+              <summary><i data-lucide="chevron-right"></i> Preview the fetched report text</summary>
+              <div id="step3-report-text" class="scroll-box article-scroll"></div>
+            </details>
           </div>
         </div>
         <div class="content-card">

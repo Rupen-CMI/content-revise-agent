@@ -1,6 +1,22 @@
 SPONSOR_TOKEN = "[[SPONSOR_PARAGRAPH]]"
 CMI_LINK_PATTERN = r"\[\[CMI_LINK:(.+?)\]\]"
 
+# What CMI actually DOES — its own offerings/activities, in its own words, pulled from
+# coherentmarketinsights.com (/services, /aboutus). Deliberately NOT industry or market names
+# (those live in the report catalog and change per run); this is the fixed vocabulary of the
+# work CMI itself performs, used to keep a title/framing phrased as market intelligence CMI
+# would actually produce, instead of drifting into the original guest post's own topic or voice.
+CMI_KEYWORDS = (
+    "market research", "market intelligence", "industry analysis", "market monitoring",
+    "competitive intelligence", "consulting and advisory", "consumer insights",
+    "procurement intelligence", "supplier and demand analysis", "technology research",
+    "ESG recommendations", "cross-border expansion", "market forecasting",
+    "market sizing", "market trends", "growth drivers", "competitive landscape",
+    "key players analysis", "segmentation analysis", "regional market analysis",
+    "demand forecasting", "supply chain insights", "syndicated research reports",
+    "custom research", "primary research",
+)
+
 SOP = """Mandatory requirements for the revised blog post (follow a clear, logical information flow):
 
 1. Market Trends: three key market trends relevant to the market. Explain each clearly, including its impact on the market.
@@ -42,10 +58,11 @@ Example (format only, not a real market): for an article about "automated invoic
 teams," correct keywords are "invoice automation", "accounts payable software", "AP automation" — NOT "accounting", \
 "finance teams", "enterprise software", or "digital transformation" (too generic/adjacent or pure fluff), and NOT \
 "automation" alone (names no market).
-- "candidate_markets": 6-8 market names derived from scope_keywords, most fitting first, written the way syndicated \
-market research reports are titled: "<Noun Phrase> Market", optionally with ", By <Segment Type> (<examples>)" \
-qualifiers, e.g. the style of "Zzz Widget Market" or "Zzz Fastener Market, By Product Type, By Distribution Channel" \
-(these two are placeholder format examples only, not real markets). Use established, broad industry market names that \
+- "candidate_markets": 6-8 market names derived from scope_keywords, most fitting first, written as the bare \
+market name a research firm would title a report: "<Noun Phrase> Market", e.g. the style of "Zzz Widget Market" or \
+"Zzz Fastener Market" (placeholder format examples only, not real markets). Do NOT append segmentation qualifiers \
+such as ", By Deployment Type (...)" or ", By End User" — the report catalog is searched by the bare name, and extra \
+words make the exact report fail to match. Use established, broad industry market names that \
 a research firm would publish a report on, not niche or invented ones. Include both the closest specific market and one \
 or two broader parent markets. List ONLY the article's own market and its direct parents — never an adjacent or sibling \
 market, even if the article mentions it or shares customers and data with it (e.g. for an article about marketing \
@@ -76,13 +93,22 @@ Task: from the web results, select up to 12 that pass ALL of these tests — a r
 be rejected, not merely scored lower:
 1. Genuinely about THIS confirmed market specifically, not a result that merely shares a few words with it (a result \
 about a different, related, or broader market is a wrong-market result, not a weak match — reject it, do not include \
-it as "context").
-2. Credible: a named publication, named analyst/research source, or a specific dated event — not an anonymous listicle, \
-content-farm roundup, or SEO filler page.
-3. Concrete, not generic: the result must report a specific event, figure, or development (a company's product launch, \
-a funding round, a named regulation taking effect, a specific adoption statistic) — reject vague trend-washing \
-("the market is growing", "companies are investing in AI") that could apply to almost any market and adds nothing a \
-reader doesn't already assume.
+it as "context"). A single word from the market's name taken on its own does not make a result relevant: for a market named \
+"Zzz Widget Platform" (placeholder, not a real market), a page about what a "platform" is, or what a "widget" is, is not \
+about that market.
+2. Credible: a named publication reporting news, or a named company/analyst making a specific, attributed statement — \
+not an anonymous listicle, content-farm roundup, or SEO filler page. Reject any page whose title or framing is itself \
+a market-report advertisement — "<Market> Size, Share, Growth, Trends, Forecast [to/by] <year>", "<Market> Analysis \
+[2020s year range]", or similar — regardless of which site hosts it: that pattern means the page IS a rival research \
+firm's own report listing, a company directory, or an index of other articles, not a reported event, even when the \
+host itself is not on a known-blocked list.
+3. Concrete, not generic: the result must report something that HAPPENED or a specific figure (a company's product \
+launch, an acquisition, a funding round, a named regulation taking effect, a specific adoption statistic) — reject \
+vague trend-washing ("the market is growing", "companies are investing in AI") that could apply to almost any market and \
+adds nothing a reader doesn't already assume. Reject anything that DEFINES or EXPLAINS a concept instead of reporting \
+an event: dictionary or encyclopedia entries, "what is X" / "meaning of X" / "types of X" / glossary / tutorial / \
+guide pages, and any page whose first sentence is a definition. Explaining the subject is the article's job, not a \
+source's — a source earns a place only by telling the reader what happened.
 4. Actually usable in the final draft: ask yourself "would this specific fact, cited by name, strengthen the Market \
 Trends, U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
 would not actually improve a single sentence of that article, do not select it just because it is on-topic.
@@ -92,11 +118,12 @@ higher count; a shorter list of results that each genuinely earn their place bea
 For each selected result, write one factual sentence stating only what the result says; do not add, infer, or round \
 any number it does not contain.
 
-Each result above is tagged NEWS (with a real publish date) or BACKGROUND (undated, encyclopedic/definitional — \
-Wikipedia-style pages, glossary entries, generic explainers). A result tagged "trends" is a claim about what is \
-CURRENTLY happening in this market, so it must come from a NEWS result — a BACKGROUND result has no verifiable date \
-and must never be assigned use_for "trends", no matter how relevant it reads; route a genuinely useful BACKGROUND \
-result to "context" instead (background/definitional support), never "trends".
+Each result above is tagged NEWS (with a real publish date) or BACKGROUND (an ordinary web page with no verified \
+publish date, so nothing about it is known to be current). A result tagged "trends" is a claim about what is CURRENTLY \
+happening in this market, so it must come from a NEWS result — a BACKGROUND result must never be assigned use_for \
+"trends", no matter how relevant it reads. A BACKGROUND result is selected only if it states a concrete, citable fact \
+about THIS market that passes all four tests above (never a definition or explanation), and then only as "context". \
+When in doubt about a BACKGROUND result, leave it out.
 
 Return JSON:
 {{"evidence": [{{"id": "<W-number>", "fact": "<one factual sentence>", "use_for": "trends|us|players|context"}}]}}"""
@@ -140,7 +167,12 @@ CMI REPORT CONTENT (authoritative source for all market figures, segments, regio
 {report_text}
 \"\"\"
 
-SUPPORTING WEB EVIDENCE (use for recent developments and trend context; cite nothing by name unless useful):
+WHAT CMI PROVIDES (its own activities/offerings — use this vocabulary to frame the title and the report_context \
+section as market intelligence CMI itself produces, not as a restatement of the original article's own angle): \
+{cmi_keywords}
+
+SUPPORTING WEB EVIDENCE (already vetted as real and on-topic by a prior editorial pass — your job now is placement, \
+not re-vetting):
 {evidence}
 
 Rules:
@@ -197,6 +229,36 @@ happens to appear in the FULL ORIGINAL ARTICLE above (the original article may i
 report; that is irrelevant here — CMI REPORT: {report_name} is the only report this citation may ever name). This is \
 a mandatory, structural requirement, not optional phrasing — the article is incomplete without it. Do not place \
 [[CMI_LINK:...]] anywhere else, and do not include it more than once.
+- Use every piece of SUPPORTING WEB EVIDENCE somewhere in the article, each in whichever section its own content \
+actually fits — not wherever is convenient or wherever you happen to be writing when you remember it exists. Each \
+evidence line is tagged with the section type it was pre-sorted for ([trends], [us], [players], [context]), but treat \
+that tag as a starting hint, not a rule: read what the fact actually says and place it by its real subject matter even \
+when that differs from its tag — a fact pre-tagged for one section can belong in a different one if its content is \
+really about that other section's subject (for instance, a fact filed under one category may really be describing a \
+specific company's move, a regional development, or a segment-level shift, in which case it belongs wherever that \
+subject is actually discussed). Only leave a piece of evidence out entirely if using it would require distorting what \
+it actually says or forcing it into a section it has no real connection to.
+- This is a blog a reader follows start to finish — one continuous piece of writing that fuses the ORIGINAL ARTICLE's \
+own idea and voice with the CMI report's factual substance, not a guest intro bolted onto a stitched-together set of \
+independent report sections glued on after it. Where a later section can genuinely pick up a thread left by the one \
+before it — a fact, an implication, a question it raised — open with that connection instead of a flat, disconnected \
+topic sentence ("The market is segmented by..."). Do this only where the connection is real and would read naturally; \
+forcing a callback into every single section produces the opposite of what this is asking for — repetitive, \
+mechanical transitions are as much a tell as having none at all. Some sections opening on their own subject plainly is \
+fine and expected; the goal is a piece that overall reads as one train of thought with a few genuine connective \
+threads running through it, not a transition sentence bolted onto every section header.
+- Headings must read as blog section headers for THIS specific article's subject, not as labels copied from a market \
+research report's table of contents. Every section below still must satisfy its stated requirement (tag it in "sop" \
+exactly as before — the heading text itself is unconstrained and separate from that tag), but phrase the heading the \
+way a blog covering this exact topic would title that section: specific to what the section actually discusses here, \
+in this article, not a generic category name. Do not simply reuse this prompt's own requirement names ("Key Players", \
+"U.S. Market Analysis", "Market Segmentation") as headings verbatim — those name the underlying requirement for your \
+reference, not the words a reader should see.
+- Write in a register a reader can follow section to section without rereading: favor shorter, direct sentences over \
+long ones stacking multiple clauses and qualifiers, and when a technical or market-specific term first appears, give \
+enough context that an unfamiliar reader can follow what it means without stopping. This applies throughout, including \
+the trends, segmentation, and key_players sections where dense jargon-stacking is most tempting — precision and \
+plain language are not in conflict; a claim is not more rigorous for being harder to parse.
 - Satisfy all six requirements below plus a closing conclusion, each in its own section with a descriptive heading, in \
 this order: trends, report_context, segmentation, subsegment, country_us, key_players, conclusion. Tag every paragraph \
 in "sop" with every requirement it satisfies (a paragraph may satisfy more than one, or none for connective/intro paragraphs).
@@ -225,7 +287,9 @@ in "sop" with every requirement it satisfies (a paragraph may satisfy more than 
   going forward, grounded only in points already made above. Do not introduce new figures, companies, or claims here, and \
   do not address the reader directly or add a call to action — it closes the analysis, it does not sell anything.
 - New title: professional and market-intelligence framed, but still clearly connected to the original topic; 40-75 \
-characters — count the characters before finalizing and shorten if it runs long.
+characters — count the characters before finalizing and shorten if it runs long. Frame it using the kind of language \
+in WHAT CMI PROVIDES below (e.g. as market intelligence/analysis/research on the subject, not as a how-to or opinion \
+piece) — do not just reuse the original title's own phrasing or angle.
 - Total length: 1,400-1,700 words. This requires roughly 13-15 paragraphs across the sections above at the per-section \
 minimums stated — if your draft is shorter, you have not met the per-section minimums; go back and add the missing \
 paragraphs rather than reaching the target by padding existing sentences with filler words.

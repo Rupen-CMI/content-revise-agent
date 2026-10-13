@@ -17,6 +17,48 @@ _GENERIC_MARKET_WORDS = frozenset({
 def _market_tokens(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _GENERIC_MARKET_WORDS}
 
+
+# Capitalized words common enough in business writing that matching ONE alone proves nothing (a
+# first word like "Digital" or "Bank" recurs across unrelated facts/paragraphs) — only a run of
+# TWO OR MORE consecutive capitalized words ("Ping An", "Kinsale Capital") is treated as a real
+# proper-noun signature; a lone generic-sounding capitalized word is excluded entirely rather than
+# risk a coincidental match.
+_FACT_GENERIC_CAPS = frozenset({
+    "the", "a", "an", "to", "of", "in", "on", "for", "by", "its", "it", "as", "with", "and", "or",
+    "digital", "bank", "banks", "company", "companies", "firm", "firms", "platform", "platforms",
+    "management", "technology", "investment", "investments", "financial", "new", "group", "global",
+    "market", "wealth", "service", "services", "solutions", "solution", "capital", "fund", "funds",
+    "advisory", "advisors", "advisor", "partners", "partnership", "head", "united", "states",
+    "research", "ventures", "holdings", "international", "systems", "custom", "model",
+    # Nationality/region adjectives — common enough that one coincidentally recurring elsewhere
+    # proves nothing (found live: "Indian" from a Zomint fact false-matched a draft sentence about
+    # a different, unrelated company, "South Indian Bank").
+    "indian", "irish", "nordic", "european", "american", "asian", "chinese", "japanese", "korean",
+    "british", "german", "french", "canadian", "australian", "african", "india", "ireland", "asia",
+})
+
+
+def _fact_signature_tokens(fact: str) -> set[str]:
+    """Distinctive signatures for one selected-evidence fact: each non-generic capitalized word
+    (company/person name fragments — "Kestrel", "Vanguard", "Paul", "Arnold") plus the first
+    two-word slice of each capitalized run ("ping an", "bny pershing") so a paraphrase that keeps
+    just the entity's own name, without the generic words following it ("Digital Bank", "Group"),
+    still matches — any number/percentage counts too. A single GENERIC capitalized word ("Digital",
+    "Bank", "Group") is excluded even alone, since business prose is full of them and matching one
+    in isolation proved nothing about whether THIS specific fact was used (an earlier version of
+    this check false-positived on exactly that)."""
+    runs = re.findall(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b", fact)
+    sigs: set[str] = set()
+    for r in runs:
+        words = r.split()
+        for w in words:
+            if w.lower() not in _FACT_GENERIC_CAPS and len(w) > 1:
+                sigs.add(w.lower())
+        if len(words) >= 2:
+            sigs.add(" ".join(words[:2]).lower())
+    numbers = set(re.findall(r"\d[\d.,]*%?", fact))
+    return sigs | numbers
+
 _SOP_TAGS = (
     ("trends", "Market trends section"),
     ("report_context", "CMI report context"),
@@ -36,6 +78,32 @@ class CheckResult:
 
 def _words(text: str) -> int:
     return len(re.findall(r"\b\w[\w'-]*\b", text))
+
+
+def _count_syllables(word: str) -> int:
+    """Vowel-group heuristic (standard approximation used by Flesch scoring tools): count runs
+    of consecutive vowels, drop a silent trailing "e", floor of 1 per word. Not linguistically
+    exact, but Flesch Reading Ease itself is only ever an approximation — this avoids adding a
+    pip dependency (e.g. pyphen/textstat) that start.bat would have to install on a non-technical
+    user's laptop with no admin rights, for a score whose own formula is already a rough proxy."""
+    word = word.lower()
+    groups = re.findall(r"[aeiouy]+", word)
+    count = len(groups)
+    if word.endswith("e") and not word.endswith("le") and count > 1:
+        count -= 1
+    return max(1, count)
+
+
+def _flesch_reading_ease(text: str) -> float | None:
+    """Standard Flesch Reading Ease: 206.835 - 1.015*(words/sentences) - 84.6*(syllables/words).
+    Higher = easier to read (90-100 very easy / 5th grade, 60-70 plain English / 8th-9th grade,
+    0-30 very difficult / graduate level). Returns None if there's no text to score."""
+    sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
+    words = re.findall(r"\b[a-zA-Z'-]+\b", text)
+    if not sentences or not words:
+        return None
+    syllables = sum(_count_syllables(w) for w in words)
+    return 206.835 - 1.015 * (len(words) / len(sentences)) - 84.6 * (syllables / len(words))
 
 
 def _numbers(text: str) -> set[float]:
@@ -152,6 +220,34 @@ def run_checks(
             "" if not bad_trend_sources else f"background (undated) source(s) used as trends: {', '.join(bad_trend_sources)}",
         ))
 
+        # Soft check: SELECT can vet a dozen real, specific facts and the writer can still ignore
+        # most of them with no visibility into it (found in production: 12 selected, only 4
+        # actually used). A fact counts as "used" if at least one of its proper-noun phrases or
+        # numbers (see _fact_signature_tokens) appears in the draft — a whole phrase, not just any
+        # one word of it, so a generic word two facts happen to share can't cause a false match.
+        # This survives paraphrasing without requiring a verbatim sentence match. It does not fail
+        # the run — a writer skipping some vetted facts for length/flow reasons is a normal
+        # editorial choice — it only surfaces how much of the vetted evidence pool made it in, so a
+        # run that uses almost none of it is visible instead of silent.
+        evidence_items = [e for e in (selection.get("evidence") or []) if e.get("fact")]
+        if evidence_items:
+            full_tokens = _market_tokens(full)  # word tokens only — a plain substring check let
+            # "ping" match inside "shaping" and "uma" match inside "human" in production testing.
+            unused = []
+            for e in evidence_items:
+                sig = _fact_signature_tokens(e["fact"])
+                used = bool(sig) and any(
+                    (s in full_tokens) if " " not in s else (s in full.lower()) for s in sig
+                )
+                if not used:
+                    unused.append(e.get("id") or e["fact"][:40])
+            used_count = len(evidence_items) - len(unused)
+            results.append(CheckResult(
+                f"Selected evidence used in the draft ({used_count}/{len(evidence_items)})",
+                not unused,
+                "" if not unused else f"selected but not found in the draft: {', '.join(unused)}",
+            ))
+
     tags = [t for s in sections for t in s["sop"]]
     for tag, label in _SOP_TAGS:
         results.append(CheckResult(label, tag in tags))
@@ -182,6 +278,19 @@ def run_checks(
 
     total = _words(full)
     results.append(CheckResult("Length reasonable (~1,400-1,700 words, soft)", 1000 <= total <= 2100, f"{total} words"))
+
+    # Soft check: flags prose dense enough that a reader could lose the thread, without demanding
+    # dumbed-down writing — this is still meant to read as a professional analyst brief, not a
+    # children's book. Floor of 30 (~"difficult/graduate-level") is the bar; below that, sentences
+    # are long enough and jargon-stacked enough on average that the article likely reads as a wall
+    # of report-speak rather than a blog a reader can follow section to section.
+    score = _flesch_reading_ease(full)
+    if score is not None:
+        results.append(CheckResult(
+            "Readability not too dense (Flesch Reading Ease, soft)",
+            score >= 30,
+            f"score {score:.0f}/100 (below 30 = very difficult to read; aim for 40-60)",
+        ))
 
     known = _numbers(source_text)
     unverified = sorted({m.group(0) for m in _FIGURE.finditer(full) if float(m.group(1).replace(",", "")) not in known})

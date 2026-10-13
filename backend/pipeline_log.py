@@ -1,3 +1,4 @@
+import itertools
 import logging
 import sys
 import threading
@@ -8,6 +9,7 @@ from pathlib import Path
 LOG_DIR = Path(__file__).parent / "logs"
 
 _root_handlers_installed = False
+_run_id_counter = itertools.count(1)
 
 
 def _install_root_handlers(path: Path) -> None:
@@ -64,11 +66,23 @@ def _install_crash_hooks() -> None:
 
 
 def new_run_logger(label: str = "run") -> tuple[logging.Logger, Path]:
-    """One timestamped log file per pipeline run; every module's logger writes to it via root."""
+    """One timestamped log file per pipeline run; every module's logger writes to it via root.
+
+    logging.getLogger("revamp") always returns the SAME Logger instance across every call — it is
+    NOT a fresh object per run. A first attempt stamped a run id onto that shared instance as an
+    attribute, but a second new_run_logger() call (e.g. the next run starting) overwrote it before
+    the first run's later LLM calls read it back, silently merging two runs' costs into one
+    tracker (caught live: a 2-call run only recorded its first call, and a second run's real call
+    vanished entirely). A LoggerAdapter is a genuinely distinct object per call — unlike the base
+    Logger, two adapters never alias each other — while still delegating to the one real Logger
+    for actual writing, so every existing `logger.info(...)` call site keeps working unchanged.
+    """
     LOG_DIR.mkdir(exist_ok=True)
     path = LOG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_{label}.log"
     _install_root_handlers(path)
-    return logging.getLogger("revamp"), path
+    base = logging.getLogger("revamp")
+    adapter = logging.LoggerAdapter(base, {"revamp_run_id": next(_run_id_counter)})
+    return adapter, path
 
 
 def section(logger: logging.Logger, title: str) -> None:

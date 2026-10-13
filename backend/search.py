@@ -9,7 +9,7 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 from ddgs import DDGS
-from ddgs.exceptions import TimeoutException
+from ddgs.exceptions import DDGSException, TimeoutException
 
 from config import CMI_HOST
 
@@ -30,6 +30,30 @@ _BLOCKED_HOSTS = (
     "gminsights.com", "reportlinker.com", "einpresswire.com", "openpr.com", "globenewswire.com",
     "prnewswire.com", "linkedin.com", "youtube.com", "reddit.com", "quora.com", "facebook.com",
     "instagram.com", "pinterest.com", "tiktok.com",
+    # More rival-research/report-PR mills surfaced testing niche B2B markets (chemicals, medical
+    # device outsourcing) — same "Market Size, Share, Growth" SEO-report pattern as the firms above.
+    "kenresearch.com", "morganreedinsights.com", "markwideresearch.com", "techsciresearch.com",
+    "sphericalinsights.com", "procurementresource.com", "syndicatedanalytics.com", "dragonsourcing.com",
+    "custommarketinsights.com", "marketdigits.com", "statsmarketresearch.com", "coherentsolutions.com",
+    "valuemarketresearch.com", "marketgrowthreports.com", "businessresearchinsights.com",
+    "researchnreports.com", "marketinsightsreports.com", "globalgrowthinsights.com",
+    # Encyclopedia / dictionary / finance-explainer sites: they answer "what is X", never "what
+    # happened in X lately" — a "Wealth - Meaning, Types…" page is not market evidence.
+    "wikipedia.org", "grokipedia.com", "wallstreetmojo.com", "investopedia.com", "britannica.com",
+    "merriam-webster.com", "dictionary.com", "corporatefinanceinstitute.com",
+)
+
+# Titles of definition/how-to/explainer/directory pages — reference material, not a reported
+# event. Applied to text (background) hits only; news hits are dated articles about events and
+# don't need it. "Market Size, Share, Growth" is the report-PR SEO pattern itself (a page titled
+# exactly that is a rival firm's own report landing page even when its own domain isn't blocklisted
+# yet — found live on markwideresearch.com, techsciresearch.com, etc.).
+_DEFINITIONAL_TITLE_RE = re.compile(
+    r"\b(meaning|definitions?|glossary)\b|\bwhat (is|are)\b|\bhow to\b|\b(guide|introduction|intro) to\b"
+    r"|\bexplained\b|\bfor beginners\b|\b(types|examples|benefits|advantages) of\b|\bvs\.?\b"
+    r"|\bmarket (size|share),?\s*(share,?\s*)?growth\b|\blist of\b|\b(news|articles?) (archive|index|hub)\b"
+    r"|^\s*[\w\s&]+\s(articles|news)\s*$",
+    re.IGNORECASE,
 )
 
 _STOPWORDS = frozenset({
@@ -57,8 +81,12 @@ _PER_QUERY = 8
 # register "bing" as an available TEXT backend (confirmed live: "bing - backends do not exist
 # or are disabled" — bing.py exists but isn't wired up for the text category here), even though
 # bing_news works fine for the news category.
+#
+# grokipedia and wikipedia were later cut as well, despite their ~100% success rate: they are
+# encyclopedia TITLE lookups (limit=1), so a query like "wealth management platform …" returns the
+# dictionary-style "Wealth" entry — reliable, but never evidence of a market development.
 _NEWS_BACKENDS = "bing,yahoo"
-_TEXT_BACKENDS = "yahoo,grokipedia,wikipedia,startpage"
+_TEXT_BACKENDS = "yahoo,startpage"
 
 # Search providers throttle rapid-fire bursts from one IP (we watched DDG stall every
 # query after several runs in quick succession, and logs show Brave 429-ing and DuckDuckGo's
@@ -99,33 +127,78 @@ def _parse_date(raw) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _ddgs(d: DDGS, query: str) -> list[SearchHit]:
-    hits = []
-    for r in d.news(query, max_results=_PER_QUERY, backend=_NEWS_BACKENDS):
-        hits.append(SearchHit(
-            r["title"], r.get("body", ""), r["url"], r.get("source", ""), _parse_date(r.get("date")), is_news=True,
-        ))
-    time.sleep(_INTRA_QUERY_DELAY_S + random.uniform(0, 0.6))
-    for r in d.text(query, max_results=_PER_QUERY, backend=_TEXT_BACKENDS):
-        hits.append(SearchHit(r["title"], r.get("body", ""), r["href"], "", None, is_news=False))
-    return hits
+_REL_UNITS = {"minute": 1 / 1440, "hour": 1 / 24, "day": 1, "week": 7, "month": 30, "year": 365}
+_ABS_DATE_RE = re.compile(r"^\s*([A-Za-z]{3,9})\.? (\d{1,2}), (\d{4})\s*[·\-–—]")
+_REL_DATE_RE = re.compile(r"^\s*(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago\s*[·\-–—]", re.IGNORECASE)
 
 
-def _safe(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[SearchHit]:
+def _snippet_date(snippet: str) -> datetime | None:
+    """Text results carry no date field, but search engines often prefix the snippet with one
+    ("Mar 3, 2025 · …", "3 days ago · …"). Only a date at the very START of the snippet counts —
+    a date mentioned mid-sentence is about the content, not when the page was published."""
+    m = _ABS_DATE_RE.match(snippet or "")
+    if m:
+        try:
+            return datetime.strptime(f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}", "%b %d %Y").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    m = _REL_DATE_RE.match(snippet or "")
+    if m:
+        return datetime.now(timezone.utc) - timedelta(days=int(m.group(1)) * _REL_UNITS[m.group(2).lower()])
+    return None
+
+
+def _news(d: DDGS, query: str) -> list[SearchHit]:
+    # timelimit="m": ask the engines for the past month. Without it the event-style queries return
+    # relevance-ranked news from any time (46 of 48 hits in one live test were months old and were
+    # then discarded by the 14-day cutoff), so the per-query slots were spent on stale items.
+    # The engines only loosely honor it, which is why the strict 14-day filter still runs after.
+    return [
+        SearchHit(r["title"], r.get("body", ""), r["url"], r.get("source", ""), _parse_date(r.get("date")), is_news=True)
+        for r in d.news(query, max_results=_PER_QUERY, backend=_NEWS_BACKENDS, timelimit="m")
+    ]
+
+
+def _text(d: DDGS, query: str) -> list[SearchHit]:
+    return [
+        SearchHit(r["title"], r.get("body", ""), r["href"], "", _snippet_date(r.get("body", "")), is_news=False)
+        for r in d.text(query, max_results=_PER_QUERY, backend=_TEXT_BACKENDS)
+    ]
+
+
+def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list[SearchHit]:
+    """One search call (news OR text) with timeout retries. Never raises: the two calls for a
+    query must fail independently — previously a text-search "No results found." escaped from the
+    shared function and discarded the news hits already collected, wiping out every query."""
     for attempt in range(_QUERY_RETRIES + 1):
         try:
-            return _ddgs(d, query)
+            return fn(d, query)
         except TimeoutException as e:
             if attempt < _QUERY_RETRIES:
                 wait = 3.0 * (attempt + 1)
-                logger.warning(f"[search] query {query!r} timed out (attempt {attempt + 1}); retrying in {wait:.0f}s")
+                logger.warning(f"[search] {kind} {query!r} timed out (attempt {attempt + 1}); retrying in {wait:.0f}s")
                 time.sleep(wait)
             else:
-                logger.warning(f"[search] query {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
+                logger.warning(f"[search] {kind} {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
                 return []
-        except Exception as e:  # one failed provider/query must not sink the run; search is best-effort
-            logger.warning(f"[search] query {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
+        except DDGSException as e:
+            if "no results" in str(e).lower():  # an empty answer, not a fault
+                logger.info(f"[search] {kind} {query!r} -> no results")
+            else:
+                logger.warning(f"[search] {kind} {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
             return []
+        except Exception as e:  # one failed provider/query must not sink the run; search is best-effort
+            logger.warning(f"[search] {kind} {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
+            return []
+    return []
+
+
+def _safe(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[SearchHit]:
+    news = _attempt(_news, d, query, "news", logger)
+    time.sleep(_INTRA_QUERY_DELAY_S + random.uniform(0, 0.6))
+    text = _attempt(_text, d, query, "text", logger)
+    logger.info(f"[search] query {query!r}: {len(news)} news + {len(text)} text")
+    return news + text
 
 
 def run_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
@@ -157,13 +230,27 @@ def gate_terms(phrases: list[str]) -> tuple[set[str], list[str]]:
     return tokens, full
 
 
+def _min_token_overlap(tokens: set[str]) -> int:
+    """How many gate tokens a hit must share to pass, when there's no exact-phrase match.
+    A flat "any 2" was exploitable: a market name made of individually-common words (e.g.
+    "Digital Marketing Software" -> digital/marketing/software) let completely off-topic hits
+    (a marketing AGENCY opening an office, a freelancing how-to guide) pass just by sharing
+    "digital" + "marketing" with the gate, never mentioning "software" at all — zero actual
+    connection to the confirmed market as an industry. Requiring ALL of the market's own content
+    words (not merely most of them) makes a token-only match roughly as selective as the exact
+    phrase it's standing in for; a market name with just one content word has nothing else to
+    require, so the floor of 2 only ever binds there, not for real multi-word names."""
+    return max(2, len(tokens))
+
+
 def filter_hits(
     hits: list[SearchHit], phrases: list[str], blocked_hosts: tuple[str, ...] = (),
     limit: int = 30, logger: logging.Logger = _null_logger,
 ) -> list[SearchHit]:
     """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market."""
     tokens, full_phrases = gate_terms(phrases)
-    logger.info(f"[filter] gate tokens ({len(tokens)}): {sorted(tokens)}")
+    min_overlap = _min_token_overlap(tokens)
+    logger.info(f"[filter] gate tokens ({len(tokens)}): {sorted(tokens)} (min overlap required: {min_overlap})")
     logger.info(f"[filter] gate phrases ({len(full_phrases)}): {full_phrases}")
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
     blocked = _BLOCKED_HOSTS + tuple(h.lower() for h in blocked_hosts)
@@ -180,6 +267,10 @@ def filter_hits(
             dropped += 1
             logger.info(f"[filter] DROP (blocked host {hit.host}): {hit.title!r}")
             continue
+        if not hit.is_news and _DEFINITIONAL_TITLE_RE.search(hit.title):
+            dropped += 1
+            logger.info(f"[filter] DROP (definition/explainer page) [{hit.host}] {hit.title!r}")
+            continue
         if hit.date and hit.date < cutoff:
             dropped += 1
             logger.info(f"[filter] DROP (stale, {hit.date:%Y-%m-%d}): {hit.title!r}")
@@ -194,7 +285,7 @@ def filter_hits(
         text = f"{hit.title} {hit.snippet}".lower()
         matched_tokens = tokens & _content_tokens(text)
         matched_phrase = next((p for p in full_phrases if p in text), None)
-        if matched_tokens and len(matched_tokens) >= 2 or matched_phrase:
+        if matched_tokens and len(matched_tokens) >= min_overlap or matched_phrase:
             kept += 1
             logger.info(
                 f"[filter] KEEP (tokens={sorted(matched_tokens)}, phrase={matched_phrase!r}) "

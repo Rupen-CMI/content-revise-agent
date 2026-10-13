@@ -55,6 +55,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import llm
 import pipeline
 import prompts
 import reports
@@ -293,11 +294,18 @@ def _hit_dict(h: search.SearchHit) -> dict:
         "url": h.url,
         "source": h.source,
         "date": h.date.isoformat() if h.date else None,
+        "is_news": h.is_news,
     }
 
 
 def _report_dict(r: reports.Report) -> dict:
-    return {"news_id": r.news_id, "name": r.name, "url": r.url}
+    return {
+        "news_id": r.news_id, "name": r.name, "url": r.url,
+        # The same text the writer actually reads (run_write's _report_text pulls this same key) —
+        # shown in Step 3 so a human can check what the draft will be grounded in, not just the
+        # report's name/link. Previously fetched and used but never sent to the frontend at all.
+        "text": r.sections.get("live_report_page", ""),
+    }
 
 
 def _segment_dicts(text: str, sponsor: Paragraph, report_url: str | None) -> list[dict]:
@@ -582,6 +590,9 @@ def finalize(req: FinalizeRequest) -> dict:
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "finalize", e)
     _RUNS.pop(req.run_token, None)  # single-use: the run is complete
+    run.logger.info("LLM COST FOR THIS RUN (logs only — not shown in the UI):")
+    for line in llm.run_cost_summary(run.logger):
+        run.logger.info(line)
     run.logger.info(f"RUN COMPLETE — {result.output_path}")
     return {
         "result": {
@@ -612,6 +623,17 @@ def download(filename: str):
 
 # ---------------------------------------------------------------- serve the frontend UI (added last so API routes win)
 
+class _RevalidatingStaticFiles(StaticFiles):
+    """Without a Cache-Control header browsers cache index.html/app.js heuristically (from
+    Last-Modified) and keep showing the old UI after the files are updated, until a hard refresh.
+    "no-cache" makes them revalidate on every load — a cheap 304 when nothing changed."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 _FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 if _FRONTEND_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/", _RevalidatingStaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
