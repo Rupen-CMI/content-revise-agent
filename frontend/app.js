@@ -881,6 +881,119 @@ function renderSections(sections) {
   }).join("");
 }
 
+// ---------------------------------------------------------------- keyword/evidence highlighting (final panel only)
+//
+// Highlighting runs on the PLAIN text of each segment, before it becomes HTML — splitting a
+// string already containing <a> tags would risk matching inside tag attributes or breaking the
+// markup. Each segment's text is cut into alternating plain/highlighted runs first, THEN each run
+// is escaped and wrapped, so escaping and highlighting never fight each other.
+
+// Finds every non-overlapping, case-insensitive occurrence of `phrase` in `text` and returns
+// [{start, end}, ...] in the text's own coordinates — used to merge matches from several
+// matchers (primary, each secondary keyword, each evidence paragraph) into one pass per segment.
+function _findMatches(text, phrase) {
+  if (!phrase) return [];
+  const hay = text.toLowerCase();
+  const needle = phrase.toLowerCase();
+  const out = [];
+  let from = 0;
+  while (true) {
+    const i = hay.indexOf(needle, from);
+    if (i < 0) break;
+    out.push({ start: i, end: i + needle.length });
+    from = i + needle.length;
+  }
+  return out;
+}
+
+// Merges matches from multiple phrases/classes into disjoint, priority-ordered spans: earlier
+// entries in `matchers` win on overlap (primary keyword is checked before secondary, so a
+// secondary keyword that happens to be a substring of the primary phrase never steals its span).
+function _highlightRuns(text, matchers) {
+  const taken = new Array(text.length).fill(null);
+  for (const { phrase, cls, title } of matchers) {
+    // One mark object per MATCH (not per character) — _highlightRuns below merges consecutive
+    // positions into a single <mark> only when they share the exact same object reference, so
+    // creating a fresh object per character here would silently defeat that merge and wrap every
+    // character in its own tag.
+    for (const { start, end } of _findMatches(text, phrase)) {
+      let free = true;
+      for (let i = start; i < end; i++) if (taken[i]) { free = false; break; }
+      if (!free) continue;
+      const mark = { cls, title };
+      for (let i = start; i < end; i++) taken[i] = mark;
+    }
+  }
+  const runs = [];
+  let i = 0;
+  while (i < text.length) {
+    const mark = taken[i];
+    let j = i + 1;
+    while (j < text.length && taken[j] === mark) j++;
+    runs.push({ text: text.slice(i, j), mark });
+    i = j;
+  }
+  return runs;
+}
+
+function _renderHighlightedText(text, matchers) {
+  if (!matchers.length) return escapeHtml(text);
+  return _highlightRuns(text, matchers).map((run) => {
+    const safe = escapeHtml(run.text);
+    if (!run.mark) return safe;
+    const titleAttr = run.mark.title ? ` title="${escapeHtml(run.mark.title)}"` : "";
+    return `<mark class="${run.mark.cls}"${titleAttr}>${safe}</mark>`;
+  }).join("");
+}
+
+function renderSegmentsHighlighted(segments, matchers) {
+  return (segments || [])
+    .map((seg) => (seg.url
+      ? `<a href="${escapeHtml(seg.url)}" target="_blank" rel="noopener">${_renderHighlightedText(seg.text, matchers)}</a>`
+      : _renderHighlightedText(seg.text, matchers)))
+    .join("");
+}
+
+// Builds the matcher list for one run's result: the primary keyword (highest priority), every
+// secondary keyword actually supplied, and one matcher per cited evidence paragraph — matching
+// the FACT text isn't possible (WRITE paraphrases it), so citations instead highlight whichever
+// paragraph the model itself reported using that evidence in (see pipeline.run_write's
+// evidence_citations, verified server-side against the real draft before being sent here).
+function _buildHighlightMatchers(result) {
+  const matchers = [];
+  if (result.primary_keyword) {
+    matchers.push({ phrase: result.primary_keyword, cls: "hl-primary", title: "Primary keyword" });
+  }
+  for (const kw of result.secondary_keywords || []) {
+    matchers.push({ phrase: kw, cls: "hl-secondary", title: "Secondary keyword" });
+  }
+  // Evidence citations highlight by paragraph match, not phrase match: a citation's "paragraph"
+  // field is the full paragraph text, so matching it against itself always highlights exactly
+  // that whole paragraph, once per evidence ID it cites.
+  for (const c of result.evidence_citations || []) {
+    if (c.paragraph) matchers.push({ phrase: c.paragraph, cls: "hl-evidence", title: c.fact ? `Evidence ${c.id}: ${c.fact}` : `Evidence ${c.id}` });
+  }
+  return matchers;
+}
+
+function renderSectionsHighlighted(sections, result) {
+  const matchers = _buildHighlightMatchers(result);
+  return sections.map((s) => {
+    const heading = s.heading ? `<h4>${escapeHtml(s.heading)}</h4>` : "";
+    const paras = (s.paragraphs || []).map((p) => `<p>${renderSegmentsHighlighted(p, matchers)}</p>`).join("");
+    return heading + paras;
+  }).join("");
+}
+
+// Counts actual occurrences for the legend — independent of which spans "won" an overlap above,
+// so the legend's numbers always reflect genuine keyword presence in the text, not rendering
+// priority. Evidence count is simply how many citations came back from the backend.
+function _countOccurrences(sections, phrase) {
+  if (!phrase) return 0;
+  const full = (sections || []).flatMap((s) => s.paragraphs || []).map((p) => (p || []).map((seg) => seg.text).join("")).join("\n");
+  return _findMatches(full.toLowerCase(), phrase.toLowerCase()).length;
+}
+
 // ---------------------------------------------------------------- render: final panel
 function renderFinalPanel() {
   const spinner = document.getElementById("final-spinner");
@@ -900,7 +1013,17 @@ function renderFinalPanel() {
   document.getElementById("final-caption").innerHTML =
     `Revised from: <em>${escapeHtml(state.article.title)}</em> &middot; Report: <a href="${result.report.url}" target="_blank" rel="noopener">${escapeHtml(result.report.name)}</a>`;
 
-  document.getElementById("final-article").innerHTML = renderSections(result.sections);
+  document.getElementById("final-article").innerHTML = renderSectionsHighlighted(result.sections, result);
+
+  const secondaryCount = (result.secondary_keywords || []).reduce(
+    (sum, kw) => sum + _countOccurrences(result.sections, kw), 0
+  );
+  document.getElementById("legend-count-primary").textContent =
+    `(${_countOccurrences(result.sections, result.primary_keyword)}x)`;
+  document.getElementById("legend-count-secondary").textContent =
+    `(${secondaryCount}x, ${(result.secondary_keywords || []).filter((kw) => _countOccurrences(result.sections, kw) > 0).length}/${(result.secondary_keywords || []).length} used)`;
+  document.getElementById("legend-count-evidence").textContent =
+    `(${(result.evidence_citations || []).length})`;
 
   const checklist = document.getElementById("final-checklist");
   checklist.innerHTML = result.checks.map((c) => `

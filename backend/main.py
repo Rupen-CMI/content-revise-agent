@@ -55,6 +55,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import freshness
 import llm
 import pipeline
 import prompts
@@ -206,6 +207,7 @@ class RunState:
     evidence: str | None = None
     title: str = ""
     sections: list[dict] = field(default_factory=list)
+    evidence_citations: list[dict] = field(default_factory=list)
 
 
 _RUNS: dict[str, RunState] = {}
@@ -414,6 +416,7 @@ def dev_seed_run() -> dict:
     sponsor = next(p for p in article.paragraphs if p.index == fixture["sponsor"]["index"])
     candidates = [reports.CatalogEntry(**c) for c in fixture["candidates"]]
     report = reports.Report(**fixture["report"])
+    report.sections["live_report_page"] = freshness.strip_stale_developments(report.sections["live_report_page"])[0]
 
     def _hit_from(d: dict) -> search.SearchHit:
         d = dict(d)
@@ -505,7 +508,10 @@ def step2(req: Step2Request) -> dict:
         raise HTTPException(400, f"Report {req.report_id} is not one of the matched reports for this run.")
     try:
         report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
-        hits = pipeline.run_search_evidence(report.name, run.sponsor, run.candidates, run.logger)
+        hits = pipeline.run_search_evidence(
+            report.name, run.sponsor, run.candidates, run.logger,
+            key_players=reports.key_players(report), orient=run.orient,
+        )
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)
     run.report, run.hits = report, hits
@@ -532,18 +538,21 @@ def step3(req: Step3Request) -> dict:
 
 @app.post("/step4")
 def step4(req: Step4Request) -> dict:
-    """Step 4: write the report. Call 3 (LLM)."""
+    """Step 4: write the report (Call 3), then run the SEO/readability revision pass (Call 4)."""
     run = _get_run(req.run_token)
     if run.report is None or run.selection is None or run.evidence is None:
         raise HTTPException(400, "No confirmed report/evidence yet — finish Step 3 first.")
     try:
-        _, title, sections = pipeline.run_write(
+        _, title, sections, evidence_citations = pipeline.run_write(
             run.article, run.orient, run.sponsor, run.report, run.evidence, run.logger
+        )
+        title, sections, evidence_citations = pipeline.run_revise(
+            title, sections, evidence_citations, run.report, run.logger
         )
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "Step 4", e)
-    run.title, run.sections = title, sections
-    run.logger.info(f"STEP 4 DONE — draft '{title}' ({len(sections)} sections)")
+    run.title, run.sections, run.evidence_citations = title, sections, evidence_citations
+    run.logger.info(f"STEP 4 DONE — draft '{title}' ({len(sections)} sections, {len(evidence_citations)} evidence citations)")
     return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url)}
 
 
@@ -586,6 +595,7 @@ def finalize(req: FinalizeRequest) -> dict:
             run.candidates, run.orient, run.selection, run.hits,
             run.title, run.sections, run.evidence,
             run.filename, run.logger,
+            evidence_citations=run.evidence_citations,
         )
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "finalize", e)
@@ -594,6 +604,13 @@ def finalize(req: FinalizeRequest) -> dict:
     for line in llm.run_cost_summary(run.logger):
         run.logger.info(line)
     run.logger.info(f"RUN COMPLETE — {result.output_path}")
+    # Map each citation's evidence ID back to its original fact text for a human-readable label
+    # in the UI (e.g. a hover tooltip) — the citation itself only carries the ID + paragraph.
+    facts_by_id = {str(e.get("id", "")).strip().upper(): e.get("fact", "") for e in (run.selection.get("evidence") or [])}
+    citations_out = [
+        {"id": c["id"], "paragraph": c["paragraph"], "fact": facts_by_id.get(c["id"], "")}
+        for c in result.evidence_citations
+    ]
     return {
         "result": {
             "title": result.title,
@@ -602,6 +619,9 @@ def finalize(req: FinalizeRequest) -> dict:
             "checks": [
                 {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
             ],
+            "evidence_citations": citations_out,
+            "primary_keyword": pipeline._seo_keyword_plan(result.report.name)[0],
+            "secondary_keywords": [kw for kw, _ in pipeline._seo_keyword_plan(result.report.name)[1]],
             "output_filename": result.output_path.name if result.output_path else None,
         }
     }

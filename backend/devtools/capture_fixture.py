@@ -52,9 +52,12 @@ def main() -> None:
     chosen = candidates[0]
     print(f"confirmed market (top candidate, same as UI default): {chosen.keyword} ({chosen.news_id})")
 
-    print("Step 2: fetch report + web search (real live fetch + real DDGS)...")
+    print("Step 2: fetch report + web search (real live fetch + real DDGS + real LLM query gen)...")
     report = pipeline.run_fetch_confirmed_report(chosen, logger)
-    hits = pipeline.run_search_evidence(report.name, sponsor, candidates, logger)
+    hits = pipeline.run_search_evidence(
+        report.name, sponsor, candidates, logger,
+        key_players=reports.key_players(report), orient=orient,
+    )
 
     print("Step 3: select evidence (real LLM call)...")
     selection = pipeline.run_select(article, orient, sponsor, report, hits, logger)

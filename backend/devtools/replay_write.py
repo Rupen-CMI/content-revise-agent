@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import freshness
 import pipeline
 import reports
 import search
@@ -48,6 +49,7 @@ def main() -> None:
     article = _article_from(fixture["article"])
     sponsor = _paragraph_from(fixture["sponsor"])
     report = reports.Report(**fixture["report"])
+    report.sections["live_report_page"] = freshness.strip_stale_developments(report.sections["live_report_page"])[0]
     hits = [_hit_from(h) for h in fixture["hits"]]
     candidates = [reports.CatalogEntry(**c) for c in fixture["candidates"]]
     orient = fixture["orient"]
@@ -59,7 +61,10 @@ def main() -> None:
     print(f"replaying against report={report.name!r}, {len(hits)} hits, fixture={fixture_path.name}")
 
     print("Step 4: write (real LLM call)...")
-    written, title, sections = pipeline.run_write(article, orient, sponsor, report, evidence, logger)
+    written, title, sections, evidence_citations = pipeline.run_write(article, orient, sponsor, report, evidence, logger)
+
+    print("Step 4b: revise for SEO/readability (real LLM call)...")
+    title, sections, evidence_citations = pipeline.run_revise(title, sections, evidence_citations, report, logger)
 
     print(f"\nTITLE: {title}\n")
     for s in sections:
@@ -67,6 +72,9 @@ def main() -> None:
         for p in s["paragraphs"]:
             print(p[:200] + ("..." if len(p) > 200 else ""))
         print()
+    print(f"evidence citations: {len(evidence_citations)}")
+    for c in evidence_citations:
+        print(f"  {c['id']}: {c['paragraph'][:100]}...")
 
     if not do_finalize:
         return
@@ -75,6 +83,7 @@ def main() -> None:
     result = pipeline.run_finalize(
         article, sponsor, report, candidates, orient, selection, hits,
         title, sections, evidence, fixture["original_filename"], logger,
+        evidence_citations=evidence_citations,
     )
     passed = sum(c.passed for c in result.checks)
     print(f"\nSOP checks: {passed}/{len(result.checks)} passed")

@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from urllib.parse import urlparse
 
 from ddgs import DDGS
@@ -37,6 +38,7 @@ _BLOCKED_HOSTS = (
     "custommarketinsights.com", "marketdigits.com", "statsmarketresearch.com", "coherentsolutions.com",
     "valuemarketresearch.com", "marketgrowthreports.com", "businessresearchinsights.com",
     "researchnreports.com", "marketinsightsreports.com", "globalgrowthinsights.com",
+    "emergenresearch.com", "thebusinessresearchcompany.com",
     # Encyclopedia / dictionary / finance-explainer sites: they answer "what is X", never "what
     # happened in X lately" — a "Wealth - Meaning, Types…" page is not market evidence.
     "wikipedia.org", "grokipedia.com", "wallstreetmojo.com", "investopedia.com", "britannica.com",
@@ -47,24 +49,63 @@ _BLOCKED_HOSTS = (
 # event. Applied to text (background) hits only; news hits are dated articles about events and
 # don't need it. "Market Size, Share, Growth" is the report-PR SEO pattern itself (a page titled
 # exactly that is a rival firm's own report landing page even when its own domain isn't blocklisted
-# yet — found live on markwideresearch.com, techsciresearch.com, etc.).
+# yet — found live on markwideresearch.com, techsciresearch.com, etc.). Also catches product-roundup/listicle pages ("10 Best X Reviewed for 2026", "Top 10 Best X (2026 Review)", "32 Best X Tools") — a buying-guide comparison page, not a reported event, confirmed live: 7 of 19 kept hits for one run were exactly this pattern and all were still correctly rejected by SELECT, but they crowded out the real candidates and wasted the match budget.
 _DEFINITIONAL_TITLE_RE = re.compile(
     r"\b(meaning|definitions?|glossary)\b|\bwhat (is|are)\b|\bhow to\b|\b(guide|introduction|intro) to\b"
     r"|\bexplained\b|\bfor beginners\b|\b(types|examples|benefits|advantages) of\b|\bvs\.?\b"
     r"|\bmarket (size|share),?\s*(share,?\s*)?growth\b|\blist of\b|\b(news|articles?) (archive|index|hub)\b"
-    r"|^\s*[\w\s&]+\s(articles|news)\s*$",
+    r"|^\s*[\w\s&]+\s(articles|news)\s*$"
+    r"|\b(top|best)\s+\d+\b|\b\d+\+?\s+(best|tools|apps|platforms|solutions)\b|\(\d{4}\s*review\)",
     re.IGNORECASE,
 )
+
+# A vendor's own homepage, login page, or product-marketing page — not a reported event. Found
+# live once key-player-name queries became common (LLM-generated queries lean on real company
+# names much more than the old fixed templates did): a hit naming a key player plus a generic
+# category word was being kept even when the page was just that company's own "Sign in to Zoho
+# CRM" or "Zoho | Cloud Software Suite for Businesses" — true, on-topic, and utterly useless as a
+# citable fact. Applied only to non-news hits; a dated news article's title legitimately mentioning
+# "sign in" or similar would be unusual, but non-news (background) hits are exactly where a
+# search engine surfaces a brand's own site for a query built around that brand's name.
+_VENDOR_PAGE_TITLE_RE = re.compile(
+    r"\bsign(ing)?[\s-]?in\b|\blog[\s-]?in\b|\bcreate (an |your )?account\b"
+    r"|^\s*[\w\s&.'-]+\s[|–-]\s*(cloud|software|platform|suite|solutions?)\b",
+    re.IGNORECASE,
+)
+
+_ADULT_TITLE_RE = re.compile(r"\b(porn\w*|xxx|nsfw|hentai)\b", re.IGNORECASE)
+_ADULT_HOST_TOKENS = frozenset({
+    "porn", "xxx", "xnxx", "xhamster", "xvideos", "hentai", "redtube", "youporn",
+    "brazzers", "pornhub", "sexvid", "anysex", "helloporn", "hqporner", "pussyspace",
+})
+_ADULT_TLDS = frozenset({"xxx", "porn", "sex", "adult"})
+
+
+def _is_adult(hit) -> bool:
+    # Bare "sex"/"sexual" is deliberately not matched: legitimate coverage (e.g. CMI's
+    # Sexual Wellness market) must not be filtered.
+    labels = (hit.host or "").split(".")
+    if labels and labels[-1] in _ADULT_TLDS:
+        return True
+    if any(tok in label for label in labels for tok in _ADULT_HOST_TOKENS):
+        return True
+    return bool(_ADULT_TITLE_RE.search(hit.title or ""))
+
 
 _STOPWORDS = frozenset({
     "market", "markets", "global", "industry", "the", "and", "of", "for", "by", "in", "on", "a", "an",
     "to", "with", "based", "services", "service", "solutions", "solution", "systems", "system", "other",
 })
 
-# "Ongoing trend" evidence must be genuinely current, not merely "not ancient" — a 2-year window
-# let through anything short of actually stale. Only d.news() hits carry a real date at all (see
-# SearchHit.is_news), so this cutoff only ever applies to those; d.text() hits have no date field
-# in ddgs's response at all and are handled separately as background-only, never trend evidence.
+# Deliberate, strict, deterministic policy: DDGS NEWS evidence must be at most 14 days
+# old to ever be presented as a "recent development" fact. Enforced entirely here, before
+# the SELECT call ever sees the hit, so no LLM is ever asked to judge whether a date
+# counts as fresh. The underlying search engines sometimes report coarse, ambiguous
+# relative ages (e.g. "2 weeks ago" can mean anywhere from ~10-20 days in practice), which
+# can occasionally cause a hit that is actually still fresh to be dropped at this boundary —
+# that is an accepted tradeoff: silently admitting a stale fact into a published blog post
+# is a worse failure than discarding one borderline-fresh search hit out of dozens collected
+# per run.
 _MAX_NEWS_AGE = timedelta(days=14)
 _PER_QUERY = 8
 
@@ -85,8 +126,10 @@ _PER_QUERY = 8
 # grokipedia and wikipedia were later cut as well, despite their ~100% success rate: they are
 # encyclopedia TITLE lookups (limit=1), so a query like "wealth management platform …" returns the
 # dictionary-style "Wealth" entry — reliable, but never evidence of a market development.
+# startpage was cut as well: bot-challenged (0 results on 16/16 calls in a 2026-10-13 test),
+# so it added only latency.
 _NEWS_BACKENDS = "bing,yahoo"
-_TEXT_BACKENDS = "yahoo,startpage"
+_TEXT_BACKENDS = "yahoo"
 
 # Search providers throttle rapid-fire bursts from one IP (we watched DDG stall every
 # query after several runs in quick succession, and logs show Brave 429-ing and DuckDuckGo's
@@ -151,19 +194,26 @@ def _snippet_date(snippet: str) -> datetime | None:
 def _news(d: DDGS, query: str) -> list[SearchHit]:
     # timelimit="m": ask the engines for the past month. Without it the event-style queries return
     # relevance-ranked news from any time (46 of 48 hits in one live test were months old and were
-    # then discarded by the 14-day cutoff), so the per-query slots were spent on stale items.
-    # The engines only loosely honor it, which is why the strict 14-day filter still runs after.
+    # then discarded by the 21-day cutoff), so the per-query slots were spent on stale items.
+    # The engines only loosely honor it, which is why the strict 21-day filter still runs after.
     return [
         SearchHit(r["title"], r.get("body", ""), r["url"], r.get("source", ""), _parse_date(r.get("date")), is_news=True)
         for r in d.news(query, max_results=_PER_QUERY, backend=_NEWS_BACKENDS, timelimit="m")
     ]
 
 
-def _text(d: DDGS, query: str) -> list[SearchHit]:
-    return [
+def _text(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[SearchHit]:
+    hits = [
         SearchHit(r["title"], r.get("body", ""), r["href"], "", _snippet_date(r.get("body", "")), is_news=False)
         for r in d.text(query, max_results=_PER_QUERY, backend=_TEXT_BACKENDS)
     ]
+    query_tokens = _content_tokens(query)
+    if hits and query_tokens and not any(
+        query_tokens & _content_tokens(f"{hit.title} {hit.snippet}") for hit in hits
+    ):
+        logger.warning(f"[search] text {query!r}: engine returned {len(hits)} result(s) unrelated to the query — batch discarded")
+        return []
+    return hits
 
 
 def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list[SearchHit]:
@@ -196,7 +246,7 @@ def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list
 def _safe(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[SearchHit]:
     news = _attempt(_news, d, query, "news", logger)
     time.sleep(_INTRA_QUERY_DELAY_S + random.uniform(0, 0.6))
-    text = _attempt(_text, d, query, "text", logger)
+    text = _attempt(lambda d, q: _text(d, q, logger), d, query, "text", logger)
     logger.info(f"[search] query {query!r}: {len(news)} news + {len(text)} text")
     return news + text
 
@@ -230,28 +280,86 @@ def gate_terms(phrases: list[str]) -> tuple[set[str], list[str]]:
     return tokens, full
 
 
-def _min_token_overlap(tokens: set[str]) -> int:
-    """How many gate tokens a hit must share to pass, when there's no exact-phrase match.
-    A flat "any 2" was exploitable: a market name made of individually-common words (e.g.
-    "Digital Marketing Software" -> digital/marketing/software) let completely off-topic hits
-    (a marketing AGENCY opening an office, a freelancing how-to guide) pass just by sharing
-    "digital" + "marketing" with the gate, never mentioning "software" at all — zero actual
-    connection to the confirmed market as an industry. Requiring ALL of the market's own content
-    words (not merely most of them) makes a token-only match roughly as selective as the exact
-    phrase it's standing in for; a market name with just one content word has nothing else to
-    require, so the floor of 2 only ever binds there, not for real multi-word names."""
-    return max(2, len(tokens))
+# Category words real coverage swaps for the market name's head noun ("software" ->
+# "platform", "martech", "agentic", …). A hit naming any of these still names the same kind
+# of thing, so they count as the head matching.
+_TECH_HEAD_SYNONYMS = frozenset({
+    "software", "platform", "platforms", "saas", "app", "apps", "application",
+    "applications", "tool", "tools", "technology", "technologies", "tech",
+    "martech", "adtech", "cloud", "automation", "agentic",
+})
+
+# A market-name modifier seen in this share of catalog keywords or more is too common to
+# identify one market, so the gate doesn't require it. Kept at 0.5%: at 1% "digital"
+# (71 of 9,564 catalog names, 0.74%) counted as specific and became required, which
+# dropped real market news phrased as e.g. "agentic marketing" or "marketing platform".
+_GENERIC_DF_THRESHOLD = 0.005
+
+
+def _ordered_market_tokens(phrase: str) -> list[str]:
+    words = re.findall(r"[a-z0-9]+", phrase.lower())
+    while words and words[0] == "global":
+        words.pop(0)
+    while words and words[-1] in ("market", "markets"):
+        words.pop()
+    return [w for w in words if len(w) > 2 and w not in _STOPWORDS]
+
+
+@lru_cache(maxsize=1)
+def _catalog_token_freq() -> dict[str, float]:
+    """Share of catalog report keywords containing each word. A market-name word found across
+    many catalog keywords ("management", "digital") can't discriminate one market from another,
+    so the gate doesn't require it; a rare word ("propionate", "tourette") is the market's
+    actual identity and is always required."""
+    import reports
+    entries = reports.catalog()
+    if not entries:
+        return {}
+    df: dict[str, int] = {}
+    for e in entries:
+        for w in {w for w in re.findall(r"[a-z0-9]+", (e.keyword or "").lower())
+                  if len(w) > 2 and w not in _STOPWORDS}:
+            df[w] = df.get(w, 0) + 1
+    return {w: c / len(entries) for w, c in df.items()}
+
+
+def _gate_for_phrase(phrase: str, freq: dict[str, float]) -> tuple[str, list[str], set[str], list[str]] | None:
+    """(head, required, generic, non_head) for one market phrase. English noun phrases put the
+    head noun last ("digital marketing SOFTWARE"); the modifiers before it are required only
+    when rare enough in the catalog to actually identify this market."""
+    toks = _ordered_market_tokens(phrase)
+    if not toks:
+        return None
+    head, non_head = toks[-1], toks[:-1]
+    generic = {t for t in non_head if freq.get(t, 0.0) >= _GENERIC_DF_THRESHOLD}
+    required = [t for t in non_head if t not in generic] or list(non_head)
+    return head, required, generic, non_head
+
+
+def _head_matched(head: str, hit_tokens: set[str]) -> bool:
+    if head in hit_tokens:
+        return True
+    return head in _TECH_HEAD_SYNONYMS and bool(_TECH_HEAD_SYNONYMS & hit_tokens)
+
+
+def _player_patterns(key_players: list[str]) -> list[tuple[str, re.Pattern]]:
+    return [(p, re.compile(r"\b" + re.escape(p) + r"\b", re.IGNORECASE)) for p in key_players if p]
 
 
 def filter_hits(
     hits: list[SearchHit], phrases: list[str], blocked_hosts: tuple[str, ...] = (),
     limit: int = 30, logger: logging.Logger = _null_logger,
+    key_players: list[str] = (),
 ) -> list[SearchHit]:
     """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market."""
     tokens, full_phrases = gate_terms(phrases)
-    min_overlap = _min_token_overlap(tokens)
-    logger.info(f"[filter] gate tokens ({len(tokens)}): {sorted(tokens)} (min overlap required: {min_overlap})")
+    freq = _catalog_token_freq()
+    gates = [(p, g) for p in phrases if (g := _gate_for_phrase(p, freq)) is not None]
+    for p, (head, required, generic, _) in gates:
+        logger.info(f"[filter] gate {p!r}: head={head!r} required={required} generic={sorted(generic)}")
     logger.info(f"[filter] gate phrases ({len(full_phrases)}): {full_phrases}")
+    logger.info(f"[filter] key players ({len(key_players)}): {list(key_players)}")
+    player_res = _player_patterns(list(key_players))
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
     blocked = _BLOCKED_HOSTS + tuple(h.lower() for h in blocked_hosts)
 
@@ -259,6 +367,10 @@ def filter_hits(
     scored: list[tuple[int, SearchHit]] = []
     kept = dropped = 0
     for hit in hits:
+        if _is_adult(hit):
+            dropped += 1
+            logger.info("[filter] DROP (adult content)")
+            continue
         if not hit.title or not hit.url:
             dropped += 1
             logger.info("[filter] DROP (missing title/url)")
@@ -271,7 +383,11 @@ def filter_hits(
             dropped += 1
             logger.info(f"[filter] DROP (definition/explainer page) [{hit.host}] {hit.title!r}")
             continue
-        if hit.date and hit.date < cutoff:
+        if not hit.is_news and _VENDOR_PAGE_TITLE_RE.search(hit.title):
+            dropped += 1
+            logger.info(f"[filter] DROP (vendor homepage/login page) [{hit.host}] {hit.title!r}")
+            continue
+        if hit.date and hit.is_news and hit.date < cutoff:
             dropped += 1
             logger.info(f"[filter] DROP (stale, {hit.date:%Y-%m-%d}): {hit.title!r}")
             continue
@@ -285,10 +401,31 @@ def filter_hits(
         text = f"{hit.title} {hit.snippet}".lower()
         matched_tokens = tokens & _content_tokens(text)
         matched_phrase = next((p for p in full_phrases if p in text), None)
-        if matched_tokens and len(matched_tokens) >= min_overlap or matched_phrase:
+        hit_tokens = _content_tokens(text)
+        token_ok = any(
+            _head_matched(head, hit_tokens) and all(t in hit_tokens for t in required)
+            for _, (head, required, _, _) in gates
+        )
+        named_player = next((p for p, rx in player_res if rx.search(text)), None)
+        # A key-player name plus a generic category word is too weak a bar on its own — it is
+        # exactly the shape of that company's OWN homepage/product page ("Zoho | Cloud Software
+        # Suite", "Sign in to Zoho CRM"), true and on-topic but not a reported event or citable
+        # fact. Found live once LLM-generated queries started leaning on real company names much
+        # more than the old fixed templates did. Require the hit to also be a dated NEWS result —
+        # a background (undated) page naming a vendor is its own marketing material far more often
+        # than it is a substantive third-party fact about that vendor.
+        player_ok = hit.is_news and named_player is not None and any(
+            any(t in hit_tokens for t in ([head] if not non_head else non_head))
+            for _, (head, _, _, non_head) in gates
+        )
+        rules = "|".join(
+            r for ok, r in ((matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player")) if ok
+        )
+        if rules:
             kept += 1
             logger.info(
-                f"[filter] KEEP (tokens={sorted(matched_tokens)}, phrase={matched_phrase!r}) "
+                f"[filter] KEEP (rule={rules}, tokens={sorted(matched_tokens)}, phrase={matched_phrase!r}"
+                + (f", player={named_player!r}" if player_ok else "") + f") "
                 f"[{hit.host}] {hit.title!r}"
             )
             scored.append((len(matched_tokens), hit))

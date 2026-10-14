@@ -12,6 +12,7 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from config import CMI_SITE, DB_URL
+import freshness
 
 
 _null_logger = logging.getLogger("revamp.null")
@@ -291,6 +292,11 @@ def fetch_live_page(url: str, logger: logging.Logger = _null_logger) -> str:
     except Exception as e:
         raise LiveFetchError(f"trafilatura extraction failed for {url}: {e!r}") from e
     text = _strip_stale_faq(extracted)
+    text, removed = freshness.strip_stale_developments(text)
+    if removed:
+        logger.info(f"[reports] dropped {len(removed)} stale dated development(s) older than {freshness.STALE_AFTER.days} days")
+        for line in removed:
+            logger.info(f"[reports]   stale: {line[:160]}")
     if len(text) < _MIN_LIVE_CHARS:
         raise LiveFetchError(f"live page at {url} yielded only {len(text)} chars of text (minimum {_MIN_LIVE_CHARS})")
     return text
@@ -327,3 +333,89 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
         sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
         segment_terms=_segment_terms(segmentation),
     )
+
+
+_PLAYER_SUFFIXES = frozenset({
+    "inc", "ltd", "limited", "llc", "plc", "sa", "s.a", "s.a.", "ag", "nv",
+    "n.v", "n.v.", "gmbh", "co", "corp", "corporation", "company",
+    "holdings", "group", "headquarters",
+})
+
+_KEY_PLAYERS_HEADINGS = ("key players insights", "key players")
+
+
+def _clean_player_name(name: str) -> str:
+    words = name.strip().split()
+    while words and words[-1].lower().rstrip(".,") in _PLAYER_SUFFIXES:
+        words.pop()
+    return " ".join(words).rstrip(".,").strip()
+
+
+_BULLET_RE = re.compile(r"^\s*-\s+")
+_COMPANIES_COVERED = "companies covered:"
+
+
+def _clean_player_final(raw: str) -> str:
+    cleaned = _clean_player_name(raw)
+    if cleaned.lower().endswith(".com"):
+        cleaned = cleaned[:-4].rstrip(".,").strip()
+    return cleaned
+
+
+def key_players(report: Report) -> list[str]:
+    """Company names from the summary table's 'Companies covered' cell plus the Key Players heading list."""
+    lines = (report.sections or {}).get("live_report_page", "").splitlines()
+    raw: list[str] = []
+    for ln in lines:
+        if _COMPANIES_COVERED in ln.lower():
+            idx = ln.lower().find(_COMPANIES_COVERED)
+            bar = ln.find("|", idx)
+            cell = ln[bar + 1:] if bar != -1 else ln[idx + len(_COMPANIES_COVERED):]
+            end = cell.find("|")
+            cell = cell[:end] if end != -1 else cell
+            for piece in cell.split(","):
+                piece = piece.strip()
+                if piece.lower().startswith("and "):
+                    piece = piece[4:].strip()
+                if piece:
+                    raw.append(piece)
+            break
+    start = None
+    for i, ln in enumerate(lines):
+        stripped = ln.strip()
+        if stripped.startswith("- "):
+            stripped = stripped[2:].strip()
+        if stripped.lower() in _KEY_PLAYERS_HEADINGS:
+            start = i
+            break
+    if start is not None:
+        j = start + 1
+        skipped = 0
+        while j < len(lines) and skipped < 2:
+            s = lines[j].strip()
+            if not s:
+                j += 1
+                continue
+            if _BULLET_RE.match(lines[j]):
+                break
+            if len(s) >= 60:
+                break
+            skipped += 1
+            j += 1
+        while j < len(lines):
+            if not lines[j].strip():
+                j += 1
+                continue
+            m = _BULLET_RE.match(lines[j])
+            if not m:
+                break
+            raw.append(lines[j][m.end():])
+            j += 1
+    names: list[str] = []
+    seen: set[str] = set()
+    for piece in raw:
+        cleaned = _clean_player_final(piece)
+        if len(cleaned) >= 3 and cleaned.lower() not in seen:
+            seen.add(cleaned.lower())
+            names.append(cleaned)
+    return names

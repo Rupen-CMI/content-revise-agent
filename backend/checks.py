@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
+from datetime import date
 
+import freshness
 from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
 
 _FIGURE = re.compile(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(%|percent|bn\b|billion|mn\b|million|tn\b|trillion)", re.IGNORECASE)
@@ -57,7 +59,18 @@ def _fact_signature_tokens(fact: str) -> set[str]:
         if len(words) >= 2:
             sigs.add(" ".join(words[:2]).lower())
     numbers = set(re.findall(r"\d[\d.,]*%?", fact))
-    return sigs | numbers
+    sigs |= numbers
+    if sigs:
+        return sigs
+    # Fallback for a fact with no proper noun and no number at all (e.g. a plain trend statement
+    # like "advisors and record keepers are pushing forward convergence of wealth and retirement")
+    # — found live: such a fact can be genuinely, clearly used (even near-verbatim) in the draft,
+    # but with an empty signature set the check always reported it as unused regardless of reality,
+    # since "bool(sig) and ..." short-circuits to False whenever sig is empty. Fall back to
+    # content-word bigrams (two consecutive non-generic words) — distinctive enough to avoid
+    # matching unrelated sentences, unlike a single common word, while not requiring a proper noun.
+    words = [w for w in re.findall(r"[a-zA-Z']+", fact.lower()) if w not in _FACT_GENERIC_CAPS and len(w) > 2]
+    return {f"{a} {b}" for a, b in zip(words, words[1:])}
 
 _SOP_TAGS = (
     ("trends", "Market trends section"),
@@ -119,26 +132,75 @@ def _longest_shared_run(a: str, b: str, n: int = 8) -> int:
     return sum(1 for i in range(len(words_a) - n + 1) if tuple(words_a[i:i + n]) in grams_b)
 
 
-def _verbatim_leaks(paragraphs: list[str], original_body: str, n: int = 10) -> list[str]:
-    """Flags any non-sponsor-slot paragraph that shares a long verbatim word-run with the
-    ORIGINAL ARTICLE AS A WHOLE — catches the model copying some other original sentence
-    through unchanged, not just the designated sponsor paragraph."""
-    orig_words = re.findall(r"\w+", original_body.lower())
-    orig_grams = {tuple(orig_words[i:i + n]) for i in range(len(orig_words) - n + 1)}
-    leaks = []
+def _verbatim_overlap(
+    paragraphs: list[str], sources: list[tuple[str, str]], report_name: str = "", n: int = 10,
+) -> tuple[float, list[str]]:
+    """Originality check against one or more source texts (the original guest article, the
+    CMI report text). Returns (overlap_pct, example_snippets): overlap_pct is the percentage
+    of draft words (excluding the sponsor placeholder) that fall inside some run of >= n
+    consecutive words also found verbatim in at least one source. A reused NUMBER or a short
+    shared phrase does not trip this — numeric facts from the CMI report are allowed reuse —
+    only a long run of identical consecutive words does, which is what "copied a line" (not
+    "reused a figure") actually looks like. report_name is stripped from both the draft
+    paragraph and the source text before comparing: the report's own name is REQUIRED to
+    appear verbatim as the CMI_LINK anchor text (see the "CMI link anchor names the confirmed
+    report" check above), so that one unavoidable, intentional overlap must not count here."""
+
+    def _strip_name(text: str) -> str:
+        return re.sub(re.escape(report_name), " ", text, flags=re.IGNORECASE) if report_name else text
+
+    source_grams: dict[str, set[tuple[str, ...]]] = {}
+    for label, text in sources:
+        words = re.findall(r"\w+", _strip_name(text).lower())
+        source_grams[label] = {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+    total_words = 0
+    covered_words = 0
+    examples: list[str] = []
     for p in paragraphs:
         if p.strip() == SPONSOR_TOKEN:
             continue
-        words = re.findall(r"\w+", p.lower())
-        if any(tuple(words[i:i + n]) in orig_grams for i in range(len(words) - n + 1)):
-            leaks.append(p[:80] + ("…" if len(p) > 80 else ""))
-    return leaks
+        words = re.findall(r"\w+", _strip_name(p).lower())
+        total_words += len(words)
+        covered = [False] * len(words)
+        matched_labels: set[str] = set()
+        for i in range(len(words) - n + 1):
+            gram = tuple(words[i:i + n])
+            for label, grams in source_grams.items():
+                if gram in grams:
+                    for k in range(i, i + n):
+                        covered[k] = True
+                    matched_labels.add(label)
+        covered_words += sum(covered)
+        if matched_labels and len(examples) < 5:
+            examples.append(f"[{', '.join(sorted(matched_labels))}] " + p[:100] + ("…" if len(p) > 100 else ""))
+
+    overlap_pct = (covered_words / total_words * 100) if total_words else 0.0
+    return overlap_pct, examples
+
+
+def _stale_event_mentions(sections: list[dict], today: date | None = None) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for section in sections:
+        for paragraph in section.get("paragraphs", []):
+            if paragraph.strip() == SPONSOR_TOKEN:
+                continue
+            for m in freshness.INLINE_EVENT_DATE_RE.finditer(paragraph):
+                d = freshness.event_date(m)
+                if d is not None and freshness.is_stale(d, today):
+                    s = f"{m.group(0)} ({section.get('heading') or 'intro'})"
+                    if s not in seen:
+                        seen.add(s)
+                        out.append(s)
+    return out
 
 
 def run_checks(
     title: str, sections: list[dict], source_text: str, sponsor_brand_terms: list[str],
     sponsor_text: str = "", original_body: str = "", report_name: str = "",
-    selection: dict | None = None, hits: list | None = None,
+    selection: dict | None = None, hits: list | None = None, report_text: str = "",
+    primary_keyword: str = "", secondary_keywords: list[str] = (),
 ) -> list[CheckResult]:
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
@@ -248,6 +310,15 @@ def run_checks(
                 "" if not unused else f"selected but not found in the draft: {', '.join(unused)}",
             ))
 
+    # Stale report developments are stripped before writing, so this catches a stale date that
+    # still reached the draft (e.g. from the original guest article or model memory).
+    stale = _stale_event_mentions(sections)
+    results.append(CheckResult(
+        "Dated events cited are from the last 12 months",
+        not stale,
+        "stale: " + "; ".join(stale) if stale else "",
+    ))
+
     tags = [t for s in sections for t in s["sop"]]
     for tag, label in _SOP_TAGS:
         results.append(CheckResult(label, tag in tags))
@@ -292,6 +363,47 @@ def run_checks(
             f"score {score:.0f}/100 (below 30 = very difficult to read; aim for 40-60)",
         ))
 
+    # Soft checks: verify the SEO keyword plan (see pipeline._seo_keyword_plan) actually landed at
+    # roughly the instructed rates, without failing the run — a miss here is a tuning signal for
+    # the prompt, not a defect worth blocking a publish over. Counts are case-insensitive substring
+    # matches, same approach as _longest_shared_run elsewhere in this file; a keyword is a short,
+    # specific phrase so substring counting doesn't have the "ping" inside "shaping" false-positive
+    # risk that plain word-level matching caused for single generic words elsewhere.
+    if primary_keyword and total:
+        # WRITE_USER deliberately tells the model NOT to chase a specific count for the primary
+        # keyword (counting while writing is exactly what produced stuffed-looking paragraphs in
+        # testing) — so this is a loose sanity range, not a target: it only flags the two real
+        # failure shapes, near-total absence (the market name barely appears at all) or outright
+        # stuffing (several uses crammed into every paragraph), not anywhere in between. The floor
+        # is a raw count, not a percentage: across repeated real runs on the same ~1,400-2,100 word
+        # article, natural (correctly full-phrase, non-stuffed) usage consistently landed at only
+        # 2-7 uses regardless of the article's exact length, i.e. 0.1-0.4% — a percentage floor set
+        # from one early sample proved tighter than real natural output ever reliably hit.
+        primary_count = full.lower().count(primary_keyword.lower())
+        primary_pct = primary_count / total * 100
+        results.append(CheckResult(
+            "Primary keyword present, not stuffed (soft)",
+            3 <= primary_count and primary_pct <= 3.0,
+            f"{primary_keyword!r} used {primary_count}x ({primary_pct:.1f}% of {total} words)",
+        ))
+
+    if secondary_keywords:
+        # WRITE_USER deliberately tells the model each secondary keyword is only used where it
+        # fits naturally — using well under the full list is an expected, correct outcome, not a
+        # miss. This check isn't "did every keyword get used" (that would reward forcing them in),
+        # it's "did the category get a genuine effort at all" — a floor catching the case where
+        # almost none landed, not a ceiling demanding all of them.
+        secondary_counts = {kw: full.lower().count(kw.lower()) for kw in secondary_keywords}
+        unused = [kw for kw, c in secondary_counts.items() if c == 0]
+        used = len(secondary_keywords) - len(unused)
+        min_expected = max(1, len(secondary_keywords) // 3)
+        results.append(CheckResult(
+            f"Secondary keywords: genuine effort made ({used}/{len(secondary_keywords)}, soft)",
+            used >= min_expected,
+            f"used {used} of {len(secondary_keywords)} (expected at least {min_expected}); "
+            f"not found: {', '.join(unused)}" if unused else f"used {used} of {len(secondary_keywords)}",
+        ))
+
     known = _numbers(source_text)
     unverified = sorted({m.group(0) for m in _FIGURE.finditer(full) if float(m.group(1).replace(",", "")) not in known})
     results.append(CheckResult(
@@ -308,12 +420,18 @@ def run_checks(
         ", ".join(leaked),
     ))
 
+    sources = []
     if original_body:
-        verbatim_leaks = _verbatim_leaks(paragraphs, original_body)
+        sources.append(("original article", original_body))
+    if report_text:
+        sources.append(("CMI report", report_text))
+    if sources:
+        overlap_pct, overlap_examples = _verbatim_overlap(paragraphs, sources, report_name=report_name)
         results.append(CheckResult(
-            "No other original sentences copied through verbatim",
-            not verbatim_leaks,
-            "found in: " + " | ".join(verbatim_leaks) if verbatim_leaks else "",
+            "Verbatim overlap with source material is below 5%",
+            overlap_pct <= 5.0,
+            f"{overlap_pct:.1f}% of draft words fall in a run of >= 10 words copied from a source"
+            + (" — e.g. " + " | ".join(overlap_examples) if overlap_examples else ""),
         ))
 
     return results
