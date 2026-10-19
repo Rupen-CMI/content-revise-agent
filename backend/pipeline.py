@@ -1484,7 +1484,7 @@ def enforce_report_link(
     return title, new_sections, new_citations
 
 
-_DISABLE_CALL_4 = False
+_DISABLE_CALL_4 = True
 
 
 def run_revise(
