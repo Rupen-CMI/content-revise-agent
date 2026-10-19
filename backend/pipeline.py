@@ -30,6 +30,38 @@ _BODY_CHARS = 12000
 
 Segment = tuple[str, str | None]  # (text, hyperlink url or None)
 
+# A retained paragraph that carries no sentence punctuation at all and is only a handful of words is
+# a BARE LINKED PHRASE (e.g. "Customer data management systems") rather than prose: it has to be
+# woven into one of the writer's own sentences instead of landing alone on its own line. A real
+# retained sentence runs well past this bound.
+_BARE_SPONSOR_MAX_WORDS = 8
+_SENTENCE_END_RE = re.compile(r"[.!?][\"'”’)\]]*(?:\s|$)")
+_WORD_RE = re.compile(r"\b\w[\w'-]*\b")
+
+
+def sponsor_mode(text: str) -> str:
+    """Deterministic rendering/placement mode for the retained paragraph: 'phrase' when it has no
+    sentence-ending punctuation (., ! or ? possibly followed by a closing quote/bracket) and at most
+    _BARE_SPONSOR_MAX_WORDS words, otherwise 'prose'."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return "prose"
+    if _SENTENCE_END_RE.search(stripped):
+        return "prose"
+    return "phrase" if len(_WORD_RE.findall(stripped)) <= _BARE_SPONSOR_MAX_WORDS else "prose"
+
+
+def _word_count(text: str) -> int:
+    """Words a paragraph is worth when the placeholder is inline: its own words, with the token
+    itself never counted as a word."""
+    return len(_WORD_RE.findall(text.replace(prompts.SPONSOR_TOKEN, " ")))
+
+
+def _sponsor_blank(text: str) -> str:
+    """The paragraph with any placeholder removed — the token is not real writing, so it must never
+    contribute words, keyword matches, figures or verbatim overlap."""
+    return text.replace(prompts.SPONSOR_TOKEN, " ")
+
 
 class PipelineError(RuntimeError):
     pass
@@ -51,16 +83,35 @@ class RevampResult:
 
     def segments(self, paragraph: str) -> list[Segment]:
         """Expand placeholders: the retained paragraph with its original links, and the CMI report link."""
-        if paragraph.strip() == prompts.SPONSOR_TOKEN:
-            return sponsor_segments(self.sponsor)
-        out: list[Segment] = []
-        pos = 0
-        for m in re.finditer(prompts.CMI_LINK_PATTERN, paragraph):
-            out.append((paragraph[pos:m.start()], None))
-            out.append((m.group(1), self.report.url))
-            pos = m.end()
-        out.append((paragraph[pos:], None))
-        return [s for s in out if s[0]]
+        return expand_segments(paragraph, self.sponsor, self.report.url)
+
+
+def _cmi_link_segments(text: str, report_url: str | None) -> list[Segment]:
+    out: list[Segment] = []
+    pos = 0
+    for m in re.finditer(prompts.CMI_LINK_PATTERN, text):
+        out.append((text[pos:m.start()], None))
+        out.append((m.group(1), report_url))
+        pos = m.end()
+    out.append((text[pos:], None))
+    return [s for s in out if s[0]]
+
+
+def expand_segments(paragraph: str, sponsor: Paragraph, report_url: str | None) -> list[Segment]:
+    """Expand a written paragraph into (text, url) segments: the sponsor placeholder ANYWHERE in the
+    paragraph becomes the retained text with its original links (exact characters, original
+    capitalisation), and each [[CMI_LINK:...]] becomes the report URL. A placeholder that is the
+    whole paragraph still renders exactly as it did before inline placement was supported."""
+    if paragraph.strip() == prompts.SPONSOR_TOKEN:
+        return sponsor_segments(sponsor)
+    out: list[Segment] = []
+    parts = paragraph.split(prompts.SPONSOR_TOKEN)
+    for i, part in enumerate(parts):
+        if part:
+            out.extend(_cmi_link_segments(part, report_url))
+        if i < len(parts) - 1:
+            out.extend(sponsor_segments(sponsor))
+    return [s for s in out if s[0]]
 
 
 def sponsor_segments(sponsor: Paragraph) -> list[Segment]:
@@ -589,46 +640,133 @@ def _link_placement_problems(sections: list[dict], sponsor_text: str, market_nam
     return problems
 
 
-_BARE_SPONSOR_MAX_WORDS = 6  # a real retained sentence runs well past this; a bare link anchor doesn't
+def _sponsor_intro(sections: list[dict]) -> dict | None:
+    """The unheaded intro section (the first section the writer produces)."""
+    return next((s for s in sections if not (s.get("heading") or "").strip()), None)
 
 
-def _bare_sponsor_naming_problem(sponsor_text: str, sections: list[dict]) -> str | None:
-    """The sponsor paragraph can be just a short linked phrase with no sentence of its own (e.g.
-    "Customer data management systems") instead of real prose — WRITE_USER has an explicit hard
-    requirement for this case (paragraph 1 must name the phrase's own content words before the
-    placeholder), but that is a prompt instruction, not something enforced anywhere, and was found
-    live to be missed even when the exact rule text reached the model verbatim. This gives it the
-    same deterministic backstop every other hard requirement in this function already has."""
-    words = sponsor_text.split()
-    if not (1 <= len(words) <= _BARE_SPONSOR_MAX_WORDS):
-        return None  # real prose, not a bare anchor — the ordinary lead-in rules already cover it
-    intro = next((s for s in sections if not s.get("heading")), None)
-    if not intro or not intro["paragraphs"]:
-        return None
-    lead_in = intro["paragraphs"][0]
-    # at least half the anchor's own content words must appear close together in the lead-in — not
-    # ALL of them, since the prompt itself allows "customer data" alone to stand in for "customer
-    # data management systems" as long as it's specific, not a vaguer stand-in word.
-    if not checks.phrase_partially_named(lead_in, sponsor_text):
+def _sponsor_location(sections: list[dict]) -> tuple[dict | None, int | None, str, str]:
+    """(intro section, index of the intro paragraph holding the placeholder, text before it, text
+    after it). The placeholder may be a paragraph of its own or sit inline in a writer's sentence."""
+    intro = _sponsor_intro(sections)
+    if intro is None:
+        return None, None, "", ""
+    for i, p in enumerate(intro["paragraphs"]):
+        if prompts.SPONSOR_TOKEN in p:
+            cut = p.index(prompts.SPONSOR_TOKEN)
+            return intro, i, p[:cut], p[cut + len(prompts.SPONSOR_TOKEN):]
+    return intro, None, "", ""
+
+
+def _sponsor_location_problem(sections: list[dict]) -> str | None:
+    """Missing or duplicated placeholder, or a placeholder outside the intro. This is exactly the
+    set of failures the deterministic fallback in run_write repairs."""
+    full = "\n".join(p for s in sections for p in s["paragraphs"])
+    count = full.count(prompts.SPONSOR_TOKEN)
+    if count != 1:
         return (
-            f"the retained paragraph is just a bare linked phrase (\"{sponsor_text}\") with no sentence of its own — "
-            "paragraph 1 (the lead-in) must contain a real sentence naming that same specific thing (its own key "
-            "words) BEFORE the placeholder, not a vaguer stand-in word like \"the data\" or \"the systems\" that "
-            "never actually names it"
+            f"the retained paragraph placeholder {prompts.SPONSOR_TOKEN} must appear exactly once in the whole "
+            f"article, completely unchanged — it appears {count} time(s)"
         )
-    # Naming the concept somewhere in paragraph 1 isn't enough on its own — the bare phrase still
-    # has to read as a grammatical continuation of paragraph 1's LAST sentence once substituted in
-    # on its own line, or it still lands as an isolated fragment even when the concept was named
-    # earlier in the same paragraph (found live: paragraph 1 named "customer data" mid-paragraph,
-    # then closed with an unrelated sentence, leaving the bare link stranded on its own anyway).
-    if not lead_in.rstrip().endswith(":"):
+    intro, pi, _, _ = _sponsor_location(sections)
+    if not intro or pi is None:
         return (
-            f"the retained paragraph is just a bare linked phrase (\"{sponsor_text}\") with no sentence of its own — "
-            "paragraph 1's LAST sentence must end with a direct grammatical lead-up into that phrase (ending in a "
-            "colon, e.g. \"...and it starts with getting a handle on your own:\") so the bare phrase reads as that "
-            "sentence's own continuation when it lands on its own line right after, not as an isolated fragment"
+            f"the retained paragraph placeholder {prompts.SPONSOR_TOKEN} must appear inside the unheaded intro "
+            "section (the first section), not outside it or in a headed section"
         )
     return None
+
+
+def _starts_sentence(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return True
+    return stripped[0].isupper() or stripped[0] in "\"'‘“([0123456789"
+
+
+def _sponsor_problems(sections: list[dict], sponsor_text: str) -> list[str]:
+    """Mode-aware placement rules for the retained paragraph's placeholder, phrased as retry
+    instructions. The placeholder must appear exactly once, inside the intro. A BARE PHRASE sponsor
+    has no sentence of its own, so it must sit inside one of the writer's sentences with real
+    writing on both sides; PROSE may be its own paragraph or sit between the writer's sentences,
+    but never mid-sentence. The substituted text itself is never to be written by the model."""
+    location_problem = _sponsor_location_problem(sections)
+    if location_problem:
+        return [location_problem]
+    intro, pi, before, after = _sponsor_location(sections)
+    mode = sponsor_mode(sponsor_text)
+    full = "\n".join(p for s in sections for p in s["paragraphs"])
+    problems: list[str] = []
+    if mode == "phrase":
+        before_words, after_words = _word_count(before), _word_count(after)
+        if before_words < 12 or after_words < 6:
+            problems.append(
+                f'the retained text is a bare linked phrase ("{sponsor_text}") with no sentence of its own, so the '
+                f"placeholder {prompts.SPONSOR_TOKEN} must sit INSIDE one of your own sentences in intro paragraph 2 — "
+                f"write at least 12 of your own words before it (currently {before_words}) and at least 6 after it "
+                f"(currently {after_words}) in that same paragraph, as a noun phrase the sentence grammatically needs. "
+                "Never put it alone on its own line, at the very start of the paragraph, or at its very end"
+            )
+        normalised = " ".join(sponsor_text.split()).lower()
+        if normalised and normalised in " ".join(full.split()).lower():
+            problems.append(
+                f'the retained phrase "{sponsor_text}" also appears written out in the article outside the placeholder — '
+                "never repeat or paraphrase it yourself anywhere; it is inserted automatically at the placeholder, "
+                "exactly as written"
+            )
+    else:
+        embedded = intro["paragraphs"][pi].strip() != prompts.SPONSOR_TOKEN
+        before_ok = not before.strip() or bool(re.search(r"[.!?][\"'”’)\]]*\s*$", before))
+        if embedded and not (before_ok and _starts_sentence(after)):
+            problems.append(
+                f"the retained paragraph placeholder {prompts.SPONSOR_TOKEN} sits mid-sentence — when it is not its "
+                "own paragraph it must sit BETWEEN your own sentences: the text before it must end with . ! ? (or the "
+                "placeholder must start the paragraph) and the text after it must start a new complete sentence"
+            )
+    return problems
+
+
+def _force_sponsor_placeholder(sections: list[dict]) -> list[dict]:
+    """Last-resort repair used when a draft still has no valid placement after the retry: strip any
+    placeholder occurrences and insert one as the intro's second paragraph (the old behaviour), so
+    the paying guest's backlink can never be lost."""
+    for s in sections:
+        cleaned = []
+        for p in s.get("paragraphs") or []:
+            if prompts.SPONSOR_TOKEN in p:
+                p = re.sub(r"[ \t]{2,}", " ", p.replace(prompts.SPONSOR_TOKEN, " ")).strip()
+            if p:
+                cleaned.append(p)
+        s["paragraphs"] = cleaned
+    if not sections:
+        sections.append({"heading": "", "sop": [], "paragraphs": [prompts.SPONSOR_TOKEN]})
+        return sections
+    intro = _sponsor_intro(sections) or sections[0]
+    intro["paragraphs"].insert(min(1, len(intro["paragraphs"])), prompts.SPONSOR_TOKEN)
+    return sections
+
+
+def _sponsor_rule(mode: str, sponsor_text: str) -> str:
+    """The short, mode-specific placement instruction injected into prompts.WRITE_USER. Every
+    illustrative example is generalised (no real market or product names)."""
+    if mode == "phrase":
+        return (
+            f'The retained text is a BARE LINKED PHRASE, not a paragraph: "{sponsor_text}". Write intro paragraph 2 '
+            f"as a paragraph of your own in which the placeholder {prompts.SPONSOR_TOKEN} appears exactly ONCE, "
+            "INSIDE one of your sentences, as a noun phrase that sentence grammatically needs, with your own words "
+            "before it and your own words after it in that same paragraph (illustrative shape only, not real "
+            'content: "...and that review starts with [[SPONSOR_PARAGRAPH]] a team already runs, because ..."). '
+            "The phrase is inserted exactly as written, including its capitalisation, so choose a sentence shape in "
+            "which it reads naturally. Never repeat or paraphrase the phrase yourself anywhere else in the article."
+        )
+    return (
+        "The retained text is PROSE (one or more whole sentences). Place the placeholder "
+        f"{prompts.SPONSOR_TOKEN} either as its own paragraph (paragraph 2 of the intro, the placeholder alone and "
+        "nothing else) or BETWEEN your own sentences inside intro paragraph 2 — never mid-sentence. If you embed it, "
+        "write a complete sentence before it and start a new complete sentence after it, so the substituted prose "
+        'reads as its own sentences in the flow (illustrative shape only: "Opening sentence. '
+        '[[SPONSOR_PARAGRAPH]] Closing sentence.").'
+    )
 
 
 def _segmentation_word_dropped_problem(sections: list[dict]) -> str | None:
@@ -708,13 +846,7 @@ def _write_problems(
         problems.append(f"the CMI_LINK anchor is {links[0]!r} but must be exactly {report.name!r}")
     else:
         problems.extend(_link_placement_problems(sections, sponsor_text, report.name))
-    if full.count(prompts.SPONSOR_TOKEN) != 1 or not any(p.strip() == prompts.SPONSOR_TOKEN for p in paragraphs):
-        problems.append(
-            f"the placeholder {prompts.SPONSOR_TOKEN} must be its own paragraph, exactly once (paragraph 2 of the intro)"
-        )
-    bare_sponsor_problem = _bare_sponsor_naming_problem(sponsor_text, sections)
-    if bare_sponsor_problem:
-        problems.append(bare_sponsor_problem)
+    problems.extend(_sponsor_problems(sections, sponsor_text))
     segmentation_word_problem = _segmentation_word_dropped_problem(sections)
     if segmentation_word_problem:
         problems.append(segmentation_word_problem)
@@ -733,9 +865,10 @@ def _write_problems(
             f"it cites events dated more than 12 months ago ({'; '.join(stale)}) — leave those events out entirely or "
             "describe the point without presenting an old event as recent"
         )
-    words = sum(len(p.split()) for p in paragraphs if p.strip() != prompts.SPONSOR_TOKEN)
-    # Soft target is 1,400-1,700; only a far miss is worth a retry.
-    if words > 1950 or words < 1200:
+    words = sum(_word_count(p) for p in paragraphs)
+    # Soft target is 1,400-1,700; only a clear miss is worth a retry (the floor sits just under the target because
+    # the evidence-backing rule needs room: a draft of ~1,200 words had the evidence but no space to develop it).
+    if words > 1950 or words < 1300:
         longest = sorted(sections, key=lambda s: -sum(len(p.split()) for p in s["paragraphs"]))[:4]
         problems.append(
             f"the length is {words} words but the target is 1,400-1,700"
@@ -773,7 +906,9 @@ def run_write(
     logger.info(f"[seo] secondary keywords ({len(secondary_kw)}): {secondary_kw}")
     secondary_kw_lines = _secondary_keyword_lines(report.name, secondary_kw, "use in")
     sponsor_words = len(re.findall(r"\b\w[\w'-]*\b", sponsor.text))
+    mode = sponsor_mode(sponsor.text)
     max_own_words = max(0, 1700 - sponsor_words)
+    logger.info(f"[write] sponsor mode: {mode} ({sponsor_words} word(s): {sponsor.text[:80]!r})")
     logger.info(f"[write] word budget: sponsor={sponsor_words}, own writing max={max_own_words}")
     user_prompt = prompts.WRITE_USER.format(
         sponsor_words=sponsor_words,
@@ -785,6 +920,7 @@ def run_write(
         original_body=body_text[:_BODY_CHARS],
         sponsor=sponsor.text,
         sponsor_token=prompts.SPONSOR_TOKEN,
+        sponsor_rule=_sponsor_rule(mode, sponsor.text),
         report_name=report.name,
         report_text=report_text,
         cmi_keywords=", ".join(prompts.CMI_KEYWORDS),
@@ -840,6 +976,14 @@ def run_write(
             "article again from scratch, in the same JSON shape, fixing exactly these problems while still meeting "
             "every other requirement above."
         )
+
+    # Deterministic last resort: whatever the model did, the paying guest's backlink must never be
+    # lost. If the placeholder is missing, duplicated, or outside the intro after the retry, insert
+    # it as its own paragraph at intro position 2 (the pre-inline-token behaviour) and carry on.
+    location_problem = _sponsor_location_problem(sections)
+    if location_problem:
+        logger.warning(f"[write] {location_problem} — inserting the placeholder as intro paragraph 2 so the link is not lost")
+        sections = _force_sponsor_placeholder(sections)
 
     # Only trust a self-reported citation if its paragraph text is a VERBATIM match against a
     # real paragraph in the draft — the model could misreport (summarize rather than quote, or
@@ -910,10 +1054,10 @@ def _keyword_stats(sections: list[dict], primary_kw: str, secondary_kws: list[st
     for s in sections:
         label = s["heading"] or "intro"
         for n, p in enumerate(s["paragraphs"], 1):
-            if p.strip() == prompts.SPONSOR_TOKEN:
+            if not _word_count(p):
                 continue
-            low = _plain(p).lower()
-            words += len(p.split())
+            low = _plain(_sponsor_blank(p)).lower()
+            words += _word_count(p)
             found = [
                 k for k in secondary_kws
                 if checks.secondary_keyword_in_paragraph(low, primary_kw, _keyword_suffix(k))
@@ -962,9 +1106,9 @@ def _unsupported_figures(sections: list[dict], source_text: str) -> list[tuple[s
     out = []
     for s in sections:
         for pn, p in enumerate(s["paragraphs"], 1):
-            if p.strip() == prompts.SPONSOR_TOKEN:
+            if not _word_count(p):
                 continue
-            for m in _FIGURE.finditer(p):
+            for m in _FIGURE.finditer(_sponsor_blank(p)):
                 if float(m.group(1).replace(",", "")) not in known:
                     out.append((s["heading"] or "intro", pn, m.group(0)))
     return out
@@ -984,9 +1128,9 @@ def _coverage_report(
         for pn, p in enumerate(s["paragraphs"], 1):
             # The intro is off limits: the report link lives there and must stay the first mention
             # of the market name, so no plain-text mention may be added ahead of it.
-            if p.strip() == prompts.SPONSOR_TOKEN or si == 0:
+            if not _word_count(p) or si == 0:
                 continue
-            low = _plain(p).lower()
+            low = _plain(_sponsor_blank(p)).lower()
             cands.append({
                 "key": (si, pn), "label": s["heading"] or "intro", "tags": s["sop"],
                 "has_secondary": any(checks.keyword_used(low, k) for k in secondary_names),
@@ -1062,6 +1206,12 @@ def enforce_report_link(
     name_re = re.compile(r"\s+".join(re.escape(w) for w in name.split()), re.IGNORECASE)
     token = f"[[CMI_LINK:{name}]]"
     sponsor_words = len(sponsor_text.split())
+    # An inline placeholder stands for the retained paragraph's real words at that point in the
+    # sentence, so the word offset must count it as sponsor_words, not as the one token word.
+    sponsor_extra = max(sponsor_words - 1, 0)
+
+    def _widened(text: str) -> int:
+        return len(text.split()) + sponsor_extra * text.count(prompts.SPONSOR_TOKEN)
 
     paras = [
         [re.sub(prompts.CMI_LINK_PATTERN, lambda m: m.group(1), p) for p in s["paragraphs"]]
@@ -1073,16 +1223,16 @@ def enforce_report_link(
     found_any = False
     for si, plist in enumerate(paras):
         for pi, p in enumerate(plist):
-            if p.strip() == prompts.SPONSOR_TOKEN:
+            if not _word_count(p):
                 words_before += sponsor_words
                 continue
             m = name_re.search(p)
             if m:
                 found_any = True
-                if words_before + len(p[:m.start()].split()) <= MAX_LINK_WORD_OFFSET:
+                if words_before + _widened(p[:m.start()]) <= MAX_LINK_WORD_OFFSET:
                     target = (si, pi, m)
                 break
-            words_before += len(p.split())
+            words_before += _widened(p)
         if found_any:
             break
 
@@ -1092,13 +1242,13 @@ def enforce_report_link(
         paras[si][pi] = paras[si][pi][:m.start()] + token + paras[si][pi][m.end():]
         how = "linked the first mention"
     else:
-        first = next((i for i, p in enumerate(paras[0]) if p.strip() != prompts.SPONSOR_TOKEN), None)
+        first = next((i for i, p in enumerate(paras[0]) if _word_count(p)), None)
         if first is None:
             return title, sections, evidence_citations
         sentence = f"Coherent Market Insights follows this space in its {token} research."
         p = paras[0][first]
         paras[0][first] = (
-            f"{sentence} {p}" if len(p.split()) > MAX_LINK_WORD_OFFSET - 20 else f"{p.rstrip()} {sentence}"
+            f"{sentence} {p}" if _widened(p) > MAX_LINK_WORD_OFFSET - 20 else f"{p.rstrip()} {sentence}"
         )
         how = "no mention within the first 200 words, so added a linking sentence to intro paragraph 1"
 
@@ -1203,7 +1353,7 @@ def _revise_pass(
         same_sop_tags = same_section_count and all(
             new_sections[i]["sop"] == sections[i]["sop"] for i in range(len(sections))
         )
-        sponsor_ok = full.count(prompts.SPONSOR_TOKEN) == 1
+        sponsor_ok = full.count(prompts.SPONSOR_TOKEN) == 1 and _sponsor_location_problem(new_sections) is None
         cmi_links = re.findall(prompts.CMI_LINK_PATTERN, full)
         cmi_link_ok = len(cmi_links) == 1 and cmi_links[0].strip() == report.name.strip()
         # The link must stay in the paragraph it was in and not drift later or lose first-mention status.

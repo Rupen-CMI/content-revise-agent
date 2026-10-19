@@ -328,19 +328,9 @@ def _report_dict(r: reports.Report) -> dict:
 def _segment_dicts(text: str, sponsor: Paragraph, report_url: str | None) -> list[dict]:
     """Expand a written paragraph's placeholders into the same (text, url) segments
     ``RevampResult.segments()`` uses for the .docx — the JSON UI renders real hyperlinks too,
-    so it needs the URLs, not flattened plain text."""
-    if text.strip() == prompts.SPONSOR_TOKEN:
-        return [{"text": t, "url": u} for t, u in pipeline.sponsor_segments(sponsor)]
-    out: list[dict] = []
-    pos = 0
-    for m in _CMI_LINK_RE.finditer(text):
-        if text[pos:m.start()]:
-            out.append({"text": text[pos:m.start()], "url": None})
-        out.append({"text": m.group(1), "url": report_url})
-        pos = m.end()
-    if text[pos:]:
-        out.append({"text": text[pos:], "url": None})
-    return out
+    so it needs the URLs, not flattened plain text. Delegated to pipeline.expand_segments so the
+    preview, the docx and the checks cannot disagree about where an inline placeholder resolves."""
+    return [{"text": t, "url": u} for t, u in pipeline.expand_segments(text, sponsor, report_url)]
 
 
 def _display_sections(

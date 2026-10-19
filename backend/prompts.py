@@ -314,31 +314,6 @@ Rules:
   that gap: read exactly what it says and how it opens and closes, then write the paragraph before and after it so \
   together the three read as one continuous, naturally flowing passage — not as an unrelated sentence stitched between \
   two generic ones.
-  SOME RETAINED PARAGRAPHS ARE NOT PROSE AT ALL — just a short linked phrase or a bare anchor text with no sentence \
-  around it (e.g. the entire retained paragraph is only "Customer data management systems" as a hyperlink, nothing \
-  else). This still counts as "the retained paragraph" and every rule below still applies to it: it is NOT exempt from \
-  needing a lead-in and a pivot just because it has no prose of its own to read the opening/closing words of. \
-  HARD REQUIREMENT when this is the case: paragraph 1 (the lead-in) MUST itself contain a real sentence that uses the \
-  bare anchor phrase's own key noun(s) — not a vaguer stand-in word ("the data," "the systems," "the tools") that \
-  merely gestures at the same idea without actually naming it. If the anchor text is "Customer data management \
-  systems," paragraph 1 must itself contain the words "customer data" (or equally specific wording naming that same \
-  concept) in a real sentence, BEFORE the placeholder paragraph — a lead-in that only talks around the topic in vaguer \
-  terms and never actually names it fails this requirement even if it is otherwise well-written, because the anchor \
-  phrase then still lands as the first and only time that specific thing is actually named, which is precisely the \
-  "dropped in" problem this exists to prevent. Likewise, paragraph 3 must refer back to that SAME concept by name (or \
-  a clear synonym of it), not a generic word like "that foundation" or "the basics" that could mean almost anything — \
-  a vague callback does not prove continuity, a specific one does.
-  ON TOP OF THAT, naming the concept somewhere in paragraph 1 is not enough by itself — the bare phrase still has to \
-  land as a grammatical, readable sentence when the placeholder is substituted in verbatim on its own line, not as an \
-  isolated fragment with no sentence of its own. You cannot add words INTO the placeholder paragraph itself (it must \
-  stay exactly {sponsor_token} and nothing else — see rule 2 below), so the fix has to come from how paragraph 1 \
-  ENDS: write paragraph 1's final sentence as a direct, grammatical lead-up that the bare phrase completes when read \
-  immediately after it — e.g. if paragraph 1's last sentence ends "...and it starts with getting a handle on your \
-  own:" (or "...which depends on one specific piece of infrastructure:" / "...and the foundation for that is:"), the \
-  bare phrase that follows reads as that sentence's direct continuation, a grammatical answer to a setup the reader \
-  just received, not a non sequitur. This is MANDATORY whenever the retained paragraph is a bare phrase: paragraph 1's \
-  closing sentence must end on exactly this kind of lead-up, pointed at the specific bare phrase (not a generic \
-  "here's more:" that could precede anything).
   1. A lead-in paragraph you write — it also carries the CMI report link (see the CMI REPORT LINK rule below: the \
   first mention of the market, as the link, within this paragraph) — introducing the original topic and building up to \
   whatever context the retained \
@@ -349,9 +324,8 @@ Rules:
   never be the first place a name, tool, or comparison appears; by the time a reader reaches it, they already know what \
   it's talking about. You are not paraphrasing or quoting the retained paragraph's sentences — you are writing new \
   sentences that establish the same subject so its opening phrase lands on a clear antecedent instead of a non sequitur. Keep this lead-in to 45-60 words.
-  2. The literal placeholder text {sponsor_token} and NOTHING else — do not write out the retained paragraph's actual \
-  words here, do not paraphrase it, do not summarize it. Copy only this exact character sequence as the entire paragraph \
-  string: {sponsor_token}
+  2. The literal placeholder text {sponsor_token} — never the retained paragraph's actual words, a paraphrase of it, \
+  or a summary of it. {sponsor_rule}
   This placeholder will be programmatically replaced with the retained paragraph afterward; whatever you put in its place \
   is what ends up BESIDE the real paragraph in the final article, so writing the real content here would duplicate it.
   3. A paragraph you write that moves the piece forward from wherever the retained paragraph leaves off — not by \
@@ -373,7 +347,7 @@ Rules:
   not elsewhere, not even partially reworded, summarized, or referred back to as a unit. The only place it belongs is \
   the placeholder slot, and the placeholder is the literal string {sponsor_token}, never the paragraph's real words or \
   a recap of its ideas. Do not mention the guest author's brand or website anywhere in the article either.
-- Every paragraph except the placeholder must be writing you compose fresh. Do not reuse a sentence, or any long run of \
+- Every sentence you write, everywhere except the placeholder itself, must be writing you compose fresh. Do not reuse a sentence, or any long run of \
 wording, from either the full ORIGINAL ARTICLE or the CMI REPORT CONTENT shown above — not copied verbatim, not lightly \
 edited, not moved to a different section, not reassembled from a few of its own clauses. If the original article makes a \
 point you also want to make (e.g. the same list of features or the same advice), or the CMI REPORT CONTENT states a \
@@ -772,8 +746,8 @@ sentence, and never add bullets to a paragraph that didn't already have them.
 coverage scan above explicitly lists as unsupported must be removed. You are not fact-checking or re-researching \
 anything else — every other fact in the draft is already correct; only the sentences carrying it may change.
 - The placeholder string {sponsor_token} must appear EXACTLY ONCE, completely unchanged, in exactly the same \
-position (paragraph 2 of the unheaded intro section) that it appears in the draft above. Never alter, move, \
-duplicate, or remove it.
+paragraph of the unheaded intro section where it appears in the draft above — whether that is its own paragraph or it \
+sits inside one of the sentences there. Never alter, move, duplicate, or remove it.
 - The citation pattern [[CMI_LINK:{report_name}]] must appear EXACTLY ONCE, completely unchanged, in the same \
 paragraph of the intro where it appears in the draft above, and it must stay the FIRST mention of the market's full \
 name in the article (no plain-text mention of that name before it) and within the first 100 words. Never alter, move, \

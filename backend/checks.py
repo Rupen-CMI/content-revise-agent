@@ -373,9 +373,10 @@ def _verbatim_overlap(
     covered_words = 0
     examples: list[str] = []
     for p in paragraphs:
-        if p.strip() == SPONSOR_TOKEN:
+        own = p.replace(SPONSOR_TOKEN, " ")
+        if not own.strip():
             continue
-        words = re.findall(r"\w+", _strip_name(p).lower())
+        words = re.findall(r"\w+", _strip_name(own).lower())
         total_words += len(words)
         covered = [False] * len(words)
         matched_labels: set[str] = set()
@@ -388,7 +389,7 @@ def _verbatim_overlap(
                     matched_labels.add(label)
         covered_words += sum(covered)
         if matched_labels and len(examples) < 5:
-            examples.append(f"[{', '.join(sorted(matched_labels))}] " + p[:100] + ("…" if len(p) > 100 else ""))
+            examples.append(f"[{', '.join(sorted(matched_labels))}] " + own[:100] + ("…" if len(own) > 100 else ""))
 
     overlap_pct = (covered_words / total_words * 100) if total_words else 0.0
     return overlap_pct, examples
@@ -397,27 +398,36 @@ def _verbatim_overlap(
 MAX_LINK_WORD_OFFSET = 200
 
 
+def _sponsor_replacement(text: str, sponsor_text: str) -> str:
+    """The token stands for the retained paragraph's real words: substituting it back in lets word
+    counts account for those real words where they actually sit (inline or as their own paragraph).
+    The retained text itself is then blanked for the FIRST-MENTION test, since the guest author's
+    wording cannot be changed and must never count as a plain-text mention the article controls."""
+    return text.replace(SPONSOR_TOKEN, sponsor_text) if sponsor_text else text
+
+
 def cmi_link_placement(sections: list[dict], sponsor_text: str, market_name: str) -> tuple[int | None, bool, tuple[int, int] | None]:
     """Where the CMI report link sits: (word offset at which it starts counting the retained
     paragraph at its real length, whether it is the FIRST mention of the market's full name in the
     article, (section index, paragraph index) of the paragraph holding it). The offset is None when
     there is no link. The retained paragraph's own text is ignored for the first-mention test: it is
-    the guest author's wording and cannot be changed."""
+    the guest author's wording and cannot be changed. The token may be inline in a paragraph or its
+    own paragraph; either way its real words count toward the offset where they actually sit."""
     words_before = 0
     text_before: list[str] = []
     for si, s in enumerate(sections):
         for pi, p in enumerate(s["paragraphs"]):
-            if p.strip() == SPONSOR_TOKEN:
+            if not p.replace(SPONSOR_TOKEN, " ").strip():
                 words_before += len(sponsor_text.split())
                 continue
             m = re.search(CMI_LINK_PATTERN, p)
             if m:
                 prefix = p[:m.start()]
-                before = "\n".join(text_before + [prefix])
+                before = "\n".join(text_before + [prefix.replace(SPONSOR_TOKEN, " ")])
                 first = not market_name or market_name.lower() not in before.lower()
-                return words_before + len(prefix.split()), first, (si, pi)
-            text_before.append(p)
-            words_before += len(p.split())
+                return words_before + len(_sponsor_replacement(prefix, sponsor_text).split()), first, (si, pi)
+            text_before.append(p.replace(SPONSOR_TOKEN, " "))
+            words_before += len(_sponsor_replacement(p, sponsor_text).split())
     return None, True, None
 
 
@@ -426,9 +436,10 @@ def _stale_event_mentions(sections: list[dict], today: date | None = None) -> li
     out: list[str] = []
     for section in sections:
         for paragraph in section.get("paragraphs", []):
-            if paragraph.strip() == SPONSOR_TOKEN:
+            own = paragraph.replace(SPONSOR_TOKEN, " ")
+            if not own.strip():
                 continue
-            for m in freshness.INLINE_EVENT_DATE_RE.finditer(paragraph):
+            for m in freshness.INLINE_EVENT_DATE_RE.finditer(own):
                 d = freshness.event_date(m)
                 if d is not None and freshness.is_stale(d, today):
                     s = f"{m.group(0)} ({section.get('heading') or 'intro'})"
@@ -448,22 +459,23 @@ def run_checks(
     full = "\n".join(paragraphs)
     results: list[CheckResult] = []
 
-    placed = sum(p.strip() == SPONSOR_TOKEN for p in paragraphs)
+    token_count = full.count(SPONSOR_TOKEN)
+    placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
     non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
     leaked = placed != 1 and non_token_overlap >= 6
     results.append(CheckResult(
         "Retained backlink paragraph placed once, unaltered",
-        placed == 1 and full.count(SPONSOR_TOKEN) == 1,
-        (f"placed {placed} time(s)" + (" — the model appears to have written out the retained "
+        token_count == 1,
+        (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
          "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
     ))
 
     intro = sections[0]["paragraphs"] if sections else []
-    in_intro_slot = len(intro) >= 2 and intro[1].strip() == SPONSOR_TOKEN
+    in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro)
     results.append(CheckResult(
         "Retained paragraph sits in the intro, not mid-article",
         in_intro_slot,
-        "" if in_intro_slot else "expected it as paragraph 2 of the unheaded intro section",
+        "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section, as its own paragraph or inside a sentence",
     ))
 
     cmi_links = re.findall(CMI_LINK_PATTERN, full)
@@ -695,7 +707,7 @@ def run_checks(
         "unverified: " + ", ".join(unverified) if unverified else "",
     ))
 
-    non_sponsor = "\n".join(p for p in paragraphs if p.strip() != SPONSOR_TOKEN).lower()
+    non_sponsor = "\n".join(p for p in paragraphs if p.replace(SPONSOR_TOKEN, " ").strip()).lower()
     leaked = [t for t in sponsor_brand_terms if t and t.lower() in non_sponsor]
     results.append(CheckResult(
         "Guest brand not mentioned outside the retained paragraph",
