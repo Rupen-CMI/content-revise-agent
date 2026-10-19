@@ -311,6 +311,7 @@ def _hit_dict(h: search.SearchHit) -> dict:
         "source": h.source,
         "date": h.date.isoformat() if h.date else None,
         "is_news": h.is_news,
+        "excerpt": h.excerpt,
     }
 
 
@@ -602,7 +603,7 @@ def step2(req: Step2Request) -> dict:
         report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
         hits = pipeline.run_search_evidence(
             report.name, run.sponsor, run.candidates, run.logger,
-            key_players=reports.key_players(report), orient=run.orient,
+            key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
         )
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)

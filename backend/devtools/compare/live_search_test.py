@@ -26,11 +26,17 @@ print("log:", log_path, "| market:", name, "| key players:", players or "(none)"
 hits = pipeline.run_search_evidence(name, sponsor, [], logger, key_players=players, orient=fixture["orient"])
 
 log = Path(log_path).read_text(encoding="utf-8", errors="replace")
-print([l for l in log.splitlines() if "source groups chosen" in l][-1].split("revamp: ")[-1])
+for marker in ("source groups chosen", "[gather]", "primary stage kept", "DDGS fallback", "[fulltext]", "full-text excerpts"):
+    lines = [l for l in log.splitlines() if marker in l]
+    if lines:
+        print(lines[-1].split("revamp: ")[-1])
 print([l for l in log.splitlines() if "[filter] kept" in l][-1].split("revamp: ")[-1])
-print(f"\n{len(hits)} hits pass the filter. By host:")
+print(f"\n{len(hits)} hits pass the filter ({sum(1 for x in hits if x.excerpt)} with full-text excerpts). By host:")
 for h, n in collections.Counter(x.host for x in hits).most_common():
     print(f"  {n:2d}  {h}")
 print("\nHITS:")
 for x in hits:
-    print(f"  [{x.date:%Y-%m-%d}] " if x.date else "  [undated]  ", x.host, "|", x.title[:110])
+    print(f"  [{x.date:%Y-%m-%d}] " if x.date else "  [undated]  ", "T" if x.excerpt else "-", x.host, "|", x.title[:110])
+if hits and any(x.excerpt for x in hits):
+    ex = next(x for x in hits if x.excerpt)
+    print(f"\nSAMPLE EXCERPT ({ex.host}, {len(ex.excerpt)} chars):\n{ex.excerpt}")

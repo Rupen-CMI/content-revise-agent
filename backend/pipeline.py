@@ -7,6 +7,8 @@ from typing import Callable
 from urllib.parse import urlparse
 
 import checks
+import config
+import feeds
 import freshness
 import llm
 import prompts
@@ -92,7 +94,8 @@ def _format_hits(hits: list[search.SearchHit]) -> str:
     lines = []
     for i, h in enumerate(hits, 1):
         tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
-        lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}\n      {h.snippet[:300]}")
+        body = h.excerpt or h.snippet[:300]
+        lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}\n      {body}")
     return "\n".join(lines) or "(no results)"
 
 
@@ -384,7 +387,7 @@ def _secondary_keyword_lines(market_name: str, secondary_kw: list[tuple[str, str
 
 
 def _llm_search_queries(
-    market_name: str, orient: dict, key_players: list[str], logger: logging.Logger,
+    market_name: str, key_players: list[str], logger: logging.Logger, segments: list[str] = (),
 ) -> tuple[list[str], list[str]]:
     """LLM-generated search queries, seeded with the confirmed market name, the article's own
     topic/angle, and real company names pulled from the CMI report — lets query phrasing adapt
@@ -398,9 +401,8 @@ def _llm_search_queries(
         result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_QUERIES_USER.format(
             today=date.today().isoformat(),
             market_name=market_name,
-            topic_summary=orient.get("topic_summary", ""),
-            bridge_angle=orient.get("bridge_angle", ""),
             key_players=", ".join(key_players) if key_players else "(none known)",
+            segments=", ".join(segments[:14]) if segments else "(none listed)",
             source_group_menu=sources.pack_menu(),
         ), call_name="search_queries", logger=logger)
         queries = [str(q).strip() for q in result.get("queries") or [] if str(q).strip()]
@@ -416,7 +418,7 @@ def _llm_search_queries(
 def run_search_evidence(
     market_name: str, sponsor: Paragraph, candidates: list[reports.CatalogEntry], logger: logging.Logger,
     progress: Callable[[str], None] = lambda _: None, key_players: list[str] = (),
-    orient: dict | None = None,
+    orient: dict | None = None, segments: list[str] = (),
 ) -> list[search.SearchHit]:
     """Web search for supporting evidence, run AFTER the human has confirmed the market —
     queries are built from the confirmed market name itself, so this never searches for a
@@ -424,25 +426,50 @@ def run_search_evidence(
     section(logger, "WEB SEARCH")
     logger.info(f"[search] key players for {market_name!r}: {list(key_players) or '(none)'}")
     queries, groups = (
-        _llm_search_queries(market_name, orient, list(key_players), logger)
+        _llm_search_queries(market_name, list(key_players), logger, list(segments))
         if orient is not None
         else (_market_search_queries(market_name), [])
     )
     logger.info(f"[search] queries ({len(queries)}): {queries}")
-    # Targeted pass: the same market aimed at trade press / regulators for its industry (plus general
-    # business and deal-funding press), on top of whatever the open-web queries surface.
-    targeted = sources.targeted_queries(_market_core(market_name), groups)
     logger.info(f"[search] source groups chosen: {groups or '(none — general business + funding only)'}")
-    logger.info(f"[search] targeted site queries ({len(targeted)}): {targeted}")
-    queries = queries + targeted
-    progress(f"Searching the web for {market_name} ({len(queries)} queries)")
+    core = _market_core(market_name)
     sponsor_hosts = tuple(_host(link.url) for link in sponsor.links if link.is_external)
-    # Gate on the CONFIRMED market name only. candidates[] are OTHER markets the human did not
-    # pick — mixing their tokens in here (e.g. "Network Automation", "Logistics Automation") let
-    # hits about those rejected markets pass the topical filter on borrowed vocabulary, directly
-    # contradicting this function's own job of never surfacing evidence for a rejected market.
-    raw_hits = search.run_searches(queries, logger=logger)
-    hits = search.filter_hits(raw_hits, [market_name], sponsor_hosts, logger=logger, key_players=key_players)
+
+    def filtered(raw: list[search.SearchHit]) -> list[search.SearchHit]:
+        # Gate on the CONFIRMED market name only. candidates[] are OTHER markets the human did not
+        # pick — mixing their tokens in here (e.g. "Network Automation", "Logistics Automation") let
+        # hits about those rejected markets pass the topical filter on borrowed vocabulary, directly
+        # contradicting this function's own job of never surfacing evidence for a rejected market.
+        return search.filter_hits(
+            raw, [market_name], sponsor_hosts, limit=config.SEARCH_KEEP_HITS, logger=logger, key_players=key_players,
+            max_per_host=config.SEARCH_MAX_PER_HOST, sector_hosts=feeds.sector_hosts(groups),
+        )
+
+    # PRIMARY: Bing News RSS (keyword + site: queries) and the curated publisher feeds.
+    progress(f"Gathering evidence for {market_name} (Bing News + publisher feeds)")
+    raw_hits = feeds.gather(market_name, core, queries, groups, list(key_players), logger)
+    hits = filtered(raw_hits)
+    logger.info(f"[search] primary stage kept {len(hits)} article(s)")
+
+    # FALLBACK: DDGS, which is rate-sensitive, runs only when the primary stage came up short (or when
+    # config says always/never).
+    mode = config.SEARCH_DDGS_MODE
+    short = len(hits) < config.SEARCH_PRIMARY_MIN_HITS
+    if mode == "always" or (mode == "fallback" and short):
+        reason = "configured to always run" if mode == "always" else (
+            f"primary stage kept only {len(hits)} < {config.SEARCH_PRIMARY_MIN_HITS}"
+        )
+        ddgs_queries = queries + sources.targeted_queries(core, groups)
+        logger.info(f"[search] DDGS fallback ({reason}): {len(ddgs_queries)} queries")
+        progress(f"Primary sources thin ({len(hits)} articles) — adding web search ({len(ddgs_queries)} queries)")
+        hits = filtered(raw_hits + search.run_searches(ddgs_queries, logger=logger))
+    elif mode not in ("fallback", "always", "off"):
+        logger.warning(f"[search] unknown SEARCH_DDGS_MODE {mode!r}; DDGS not run")
+
+    # Full-text pass over what survived, so SELECT and the writer see article text, not just a snippet.
+    progress(f"Reading {len(hits)} candidate articles")
+    feeds.attach_excerpts(hits, market_name, logger)
+    logger.info(f"[search] {sum(1 for h in hits if h.excerpt)} of {len(hits)} article(s) have full-text excerpts")
     return hits
 
 
@@ -1385,7 +1412,7 @@ def _revamp_inner(
     progress("Searching the web for supporting evidence")
     hits = run_search_evidence(
         candidates[0].keyword, sponsor, candidates, logger, progress,
-        key_players=reports.key_players(report), orient=orient,
+        key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
     )
 
     progress("Step 2: selecting evidence")

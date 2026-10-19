@@ -173,8 +173,8 @@ _TEXT_BACKENDS = "startpage,mojeek,yahoo,duckduckgo"
 # commonly cited as DDG's unofficial throttling threshold — DDG publishes no official number),
 # and retries with backoff on timeouts instead of instant zero-results.
 _QUERY_TIMEOUT_S = 20
-_QUERY_DELAY_S = 3.0  # base gap between queries (+ up to 2.5s jitter)
-_INTRA_QUERY_DELAY_S = 1.5  # base gap between the news and text calls of one query (+ jitter)
+_QUERY_DELAY_S = 4.0  # base gap between queries (+ up to 2.5s jitter)
+_INTRA_QUERY_DELAY_S = 2.0  # base gap between the news and text calls of one query (+ jitter)
 _QUERY_RETRIES = 2
 
 
@@ -189,6 +189,9 @@ class SearchHit:
     # no date field for these at all — see _ddgs below). Only is_news hits can ever be cited as
     # "ongoing trend" evidence; text hits are background/definitional context only.
     is_news: bool = False
+    # Query-relevant paragraphs from the article page itself (feeds.attach_excerpts), when the page was
+    # readable. Empty for hits that only have a headline and snippet.
+    excerpt: str = ""
 
     @property
     def host(self) -> str:
@@ -370,6 +373,14 @@ def _gate_for_phrase(phrase: str, freq: dict[str, float]) -> tuple[str, list[str
     return head, required, generic, non_head
 
 
+def _word_or_compound(token: str, hit_tokens: set[str]) -> bool:
+    """The market word as a whole word, or at the start of a short compound built on it ("wealth" -> "wealthtech").
+    Whole-word matching alone dropped "Leading Wealthtech Platform for Independent Advisors" for a wealth-platform market."""
+    return token in hit_tokens or (len(token) >= 5 and any(
+        w.startswith(token) and len(w) - len(token) <= 5 for w in hit_tokens
+    ))
+
+
 def _head_matched(head: str, hit_tokens: set[str]) -> bool:
     if head in hit_tokens:
         return True
@@ -401,9 +412,14 @@ def _is_key_player_own_site(host: str, key_players: list[str]) -> str | None:
 def filter_hits(
     hits: list[SearchHit], phrases: list[str], blocked_hosts: tuple[str, ...] = (),
     limit: int = 30, logger: logging.Logger = _null_logger,
-    key_players: list[str] = (),
+    key_players: list[str] = (), max_per_host: int = 0, sector_hosts: frozenset[str] = frozenset(),
 ) -> list[SearchHit]:
-    """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market."""
+    """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market.
+    max_per_host (0 = unlimited) keeps one prolific site from filling the whole shortlist.
+    sector_hosts are the trade-press sites of the market's own industry: a dated news item from one is on-topic by
+    SOURCE, so it reaches SELECT (the LLM judge) even when its headline lacks the market's words
+    ("SEI taps IBM for agentic AI growth" in a wealth-platform run). Measured live: the strict word gate dropped about
+    ten such relevant items per run."""
     tokens, full_phrases = gate_terms(phrases)
     freq = _catalog_token_freq()
     gates = [(p, g) for p in phrases if (g := _gate_for_phrase(p, freq)) is not None]
@@ -475,7 +491,7 @@ def filter_hits(
         matched_phrase = next((p for p in full_phrases if p in text), None)
         hit_tokens = _content_tokens(text)
         token_ok = any(
-            _head_matched(head, hit_tokens) and all(t in hit_tokens for t in required)
+            _head_matched(head, hit_tokens) and all(_word_or_compound(t, hit_tokens) for t in required)
             for _, (head, required, _, _) in gates
         )
         named_player = next((p for p, rx in player_res if rx.search(text)), None)
@@ -501,9 +517,11 @@ def filter_hits(
                 for _, (head, _, _, non_head) in gates
             )
         )
+        sector_ok = hit.is_news and any(hit.host == h or hit.host.endswith("." + h) for h in sector_hosts)
         rules = "|".join(
             r for ok, r in (
                 (matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player"), (trusted_ok, "trusted_source"),
+                (sector_ok, "sector_source"),
             ) if ok
         )
         if rules:
@@ -519,6 +537,14 @@ def filter_hits(
             logger.info(f"[filter] DROP (no topical overlap) [{hit.host}] {hit.title!r}")
 
     scored.sort(key=lambda x: (x[0], x[1].date or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
-    final = [hit for _, hit in scored[:limit]]
+    final: list[SearchHit] = []
+    per_host: dict[str, int] = {}
+    for _, hit in scored:
+        if len(final) >= limit:
+            break
+        if max_per_host and per_host.get(hit.host, 0) >= max_per_host:
+            continue
+        per_host[hit.host] = per_host.get(hit.host, 0) + 1
+        final.append(hit)
     logger.info(f"[filter] kept {kept}, dropped {dropped}, returning top {len(final)} of {kept}")
     return final

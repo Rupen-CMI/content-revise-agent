@@ -91,9 +91,12 @@ involving companies in this space. Respond with JSON only."""
 
 SEARCH_QUERIES_USER = """TODAY'S DATE: {today}
 CONFIRMED MARKET: {market_name}
-ARTICLE TOPIC: {topic_summary}
-INTENDED ANGLE: {bridge_angle}
 KNOWN COMPANIES IN THIS MARKET (from the confirmed CMI report, if any): {key_players}
+MARKET SEGMENTS (from the confirmed CMI report, if any): {segments}
+
+SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that market as a whole \
+— its main product or service categories, the segments listed above, its companies, and the industry it sits in \
+— and do not narrow to one product, feature or use case unless that IS the market.
 
 Write search engine queries (plain text, as you'd type into a search engine) to find REAL, RECENT news about this \
 market, covering EVERY one of these 8 categories so the evidence pool ends up varied rather than dominated by one \

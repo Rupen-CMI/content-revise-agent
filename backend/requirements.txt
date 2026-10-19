@@ -12,3 +12,4 @@ python-docx              # .docx read/write
 ddgs                     # web search
 python-dotenv            # root .env (DB_URL, LLM_*)
 sentence-transformers    # semantic report matching (lazy import in reports.py)
+feedparser              # RSS/Atom parsing (feeds.py)

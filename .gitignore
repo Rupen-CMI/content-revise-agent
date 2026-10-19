@@ -9,3 +9,4 @@ node_modules/
 input_docs/
 
 *.json
+!backend/source_registry.json
