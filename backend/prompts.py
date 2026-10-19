@@ -182,7 +182,7 @@ CONFIRMED CMI REPORT (already chosen by a human editor — not your decision):
 WEB SEARCH RESULTS:
 {hits}
 
-Task: from the web results, select up to 20 that pass ALL of these tests — a result that fails any one of them must \
+Task: from the web results, select up to {max_selected} that pass ALL of these tests — a result that fails any one of them must \
 be rejected, not merely scored lower:
 1. Genuinely about THIS confirmed market specifically, not a result that merely shares a few words with it (a result \
 about a different, related, or broader market is a wrong-market result, not a weak match — reject it, do not include \
@@ -206,10 +206,13 @@ source's — a source earns a place only by telling the reader what happened.
 Trends, U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
 would not actually improve a single sentence of that article, do not select it just because it is on-topic.
 Reject listicles, product promotions, how-to guides, and anything about a different market. It is fine to select fewer \
-than 20, or none, if few results pass all four tests — do not pad with weak, generic, or off-topic results to reach a \
+than {max_selected}, or none, if few results pass all four tests — do not pad with weak, generic, or off-topic results to reach a \
 higher count; a shorter list of results that each genuinely earn their place beats a longer list padded with filler. \
-For each selected result, write one factual sentence stating only what the result says; do not add, infer, or round \
-any number it does not contain.
+For each selected result write two fields. "fact": one factual sentence stating only what the result says. \
+"detail": one or two more sentences, taken only from the result text shown above, giving the specifics a writer needs \
+to explain and back the fact (amounts, figures, named people or companies, dates, a stated reason or a quote). If the \
+result shows nothing beyond the fact (a bare headline), set "detail" to an empty string. In both fields, do not add, \
+infer, or round any number: a figure that does not appear in the result's own text must not appear in your output.
 
 Each result above is tagged DATED (with its publish date, already checked to be recent) or UNDATED (an ordinary web \
 page with no verifiable publish date, so nothing about it is known to be current). A fact used for "trends" is a claim \
@@ -219,15 +222,15 @@ UNDATED result is selected only if it states a concrete, citable fact about THIS
 above (never a definition or explanation), and then only with use_for ["context"]. When in doubt about an UNDATED \
 result, leave it out.
 
-use_for is a LIST: one fact can support more than one part of the article, so list every section it genuinely supports, \
-most important first, and nothing it does not truly earn. For example, a named company's acquisition is a "players" \
+use_for is a LIST: one fact can support more than one part of the article, so list at most TWO sections it genuinely supports, \
+most important first (the FIRST tag is the one section the writer will build it into), and nothing it does not truly earn. For example, a named company's acquisition is a "players" \
 fact, and it is ALSO a "trends" fact if it illustrates a direction the market is moving in (consolidation, AI adoption, \
 platform partnerships). Use "us" only for a fact specifically about the U.S. market. The article needs three distinct \
 market trends, a U.S. paragraph, and a key-players section, so when the results allow it, make sure your selection \
 gives each of those a real supply of facts — do not label every fact the same way just because they all name a company.
 
 Return JSON:
-{{"evidence": [{{"id": "<W-number>", "fact": "<one factual sentence>", "use_for": ["<one or more of: trends, us, players, context>"]}}]}}"""
+{{"evidence": [{{"id": "<W-number>", "fact": "<one factual sentence>", "detail": "<one or two sentences of specifics from the result text, or an empty string>", "use_for": ["<one or more of: trends, us, players, context>"]}}]}}"""
 
 
 WRITE_SYSTEM = """You are a writer at Coherent Market Insights (CMI), a market research firm, writing a piece for \
@@ -436,16 +439,11 @@ of, or is tracked by the market — never that the market IS the software/platfo
 everywhere else the market is named later in the article, not only in this first mention. The link appears exactly \
 ONCE in the whole article; every later mention of the market name is plain text. This is a mandatory structural \
 requirement — the article is incomplete without it.
-- Use every piece of SUPPORTING WEB EVIDENCE somewhere in the article, each in whichever section its own content \
-actually fits — not wherever is convenient or wherever you happen to be writing when you remember it exists. Each \
-evidence line is tagged with an ID in parentheses (e.g. "(W3)") and the section type it was pre-sorted for ([trends], \
-[us], [players], [context]), but treat the section tag as a starting hint, not a rule: read what the fact actually \
-says and place it by its real subject matter even when that differs from its tag — a fact pre-tagged for one section \
-can belong in a different one if its content is really about that other section's subject (for instance, a fact \
-filed under one category may really be describing a specific company's move, a regional development, or a \
-segment-level shift, in which case it belongs wherever that subject is actually discussed). Only leave a piece of \
-evidence out entirely if using it would require distorting what it actually says or forcing it into a section it has \
-no real connection to.
+- BACK EVERY CLAIM WITH EVIDENCE. The SUPPORTING WEB EVIDENCE above is grouped by the part of the article it mainly serves, and each item has a headline FACT plus, underneath, DETAIL: the specifics from the source article itself. This is what gives the piece substance, so use it deliberately:
+  * Build each section from its own group (move an item to another section only when its content really belongs there). Every paragraph that makes a claim about the market (a trend, the U.S., a company, a segment) follows the shape claim, then proof, then what it means: state the point, back it with specific proof (the named company, publication or regulator, the month and year, and the concrete detail from the FACT and its DETAIL: an amount, a product, a deal, a rule, a figure), then say why it matters to a reader of THIS article. A market claim with nothing behind it is generic filler: supply the proof from the evidence or the report, or cut the claim.
+  * Use the DETAIL, not only the headline: every item you use contributes at least one concrete specific (a figure, a name, a stated reason), written in your own words and never lifted word for word.
+  * Minimums, counted by the application: use at least {min_evidence} DIFFERENT evidence items in total; each of the three market trends rests on at least two items (the trends section uses at least six in all); the U.S. analysis uses at least two; key players uses at least three, about different companies. These minimums are capped by how much evidence a group really has, and you must never invent proof to meet one.
+  * Weave, do not stack: connect items to each other (cause and effect, contrast, a pattern across several companies) instead of one item per sentence, and never put an item in a section it does not belong in just to use it up. Leave an item out only if using it would distort what it says. Every item you use still obeys the figure, recency (state the month and year of every dated item) and no-copy rules above.
 - For every piece of evidence you DO use, report it in the top-level "evidence_citations" array: the evidence's own \
   ID (e.g. "W3") and the EXACT paragraph text (copied character-for-character from one of your own "paragraphs" \
   strings above — not a summary, not a snippet, the complete paragraph as you wrote it) that paragraph ended up in. \

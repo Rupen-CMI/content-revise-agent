@@ -540,10 +540,51 @@ def run_select(
         sponsor=sponsor.text,
         report_name=report.name,
         hits=_format_hits(hits),
-    ), call_name="select", logger=logger)
+        max_selected=config.SEARCH_MAX_SELECTED,
+    ), call_name="select", logger=logger, max_tokens=8000)
     _normalize_selection_tags(selection, hits, logger)
     _drop_stale_facts(selection, logger)
+    _verify_selection_figures(selection, hits, logger)
     return selection
+
+
+_FIGURE_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _figures(text: str) -> set[str]:
+    """Digit strings in `text` with commas dropped. Single digits and plain years are ignored: they turn up in
+    ordinary prose everywhere (a publish date the model correctly states is not in the article's own text)."""
+    out = set()
+    for m in _FIGURE_RE.findall(text or ""):
+        n = m.replace(",", "").rstrip(".")
+        if len(n) >= 2 and not re.fullmatch(r"20[1-3]\d", n):
+            out.add(n)
+    return out
+
+
+def _verify_selection_figures(selection: dict, hits: list[search.SearchHit], logger: logging.Logger) -> None:
+    """SELECT's fact/detail are LLM-written; a figure that is nowhere in the source's own text is an invented number,
+    which must never reach the writer. An item whose FACT carries one is dropped; an unsupported DETAIL is blanked."""
+    kept = []
+    for e in selection.get("evidence") or []:
+        m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
+        if not m or not 1 <= int(m.group(1)) <= len(hits):
+            kept.append(e)  # a bad id is dropped by run_build_evidence, which logs it
+            continue
+        h = hits[int(m.group(1)) - 1]
+        source = f"{h.title} {h.snippet} {h.excerpt}".replace(",", "")
+        bad_fact = sorted(n for n in _figures(str(e.get("fact", ""))) if n not in source)
+        if bad_fact:
+            logger.warning(f"[select] dropped {e.get('id')}: its fact states {bad_fact}, which is not in the source text")
+            continue
+        detail = str(e.get("detail") or "").strip()
+        bad_detail = sorted(n for n in _figures(detail) if n not in source)
+        if bad_detail:
+            logger.warning(f"[select] blanked the detail of {e.get('id')}: it states {bad_detail}, not in the source text")
+            detail = ""
+        e["detail"] = detail
+        kept.append(e)
+    selection["evidence"] = kept
 
 
 def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
@@ -559,8 +600,15 @@ def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
         ]
         if stale:
             logger.info(f"[select] dropped {e.get('id')}: its fact states a stale date {stale}")
-        else:
-            kept.append(e)
+            continue
+        stale_detail = [
+            m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(str(e.get("detail", "")))
+            if (d := freshness.event_date(m)) is not None and freshness.is_stale(d)
+        ]
+        if stale_detail:
+            logger.info(f"[select] blanked the detail of {e.get('id')}: it states a stale date {stale_detail}")
+            e["detail"] = ""
+        kept.append(e)
     selection["evidence"] = kept
 
 
@@ -600,11 +648,21 @@ def run_fetch_confirmed_report(chosen: reports.CatalogEntry, logger: logging.Log
     return report
 
 
+# Evidence reaches the writer grouped by the part of the article each item mainly serves (its FIRST use_for
+# tag); a flat list with every item tagged for every section left the writer nothing to route by.
+_EVIDENCE_GROUPS = (
+    ("trends", "MARKET TRENDS (back each of the three trends with at least two of these)"),
+    ("us", "THE U.S. ANALYSIS"),
+    ("players", "KEY PLAYERS (one company per item)"),
+    ("context", "SEGMENTS, GROWTH DRIVERS, REPORT CONTEXT AND THE CONCLUSION"),
+)
+
+
 def run_build_evidence(
     selection: dict, hits: list[search.SearchHit], logger: logging.Logger,
 ) -> str:
     """Build the evidence block passed to the writer from Call 2 output + search hits."""
-    evidence_lines = []
+    grouped: dict[str, list[str]] = {key: [] for key, _ in _EVIDENCE_GROUPS}
     for e in selection.get("evidence") or []:
         m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
         if not m or not 1 <= int(m.group(1)) <= len(hits):
@@ -613,14 +671,168 @@ def run_build_evidence(
         h = hits[int(m.group(1)) - 1]
         date = h.date.strftime("%Y-%m") if h.date else "undated"
         evidence_id = e["id"].strip().upper()
-        use_for = ", ".join(e.get("use_for_all") or [e.get("use_for", "context")])
-        evidence_lines.append(
-            f"- ({evidence_id}) [{use_for}] {e.get('fact', '')} (source: {h.source or h.host}, {date})"
-        )
-    evidence = "\n".join(evidence_lines) or "(none)"
+        tags = e.get("use_for_all") or [e.get("use_for", "context")]
+        line = f"- ({evidence_id}) [{', '.join(tags)}] {e.get('fact', '')} (source: {h.source or h.host}, {date})"
+        if str(e.get("detail") or "").strip():
+            line += f"\n    DETAIL: {str(e['detail']).strip()}"
+        grouped[tags[0] if tags[0] in grouped else "context"].append(line)
+    parts: list[str] = []
+    for key, label in _EVIDENCE_GROUPS:
+        if grouped[key]:
+            parts.append(f"### EVIDENCE FOR {label}")
+            parts.extend(grouped[key])
+    evidence = "\n".join(parts) or "(none)"
     section(logger, "FINAL EVIDENCE PASSED TO WRITER")
     logger.info(evidence)
     return evidence
+
+
+_EVIDENCE_LINE_RE = re.compile(r"^- \((W\d+)\) \[([^\]]*)\] (.*) \(source: .*\)\s*$")
+
+
+def _parse_evidence(evidence: str) -> list[dict]:
+    """Inverse of run_build_evidence: [{id, tags, group, fact, detail}]. Parsing the block (rather than threading
+    the structured list through every caller) keeps the string interface that saved fixtures and the stepwise API use."""
+    items: list[dict] = []
+    for line in (evidence or "").splitlines():
+        m = _EVIDENCE_LINE_RE.match(line)
+        if m:
+            tags = [t.strip() for t in m.group(2).split(",") if t.strip()]
+            items.append({"id": m.group(1), "tags": tags, "group": tags[0] if tags else "context",
+                          "fact": m.group(3).strip(), "detail": ""})
+        elif items and line.strip().startswith("DETAIL:"):
+            items[-1]["detail"] = line.strip()[len("DETAIL:"):].strip()
+    return items
+
+
+def _min_evidence_total(n_items: int) -> int:
+    """How many distinct evidence items a draft must use: about 45% of what SELECT vetted, never fewer than 6
+    nor more than 14 (a ~1,500-word article can carry that many without crowding), and never more than exists."""
+    return min(n_items, max(6, min(14, round(n_items * 0.45)))) if n_items else 0
+
+
+# (SOP tag, evidence group it draws on, distinct items the section should use, label for the feedback)
+_SECTION_EVIDENCE_NEEDS = (
+    ("trends", "trends", 6, "market-trends"),
+    ("country_us", "us", 2, "U.S. analysis"),
+    ("key_players", "players", 3, "key-players"),
+)
+
+
+_MONTH_WORDS = frozenset({
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+    "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+})
+
+
+def _strict_signature(fact: str) -> set[str]:
+    """The names and figures that identify ONE evidence item. Starts from checks._fact_signature_tokens but drops what
+    appears in almost any draft and so proves nothing: years, month names, and very short words."""
+    return {
+        t for t in checks._fact_signature_tokens(fact)
+        if t not in _MONTH_WORDS and not re.fullmatch(r"20[1-3]\d,?", t) and (len(t) >= 4 or any(c.isdigit() for c in t))
+    }
+
+
+# Capitalised words that name no one in particular; a match on one of these alone proves nothing.
+_GENERIC_NAME_WORDS = frozenset({
+    "software", "platform", "platforms", "wealth", "management", "capital", "group", "global", "financial", "partners",
+    "advisors", "advisor", "advisory", "investment", "investments", "services", "technologies", "technology", "solutions",
+    "holdings", "bank", "asset", "assets", "market", "markets", "digital", "systems", "company", "companies", "fund",
+    "funds", "life", "line", "first", "new", "data", "cloud", "marketing", "business", "industry", "research",
+})
+
+
+_ENTITY_RE = re.compile(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b")
+
+
+def _fact_entities(fact: str) -> list[tuple[list[str], str]]:
+    """Named things in a fact: (specific words, whole phrase) for each capitalised run that names someone in
+    particular. Generic words (wealth, platform), month names and sentence-opening filler are not "specific"."""
+    out = []
+    for run in _ENTITY_RE.findall(fact):
+        words = [w.strip(".'-") for w in run.split()]
+        specific = [
+            w.lower() for w in words
+            if len(w) >= 3 and w.lower() not in _GENERIC_NAME_WORDS and w.lower() not in _MONTH_WORDS
+            and w.lower() not in checks._FACT_GENERIC_CAPS
+        ]
+        if specific:
+            out.append((specific, " ".join(w.lower() for w in words)))
+    return out
+
+
+def _evidence_used_ids(text: str, items: list[dict]) -> set[str]:
+    """Ids of evidence items that really appear in `text`. An item is used when one of its named entities does (a
+    single-word name as a word; a longer name as its whole phrase, or all of its specific words when there are two
+    or more), or when at least two of its figures do. A lone common word that happens to sit inside a name
+    ("Network" in "Network Wealth") must NOT count: the first version of this matcher did, and reported 16 of 36
+    items used when a hand read of the draft found 9."""
+    tokens, low = checks._market_tokens(text), text.lower()
+    used = set()
+    for it in items:
+        hit = False
+        for specific, phrase in _fact_entities(it["fact"]):
+            if len(phrase.split()) == 1:
+                hit = specific[0] in tokens
+            elif len(specific) >= 2:
+                hit = phrase in low or all(w in tokens for w in specific)
+            else:
+                hit = phrase in low
+            if hit:
+                break
+        if not hit:
+            figures = {t for t in _strict_signature(it["fact"]) if any(c.isdigit() for c in t)}
+            hit = sum(1 for t in figures if t in tokens or t in low) >= 2
+        if hit:
+            used.add(it["id"])
+    return used
+
+
+def _evidence_problems(sections: list[dict], items: list[dict], min_total: int) -> list[str]:
+    """Deterministic backstop for the evidence-backing rule (see _evidence_used_ids for what counts as "used"). The
+    prompt states every minimum; a prompt-only rule was ignored (5 of 33 items cited in testing)."""
+    if not items:
+        return []
+
+    def used_in(text: str) -> set[str]:
+        return _evidence_used_ids(text, items)
+
+    def hint(candidates: list[dict], limit: int = 5) -> str:
+        return "; ".join(f"({c['id']}) {c['fact'][:80]}" for c in candidates[:limit])
+
+    body = [p for s in sections for p in s["paragraphs"] if _word_count(p)]
+    used_all = used_in("\n".join(_sponsor_blank(p) for p in body))
+    problems: list[str] = []
+    if len(used_all) < min_total:
+        unused = [it for it in items if it["id"] not in used_all]
+        problems.append(
+            f"only {len(used_all)} of the {len(items)} evidence items are actually used in the article but at least "
+            f"{min_total} must be — work more of them into the sections they belong to, with their specifics, for "
+            f"example: {hint(unused)}"
+        )
+    for tag, group, need, label in _SECTION_EVIDENCE_NEEDS:
+        group_items = [it for it in items if it["group"] == group]
+        need = min(need, len(group_items))
+        text = "\n".join(_sponsor_blank(p) for s in sections if tag in s["sop"] for p in s["paragraphs"])
+        have = used_in(text)
+        if len(have) < need:
+            unused = [it for it in group_items if it["id"] not in have]
+            problems.append(
+                f"the {label} section uses {len(have)} evidence item(s) but needs at least {need}, each backing a "
+                f"specific claim with its named source, date and concrete detail — use from: {hint(unused)}"
+            )
+    trend_paras = [
+        p for s in sections if "trends" in s["sop"] for p in s["paragraphs"]
+        if _word_count(p) >= 40
+    ]
+    bare = [p for p in trend_paras if not used_in(_sponsor_blank(p))]
+    if bare and any(it["group"] == "trends" for it in items):
+        problems.append(
+            f"{len(bare)} market-trend paragraph(s) rest on no evidence item at all (a trend must be backed by a named "
+            "company, source or figure, not asserted): " + " | ".join(f'"{" ".join(p.split()[:9])}..."' for p in bare[:3])
+        )
+    return problems
 
 
 def _link_placement_problems(sections: list[dict], sponsor_text: str, market_name: str) -> list[str]:
@@ -827,7 +1039,7 @@ def _repeated_keyword_shape_problem(full_text: str, secondary_kw: list[tuple[str
 
 def _write_problems(
     sections: list[dict], report: reports.Report, original_body: str, report_text: str, sponsor_text: str = "",
-    secondary_kw: list[tuple[str, str]] = (),
+    secondary_kw: list[tuple[str, str]] = (), evidence_items: list[dict] = (), min_evidence: int = 0,
 ) -> list[str]:
     """Hard-requirement violations in a CALL 3 draft, phrased as instructions for a retry."""
     paragraphs = [p for s in sections for p in s["paragraphs"]]
@@ -878,6 +1090,7 @@ def _write_problems(
                 if words > 1950 else " — add the missing substance to the paragraphs that are under their stated ranges"
             )
         )
+    problems.extend(_evidence_problems(sections, list(evidence_items), min_evidence))
     sources = [("original article", original_body)] + ([("CMI report", report_text)] if report_text else [])
     pct, examples = _verbatim_overlap(paragraphs, sources, report_name=report.name)
     if pct > 5.0:
@@ -910,7 +1123,11 @@ def run_write(
     max_own_words = max(0, 1700 - sponsor_words)
     logger.info(f"[write] sponsor mode: {mode} ({sponsor_words} word(s): {sponsor.text[:80]!r})")
     logger.info(f"[write] word budget: sponsor={sponsor_words}, own writing max={max_own_words}")
+    evidence_items = _parse_evidence(evidence)
+    min_evidence = _min_evidence_total(len(evidence_items))
+    logger.info(f"[write] evidence: {len(evidence_items)} item(s), at least {min_evidence} must be used")
     user_prompt = prompts.WRITE_USER.format(
+        min_evidence=min_evidence,
         sponsor_words=sponsor_words,
         max_own_words=max_own_words,
         sop=prompts.SOP,
@@ -964,7 +1181,9 @@ def run_write(
             written, sections, title = first_attempt
             break
 
-        problems = _write_problems(sections, report, article.body, report_text, sponsor.text, secondary_kw)
+        problems = _write_problems(
+            sections, report, article.body, report_text, sponsor.text, secondary_kw, evidence_items, min_evidence,
+        )
         if not problems or attempt == 2:
             if problems:
                 logger.warning(f"[write] draft still has problems after the retry: {'; '.join(problems)}")

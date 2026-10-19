@@ -127,7 +127,7 @@ def _parse_json(text: str) -> dict:
 
 def chat_json(
     system: str, user: str, *, temperature: float = 0.3, retries: int = 2,
-    call_name: str = "call", logger: logging.Logger = _null_logger,
+    call_name: str = "call", logger: logging.Logger = _null_logger, max_tokens: int | None = None,
 ) -> dict:
     logger.info(f"--- LLM call: {call_name} (model={LLM_MODEL}, temperature={temperature}) ---")
     logger.info(f"[{call_name}] SYSTEM PROMPT:\n{system}")
@@ -143,6 +143,7 @@ def chat_json(
                 messages=messages,
                 temperature=temperature,
                 response_format={"type": "json_object"},
+                **({"max_tokens": max_tokens} if max_tokens else {}),
             )
         except APITimeoutError as e:
             logger.error(f"[{call_name}] request to {LLM_BASE_URL} timed out after {LLM_TIMEOUT_S}s: {e}", exc_info=True)
