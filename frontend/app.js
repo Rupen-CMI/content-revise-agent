@@ -1,5 +1,16 @@
 // ---------------------------------------------------------------- config
-const API_BASE = window.API_BASE || "http://localhost:8000";
+// Default to the page's OWN origin, not a hardcoded hostname: the frontend is served by the same
+// FastAPI app the API lives on (main.py mounts it at "/"), so whatever host/port/protocol the
+// browser actually used to load this page is always correct and always same-origin. A hardcoded
+// "http://localhost:8000" silently diverges the moment the page is reached any other way — e.g.
+// start.bat opens the browser at http://127.0.0.1:8000, a different origin from "localhost" as far
+// as the browser's own connection/keepalive handling is concerned, even though both route to the
+// same loopback server. That mismatch was traced to heartbeat POSTs never registering at all
+// (autoshutdown's "ever_connected" stayed false for the whole session) while ordinary step calls
+// still worked — consistent with keepalive fetches to a cross-origin hostname behaving differently
+// from the page's own already-open connection.
+const API_BASE = window.API_BASE
+  || (window.location.protocol === "file:" ? "http://localhost:8000" : window.location.origin);
 
 // ---------------------------------------------------------------- tab heartbeat
 // Lets a server started by start.bat notice when the last tab closes and stop itself. A
@@ -72,8 +83,10 @@ function iconify(root = document) {
 // lives server-side in _RUNS, keyed by run_token. On reload we just ask the server for it back.
 const RUN_KEY = "cmi-revamp-run";
 
-// /finalize pops the run from the server's _RUNS (single-use), so nothing is left to fetch back —
-// the finished result has to be the thing we persist client-side, not a pointer to it.
+// The server keeps a finalized run around (bounded by its own TTL/eviction, see _prune_runs)
+// so the final page's regenerate button can still resend /step4+/finalize on it, but a page
+// reload has no other way to recover the finished draft — so the result itself, not just a
+// pointer to it, is what gets persisted client-side.
 const RESULT_KEY = "cmi-revamp-result";
 
 function saveResult() {
@@ -496,9 +509,19 @@ function currentSponsorIndexInParagraphs() {
   return sponsor ? sponsor.index : null;
 }
 
+// Every "continue"/"regenerate" button below guards against firing its request twice
+// concurrently (a double-click, a stray repeat event, or two browser tabs on the same run) by
+// bailing out immediately if the run is already mid-flight on ANY step — found live: a /step3
+// call landing while /step2's own search was still running server-side, which the backend
+// correctly rejected (400) but which should never have been sent in the first place.
+function _runBusy() {
+  return !!state.run && typeof state.run.stage === "string" && state.run.stage.endsWith("_pending");
+}
+
 // Step 1 -> Step 2: human confirms the market. Only now does the backend search the web —
 // for the CONFIRMED report's name, not the LLM's pre-confirmation guess.
 document.getElementById("step1-confirm-btn").addEventListener("click", async () => {
+  if (_runBusy()) return;
   const picked = state.run.pickedReport;
   if (!picked) return;
   state.run.stage = "search_pending";
@@ -523,6 +546,7 @@ document.getElementById("step1-confirm-btn").addEventListener("click", async () 
 
 // Step 2 -> Step 3: select usable facts from the gathered evidence.
 document.getElementById("step2-confirm-btn").addEventListener("click", async () => {
+  if (_runBusy()) return;
   state.run.stage = "select_pending";
   setNav("step3");
   render();
@@ -540,6 +564,7 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
 
 // Step 3 -> Step 4: write the article.
 document.getElementById("step3-confirm-btn").addEventListener("click", async () => {
+  if (_runBusy()) return;
   state.run.stage = "write_pending";
   setNav("step4");
   render();
@@ -556,7 +581,28 @@ document.getElementById("step3-confirm-btn").addEventListener("click", async () 
   render();
 });
 
+// Resends the SAME CALL 3 (write) + CALL 4 (revise) request against the run's already-frozen
+// evidence (run.evidence never changes here) to get a different draft from the LLM — lets a user
+// reroll Step 4's output without re-running Steps 1-3 if the first draft wasn't a good fit.
+document.getElementById("step4-regenerate-btn").addEventListener("click", async () => {
+  if (_runBusy()) return;
+  state.run.stage = "write_pending";
+  render();
+  try {
+    const data = await apiPost("/step4", { run_token: state.run.token });
+    state.run.stage = "write_done";
+    state.run.title = data.title;
+    state.run.sections = data.sections;
+  } catch (e) {
+    showError("Step 4 (regenerate draft)", e);
+    state.run.stage = "write_done";
+  }
+  saveRunPointer();
+  render();
+});
+
 document.getElementById("step4-confirm-btn").addEventListener("click", async () => {
+  if (_runBusy()) return;
   state.run.stage = "finalize_pending";
   setNav("final");
   render();
@@ -564,13 +610,39 @@ document.getElementById("step4-confirm-btn").addEventListener("click", async () 
     const data = await apiPost("/finalize", { run_token: state.run.token });
     state.result = data.result;
     // Keep state.run (not null) so Steps 1-4 can still show their own content read-only after
-    // finalize — /finalize is single-use server-side, so this client-held copy is the only
-    // place that data survives; nulling it here was why those tabs went blank after finalizing
-    // and then navigating back (or reloading, since RESULT_KEY persists this same run object).
+    // finalize, and so the final page's regenerate button still has a run_token to resend —
+    // nulling it here was why those tabs went blank after finalizing and then navigating back
+    // (or reloading, since RESULT_KEY persists this same run object).
     state.run.stage = "finalized";
     saveResult();
   } catch (e) {
     showError("Final checks", e);
+  }
+  saveRunPointer();
+  render();
+});
+
+// Resends /step4 (write + revise) then /finalize against the same frozen evidence, to get a
+// different finished draft without re-running Steps 1-3 — same idea as step4-regenerate-btn,
+// just one step further along, for when the issue only became visible after seeing the final
+// SOP-checked/highlighted version.
+document.getElementById("final-regenerate-btn").addEventListener("click", async () => {
+  if (_runBusy()) return;
+  state.run.stage = "write_pending";
+  render();
+  try {
+    const written = await apiPost("/step4", { run_token: state.run.token });
+    state.run.title = written.title;
+    state.run.sections = written.sections;
+    state.run.stage = "finalize_pending";
+    render();
+    const data = await apiPost("/finalize", { run_token: state.run.token });
+    state.result = data.result;
+    state.run.stage = "finalized";
+    saveResult();
+  } catch (e) {
+    showError("Final checks (regenerate draft)", e);
+    state.run.stage = "finalized";
   }
   saveRunPointer();
   render();
@@ -781,7 +853,7 @@ function renderStep2Panel() {
     ? hits.map((h) => {
         let host = "web";
         try { host = new URL(h.url).hostname.replace(/^www\./, ""); } catch { /* keep "web" */ }
-        const kind = h.is_news ? "News" : "Background";
+        const kind = h.is_news ? "News" : "Web";
         const date = h.date ? h.date.slice(0, 10) : "undated";
         const snippet = (h.snippet || "").trim();
         return `<li><a href="${escapeHtml(h.url)}" target="_blank" rel="noopener">${escapeHtml(h.title)}</a>`
@@ -828,7 +900,8 @@ function renderStep3Panel() {
         if (hit) {
           sourceLabel = hit.source || (() => { try { return new URL(hit.url).hostname.replace(/^www\./, ""); } catch { return "web"; } })();
         }
-        const tag = useForLabel[e.use_for] || "Context";
+        const tag = (e.use_for_all && e.use_for_all.length ? e.use_for_all : [e.use_for])
+          .map((t) => useForLabel[t] || "Context").join(" + ");
         const sourceEl = hit && hit.url
           ? `<a href="${escapeHtml(hit.url)}" target="_blank" rel="noopener">${escapeHtml(sourceLabel)}</a>`
           : escapeHtml(sourceLabel);
@@ -857,10 +930,11 @@ function renderStep4Panel() {
   document.getElementById("step4-title").textContent = state.run.title || "";
   document.getElementById("step4-sections").innerHTML = renderSections(state.run.sections || []);
 
-  // Once finalized, /finalize is single-use server-side — the Finish/Cancel controls would
-  // only error if clicked again, so hide them; this panel is read-only history at that point.
+  // Once finalized, this step4 tab becomes read-only history — Finish/Cancel no longer apply,
+  // and regenerating from here on is done via final-regenerate-btn on the final page instead.
   const isFinalized = state.run.stage === "finalized";
   document.getElementById("step4-confirm-btn").hidden = isFinalized;
+  document.getElementById("step4-regenerate-btn").hidden = isFinalized;
   document.getElementById("step4-cancel-btn").hidden = isFinalized;
 }
 
@@ -873,10 +947,55 @@ function renderSegments(segments) {
     .join("");
 }
 
+// A paragraph can be a lead-in sentence followed by "\n- " bulleted lines (trends, segmentation —
+// see docx_io.py's _split_bullet_lines, the source of truth for this convention) instead of plain
+// prose, in the SAME segments array the backend already sent (the CMI-link splitting in
+// main.py:_segment_dicts only breaks on the link token, so a "\n" inside a segment's own text
+// survives untouched). Splits that one segments array into (leadSegments, [bulletSegments, ...])
+// by cutting each segment's text at its own "\n" boundaries and re-tagging which output line each
+// slice landed on — a segment whose url carries into a bullet (e.g. a link embedded in a bullet
+// line) stays attached to the right line, not just the first one.
+const _BULLET_LINE_RE = /^-\s+/;
+
+function _splitBulletSegments(segments) {
+  const full = (segments || []).map((s) => s.text).join("");
+  if (!full.includes("\n- ") && !_BULLET_LINE_RE.test(full)) return null;
+  const lines = [];
+  let current = [];
+  for (const seg of segments || []) {
+    const parts = seg.text.split("\n");
+    parts.forEach((part, i) => {
+      if (i > 0) { lines.push(current); current = []; }
+      if (part) current.push({ text: part, url: seg.url });
+    });
+  }
+  lines.push(current);
+  const lead = lines[0] || [];
+  const bullets = lines.slice(1)
+    .map((line) => {
+      if (!line.length) return null;
+      const first = { ...line[0], text: line[0].text.replace(_BULLET_LINE_RE, "") };
+      return [first, ...line.slice(1)];
+    })
+    .filter((line) => line && line.some((s) => s.text.trim()));
+  return bullets.length ? { lead, bullets } : null;
+}
+
+// Shared by the plain and highlighted renderers: `renderInline(segments)` turns one line's
+// segments into inline HTML (escaping/highlighting is the caller's job), this just decides
+// whether a paragraph becomes <p> or <p>+<ul><li>.
+function _renderParagraph(segments, renderInline) {
+  const split = _splitBulletSegments(segments);
+  if (!split) return `<p>${renderInline(segments)}</p>`;
+  const leadHtml = split.lead.some((s) => s.text.trim()) ? `<p>${renderInline(split.lead)}</p>` : "";
+  const items = split.bullets.map((line) => `<li>${renderInline(line)}</li>`).join("");
+  return `${leadHtml}<ul>${items}</ul>`;
+}
+
 function renderSections(sections) {
   return sections.map((s) => {
     const heading = s.heading ? `<h4>${escapeHtml(s.heading)}</h4>` : "";
-    const paras = (s.paragraphs || []).map((p) => `<p>${renderSegments(p)}</p>`).join("");
+    const paras = (s.paragraphs || []).map((p) => _renderParagraph(p, renderSegments)).join("");
     return heading + paras;
   }).join("");
 }
@@ -946,30 +1065,37 @@ function _renderHighlightedText(text, matchers) {
   }).join("");
 }
 
+// Maps a segment's server-assigned "kw" label (checks.find_keyword_spans ran concept-matching
+// there, not a literal phrase search — see main.py's _apply_keyword_spans) to its highlight class.
+const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary" };
+const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword" };
+
 function renderSegmentsHighlighted(segments, matchers) {
   return (segments || [])
-    .map((seg) => (seg.url
-      ? `<a href="${escapeHtml(seg.url)}" target="_blank" rel="noopener">${_renderHighlightedText(seg.text, matchers)}</a>`
-      : _renderHighlightedText(seg.text, matchers)))
+    .map((seg) => {
+      // A segment already labeled by the backend is rendered as its own single mark — no
+      // client-side phrase search needed (and none would work: the matched words may be a
+      // reworded form of the keyword, not the literal phrase).
+      const inner = seg.kw
+        ? `<mark class="${_KW_LABEL_CLASS[seg.kw] || ""}" title="${escapeHtml(_KW_LABEL_TITLE[seg.kw] || "")}">${escapeHtml(seg.text)}</mark>`
+        : _renderHighlightedText(seg.text, matchers);
+      return seg.url
+        ? `<a href="${escapeHtml(seg.url)}" target="_blank" rel="noopener">${inner}</a>`
+        : inner;
+    })
     .join("");
 }
 
-// Builds the matcher list for one run's result: the primary keyword (highest priority), every
-// secondary keyword actually supplied, and one matcher per cited evidence paragraph — matching
-// the FACT text isn't possible (WRITE paraphrases it), so citations instead highlight whichever
-// paragraph the model itself reported using that evidence in (see pipeline.run_write's
+// Builds the matcher list for one run's result: one matcher per cited evidence paragraph.
+// Primary/secondary keywords are NOT included here — they arrive pre-highlighted per segment
+// (seg.kw, set server-side by main.py's _apply_keyword_spans using the same concept-matching
+// algorithm the pipeline itself judges keyword usage with) since a client-side literal-phrase
+// search would miss almost every real use once a keyword has been naturally reworded. Matching
+// the evidence FACT text isn't possible (WRITE paraphrases it), so citations instead highlight
+// whichever paragraph the model itself reported using that evidence in (see pipeline.run_write's
 // evidence_citations, verified server-side against the real draft before being sent here).
 function _buildHighlightMatchers(result) {
   const matchers = [];
-  if (result.primary_keyword) {
-    matchers.push({ phrase: result.primary_keyword, cls: "hl-primary", title: "Primary keyword" });
-  }
-  for (const kw of result.secondary_keywords || []) {
-    matchers.push({ phrase: kw, cls: "hl-secondary", title: "Secondary keyword" });
-  }
-  // Evidence citations highlight by paragraph match, not phrase match: a citation's "paragraph"
-  // field is the full paragraph text, so matching it against itself always highlights exactly
-  // that whole paragraph, once per evidence ID it cites.
   for (const c of result.evidence_citations || []) {
     if (c.paragraph) matchers.push({ phrase: c.paragraph, cls: "hl-evidence", title: c.fact ? `Evidence ${c.id}: ${c.fact}` : `Evidence ${c.id}` });
   }
@@ -980,7 +1106,9 @@ function renderSectionsHighlighted(sections, result) {
   const matchers = _buildHighlightMatchers(result);
   return sections.map((s) => {
     const heading = s.heading ? `<h4>${escapeHtml(s.heading)}</h4>` : "";
-    const paras = (s.paragraphs || []).map((p) => `<p>${renderSegmentsHighlighted(p, matchers)}</p>`).join("");
+    const paras = (s.paragraphs || [])
+      .map((p) => _renderParagraph(p, (segs) => renderSegmentsHighlighted(segs, matchers)))
+      .join("");
     return heading + paras;
   }).join("");
 }
@@ -999,10 +1127,13 @@ function renderFinalPanel() {
   const spinner = document.getElementById("final-spinner");
   const content = document.getElementById("final-content");
 
-  const finalizing = state.run && state.run.stage === "finalize_pending";
+  // write_pending is included here too: the regenerate button on this page drives the run
+  // through /step4 again before /finalize, and both legs should read as one continuous spinner
+  // rather than flashing the stale draft back in between the two requests.
+  const finalizing = state.run && (state.run.stage === "finalize_pending" || state.run.stage === "write_pending");
   spinner.hidden = !finalizing;
-  content.hidden = !state.result;
-  if (!state.result) return;
+  content.hidden = finalizing || !state.result;
+  if (finalizing || !state.result) return;
 
   const result = state.result;
   const passed = result.checks.filter((c) => c.passed).length;

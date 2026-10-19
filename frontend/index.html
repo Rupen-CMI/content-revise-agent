@@ -258,6 +258,7 @@
         <div class="content-card article-render" id="step4-sections"></div>
         <div class="btn-row">
           <button class="btn btn-primary" id="step4-confirm-btn"><i data-lucide="check"></i> Finish</button>
+          <button class="btn btn-ghost" id="step4-regenerate-btn"><i data-lucide="refresh-cw"></i> Regenerate draft</button>
           <button class="btn btn-ghost" id="step4-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
         </div>
       </div>
@@ -290,7 +291,10 @@
         </div>
 
         <div class="scroll-box article-render" id="final-article"></div>
-        <button class="btn btn-primary" id="final-download-btn"><i data-lucide="download"></i> Download revised .docx</button>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="final-download-btn"><i data-lucide="download"></i> Download revised .docx</button>
+          <button class="btn btn-ghost" id="final-regenerate-btn"><i data-lucide="refresh-cw"></i> Regenerate draft</button>
+        </div>
         <details class="preview-box">
           <summary><i data-lucide="chevron-right"></i> SOP compliance checklist</summary>
           <ul class="checklist" id="final-checklist"></ul>

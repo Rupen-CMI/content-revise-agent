@@ -9,9 +9,11 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 DB_URL = os.environ["DB_URL"]
 
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-LLM_API_KEY = os.getenv("LLM_API_KEY", os.getenv("DEEPSEEK_API_KEY", ""))
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+# DeepSeek is the only supported model: no provider/model overrides and no fallback. If it is
+# unreachable or errors, the pipeline surfaces an LLMError instead of trying anything else.
+LLM_BASE_URL = "https://api.deepseek.com"
+LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+LLM_MODEL = "deepseek-chat"
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "600"))
 
 CMI_SITE = "https://www.coherentmarketinsights.com"

@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException, TimeoutException
 
+import sources
 from config import CMI_HOST
 
 _null_logger = logging.getLogger("revamp.null")
@@ -28,8 +29,7 @@ _BLOCKED_HOSTS = (
     "technavio.com", "expertmarketresearch.com", "databridgemarketresearch.com", "polarismarketresearch.com",
     "skyquestt.com", "straitsresearch.com", "zionmarketresearch.com", "maximizemarketresearch.com",
     "marketresearch.com", "giiresearch.com", "towardsfnb.com", "towardshealthcare.com", "novaoneadvisor.com",
-    "gminsights.com", "reportlinker.com", "einpresswire.com", "openpr.com", "globenewswire.com",
-    "prnewswire.com", "linkedin.com", "youtube.com", "reddit.com", "quora.com", "facebook.com",
+    "gminsights.com", "reportlinker.com", "einpresswire.com", "openpr.com", "linkedin.com", "youtube.com", "reddit.com", "quora.com", "facebook.com",
     "instagram.com", "pinterest.com", "tiktok.com",
     # More rival-research/report-PR mills surfaced testing niche B2B markets (chemicals, medical
     # device outsourcing) — same "Market Size, Share, Growth" SEO-report pattern as the firms above.
@@ -43,7 +43,37 @@ _BLOCKED_HOSTS = (
     # happened in X lately" — a "Wealth - Meaning, Types…" page is not market evidence.
     "wikipedia.org", "grokipedia.com", "wallstreetmojo.com", "investopedia.com", "britannica.com",
     "merriam-webster.com", "dictionary.com", "corporatefinanceinstitute.com",
+) + tuple(sources.JUNK_HOSTS)
+
+# Title shapes that are never a reported event, whatever the host — including news hits, which the
+# regexes below skip. Found in 138 real run logs: finance.yahoo.com alone supplied ~750 hits, mostly
+# earnings-call transcripts and stock-pick pieces; rival report ads slipped through on unlisted hosts
+# ("Loyalty Management Market worth $23.11 billion by 2032 - Report by MarketsandMarkets").
+_JUNK_ANY_TITLE_RE = re.compile(
+    r"\bstocks?\b|\bearnings (call|season|preview|report)\b|\bq[1-4]\b.{0,20}\b(earnings|results|scorecard|deep dive)\b"
+    r"|\b(call|transcript) highlights\b|\bprice target\b|\bbuy, hold or sell\b|\bzacks\b|\bsaid on its\b"
+    r"|\bmarket\b.{0,40}\b(worth|to reach|to hit|projected to|valued at|set to reach)\b.{0,30}\b(billion|million|by 20\d\d)\b"
+    r"|\b(report|study) by (marketsandmarkets|grand view|fortune business|mordor|imarc|allied market|"
+    r"research and markets|precedence research)\b"
+    r"|\bmarket (size|share|forecast|analysis|outlook|report)\b.{0,60}\b20[2-4]\d\b",
+    re.IGNORECASE,
 )
+# Section hubs, home pages, company-profile and event-session pages — "Marketing News | <Site>", "Home
+# Page", "Latest ... News", "Company Profile and News". Surfaced by site-restricted text queries, which
+# return a site's own landing pages far more often than its articles.
+_HUB_TITLE_RE = re.compile(
+    r"\b(home ?page|company profile|session details|the home of|coverage of|search results|all (articles|news))\b"
+    r"|\blatest\b.{0,40}\bnews\b|\bnews (and|&) (insights|analysis|updates)\b"
+    r"|^[^|–]{0,60}\bnews\b\s*[|–-]|\bthe best\b.{0,60}\b(in|for) 20\d\d\b",
+    re.IGNORECASE,
+)
+# A bare company name ("SEI Investments Co.", "Zeta Global Holdings Corp.") is a quote/profile page.
+_BARE_COMPANY_TITLE_RE = re.compile(
+    r"^[\w .,&'’-]{2,70}\b(corp|corporation|co|inc|ltd|llc|plc|holdings?|group|ag|sa|se|nv)\.?$", re.IGNORECASE
+)
+# Section/landing pages and profile pages ("Newsroom", "Nasdaq Watch", "United States", "Ross Allardice")
+# are 1-3 words; real headlines carrying a fact are longer.
+_MIN_TITLE_WORDS = 4
 
 # Titles of definition/how-to/explainer/directory pages — reference material, not a reported
 # event. Applied to text (background) hits only; news hits are dated articles about events and
@@ -97,16 +127,16 @@ _STOPWORDS = frozenset({
     "to", "with", "based", "services", "service", "solutions", "solution", "systems", "system", "other",
 })
 
-# Deliberate, strict, deterministic policy: DDGS NEWS evidence must be at most 14 days
-# old to ever be presented as a "recent development" fact. Enforced entirely here, before
-# the SELECT call ever sees the hit, so no LLM is ever asked to judge whether a date
-# counts as fresh. The underlying search engines sometimes report coarse, ambiguous
-# relative ages (e.g. "2 weeks ago" can mean anywhere from ~10-20 days in practice), which
-# can occasionally cause a hit that is actually still fresh to be dropped at this boundary —
-# that is an accepted tradeoff: silently admitting a stale fact into a published blog post
-# is a worse failure than discarding one borderline-fresh search hit out of dozens collected
-# per run.
-_MAX_NEWS_AGE = timedelta(days=14)
+# Deterministic cutoff for DDGS NEWS evidence, enforced here before SELECT sees the hit so no LLM
+# judges freshness. Six months, not weeks: the articles aren't time-sensitive analysis, and a
+# 14-day window was discarding most otherwise-useful evidence. The writer still has to state each
+# dated fact's month and year, so an older item is never passed off as "this week's" news.
+_MAX_NEWS_AGE = timedelta(days=180)
+# Ordinary web-search (non-news) hits are not held to the news window, since they carry only
+# a snippet date at best — but a hit with a visible date older than the pipeline's 12-month
+# freshness window (freshness.STALE_AFTER) must not reach SELECT either, or a stale event can end
+# up cited in the draft (seen live: a July 2025 acquisition cited as a current development).
+_MAX_WEB_AGE = timedelta(days=365)
 _PER_QUERY = 8
 
 # Measured success rate per underlying ddgs engine across 63 real run logs (primp response
@@ -129,7 +159,12 @@ _PER_QUERY = 8
 # startpage was cut as well: bot-challenged (0 results on 16/16 calls in a 2026-10-13 test),
 # so it added only latency.
 _NEWS_BACKENDS = "bing,yahoo"
-_TEXT_BACKENDS = "yahoo"
+# Re-tested live 2026-10-18 (ddgs 9.15.0). "bing" is NOT a registered text engine here: passing it makes
+# ddgs silently fan out to every text engine (brave 429 on all calls, grokipedia 502, mojeek 403, plus
+# wikipedia/grokipedia title lookups). Single engines are flaky (yahoo alone: plain queries only; startpage,
+# mojeek, duckduckgo alone: nothing), but this explicit combination returned 7 hits for both plain and
+# site:-restricted queries in 2-4s, without the engines that only fail or add encyclopedia entries.
+_TEXT_BACKENDS = "startpage,mojeek,yahoo,duckduckgo"
 
 # Search providers throttle rapid-fire bursts from one IP (we watched DDG stall every
 # query after several runs in quick succession, and logs show Brave 429-ing and DuckDuckGo's
@@ -192,13 +227,12 @@ def _snippet_date(snippet: str) -> datetime | None:
 
 
 def _news(d: DDGS, query: str) -> list[SearchHit]:
-    # timelimit="m": ask the engines for the past month. Without it the event-style queries return
-    # relevance-ranked news from any time (46 of 48 hits in one live test were months old and were
-    # then discarded by the 21-day cutoff), so the per-query slots were spent on stale items.
-    # The engines only loosely honor it, which is why the strict 21-day filter still runs after.
+    # DDGS only offers d/w/m/y, so "y" is the narrowest limit that covers the 6-month window;
+    # _MAX_NEWS_AGE then trims it to 180 days. Without any limit the engines return
+    # relevance-ranked news from any time and most per-query slots go to years-old items.
     return [
         SearchHit(r["title"], r.get("body", ""), r["url"], r.get("source", ""), _parse_date(r.get("date")), is_news=True)
-        for r in d.news(query, max_results=_PER_QUERY, backend=_NEWS_BACKENDS, timelimit="m")
+        for r in d.news(query, max_results=_PER_QUERY, backend=_NEWS_BACKENDS, timelimit="y")
     ]
 
 
@@ -346,6 +380,24 @@ def _player_patterns(key_players: list[str]) -> list[tuple[str, re.Pattern]]:
     return [(p, re.compile(r"\b" + re.escape(p) + r"\b", re.IGNORECASE)) for p in key_players if p]
 
 
+def _is_key_player_own_site(host: str, key_players: list[str]) -> str | None:
+    """A host named after one of the market's key players ("temenos.com", "investor.fisglobal.com",
+    "broadridge.com") is that company's own site — product pages, docs, investor relations — which is
+    its marketing, not a third-party reported fact. Generic: driven by the report's own key players,
+    so it needs no per-vendor list. Returns the matched player, or None."""
+    label = host.removeprefix("www.").split(".")
+    label = label[-3] if len(label) >= 3 and label[-2] in ("co", "com", "org", "net", "gov") else (label[-2] if len(label) >= 2 else label[0])
+    label = re.sub(r"[^a-z0-9]", "", label)
+    for player in key_players:
+        full = re.sub(r"[^a-z0-9]", "", player.lower())
+        first = re.sub(r"[^a-z0-9]", "", (player.split() or [""])[0].lower())
+        for cand in {full, first}:
+            short, long_ = sorted((cand, label), key=len)
+            if len(short) >= 4 and long_.startswith(short):
+                return player
+    return None
+
+
 def filter_hits(
     hits: list[SearchHit], phrases: list[str], blocked_hosts: tuple[str, ...] = (),
     limit: int = 30, logger: logging.Logger = _null_logger,
@@ -361,6 +413,7 @@ def filter_hits(
     logger.info(f"[filter] key players ({len(key_players)}): {list(key_players)}")
     player_res = _player_patterns(list(key_players))
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
+    web_cutoff = datetime.now(timezone.utc) - _MAX_WEB_AGE
     blocked = _BLOCKED_HOSTS + tuple(h.lower() for h in blocked_hosts)
 
     seen: set[str] = set()
@@ -379,6 +432,21 @@ def filter_hits(
             dropped += 1
             logger.info(f"[filter] DROP (blocked host {hit.host}): {hit.title!r}")
             continue
+        own_site = _is_key_player_own_site(hit.host, list(key_players))
+        if own_site and not sources.is_trusted(hit.host):
+            dropped += 1
+            logger.info(f"[filter] DROP (company's own site: {own_site}) [{hit.host}] {hit.title!r}")
+            continue
+        title_words = len(hit.title.split())
+        if title_words < _MIN_TITLE_WORDS:
+            dropped += 1
+            logger.info(f"[filter] DROP (landing/profile page, {title_words}-word title) [{hit.host}] {hit.title!r}")
+            continue
+        if (_JUNK_ANY_TITLE_RE.search(hit.title) or _HUB_TITLE_RE.search(hit.title)
+                or (title_words <= 5 and _BARE_COMPANY_TITLE_RE.match(hit.title))):
+            dropped += 1
+            logger.info(f"[filter] DROP (stock/earnings/report-ad/quote page) [{hit.host}] {hit.title!r}")
+            continue
         if not hit.is_news and _DEFINITIONAL_TITLE_RE.search(hit.title):
             dropped += 1
             logger.info(f"[filter] DROP (definition/explainer page) [{hit.host}] {hit.title!r}")
@@ -390,6 +458,10 @@ def filter_hits(
         if hit.date and hit.is_news and hit.date < cutoff:
             dropped += 1
             logger.info(f"[filter] DROP (stale, {hit.date:%Y-%m-%d}): {hit.title!r}")
+            continue
+        if hit.date and not hit.is_news and hit.date < web_cutoff:
+            dropped += 1
+            logger.info(f"[filter] DROP (stale web result, {hit.date:%Y-%m-%d}): {hit.title!r}")
             continue
         fingerprint = hashlib.sha256(re.sub(r"\W+", " ", hit.title.lower()).strip().encode()).hexdigest()
         if fingerprint in seen or hit.url in seen:
@@ -407,6 +479,15 @@ def filter_hits(
             for _, (head, required, _, _) in gates
         )
         named_player = next((p for p, rx in player_res if rx.search(text)), None)
+        # A trusted source already vouches that this is real reporting, so the topical bar drops from
+        # "market identity AND head noun, as whole words" to "any market-identity word, matched by
+        # prefix". That is what lets "Wealthtech" / "Martech" / "Marketers" count for wealth / marketing,
+        # and lets a hit with no head noun ("Adhesion Wealth Launches Custom Model Solutions") through.
+        # SELECT still judges relevance afterwards.
+        trusted_ok = hit.is_news and sources.is_trusted(hit.host) and any(
+            any(w.startswith(t) for w in hit_tokens for t in (required or [head]))
+            for _, (head, required, _, _) in gates
+        )
         # A key-player name plus a generic category word is too weak a bar on its own — it is
         # exactly the shape of that company's OWN homepage/product page ("Zoho | Cloud Software
         # Suite", "Sign in to Zoho CRM"), true and on-topic but not a reported event or citable
@@ -414,12 +495,16 @@ def filter_hits(
         # more than the old fixed templates did. Require the hit to also be a dated NEWS result —
         # a background (undated) page naming a vendor is its own marketing material far more often
         # than it is a substantive third-party fact about that vendor.
-        player_ok = hit.is_news and named_player is not None and any(
-            any(t in hit_tokens for t in ([head] if not non_head else non_head))
-            for _, (head, _, _, non_head) in gates
+        player_ok = hit.is_news and named_player is not None and (
+            sources.is_trusted(hit.host) or any(
+                any(t in hit_tokens for t in ([head] if not non_head else non_head))
+                for _, (head, _, _, non_head) in gates
+            )
         )
         rules = "|".join(
-            r for ok, r in ((matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player")) if ok
+            r for ok, r in (
+                (matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player"), (trusted_ok, "trusted_source"),
+            ) if ok
         )
         if rules:
             kept += 1

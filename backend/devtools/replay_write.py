@@ -64,7 +64,7 @@ def main() -> None:
     written, title, sections, evidence_citations = pipeline.run_write(article, orient, sponsor, report, evidence, logger)
 
     print("Step 4b: revise for SEO/readability (real LLM call)...")
-    title, sections, evidence_citations = pipeline.run_revise(title, sections, evidence_citations, report, logger)
+    title, sections, evidence_citations = pipeline.run_revise(title, sections, evidence_citations, report, logger, evidence, sponsor.text)
 
     print(f"\nTITLE: {title}\n")
     for s in sections:

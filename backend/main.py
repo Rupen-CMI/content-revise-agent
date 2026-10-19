@@ -55,6 +55,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import checks
 import freshness
 import llm
 import pipeline
@@ -100,12 +101,22 @@ _STARTUP_GRACE_S = 180  # the browser never connected after launch
 _tabs: dict[str, float] = {}
 _tabs_lock = threading.Lock()
 _inflight = 0
+# Independent of the heartbeat mechanism: ANY real API call (step1-4, finalize, download, ...)
+# proves a tab is genuinely open right now, same as a heartbeat would. Added after a real failure
+# where the browser's heartbeat POSTs never registered at all (traced to API_BASE pointing at
+# "localhost" while the page itself was opened at "127.0.0.1" — a different origin as far as the
+# browser's keepalive-fetch handling is concerned) while ordinary step calls kept working the whole
+# time, yet the watchdog still shut the server down mid-session because it only trusted the
+# heartbeat's own bookkeeping. This gives it a second, independent signal so one broken channel
+# can't take the whole safety check down with it.
+_last_api_activity = time.time()
 
 
 @app.middleware("http")
 async def _count_inflight(request, call_next):
-    global _inflight
+    global _inflight, _last_api_activity
     _inflight += 1
+    _last_api_activity = time.time()
     try:
         return await call_next(request)
     finally:
@@ -140,7 +151,10 @@ def _watchdog() -> None:
             for t in [t for t, seen in _tabs.items() if now - seen > _TAB_TTL_S]:
                 del _tabs[t]
             has_tabs = bool(_tabs)
-        if has_tabs:
+        # A real API call within the tab TTL counts the same as a heartbeat — see _last_api_activity
+        # above for why this independent signal exists.
+        recent_activity = (now - _last_api_activity) <= _TAB_TTL_S
+        if has_tabs or recent_activity:
             ever_connected, empty_since = True, None
             continue
         if empty_since is None:
@@ -328,14 +342,92 @@ def _segment_dicts(text: str, sponsor: Paragraph, report_url: str | None) -> lis
     return out
 
 
-def _display_sections(sections: list[dict], sponsor: Paragraph, report_url: str | None) -> list[dict]:
-    return [
-        {
-            "heading": s.get("heading", ""),
-            "paragraphs": [_segment_dicts(p, sponsor, report_url) for p in s.get("paragraphs", [])],
-        }
-        for s in sections
-    ]
+def _display_sections(
+    sections: list[dict], sponsor: Paragraph, report_url: str | None,
+    primary_kw: str | None = None, secondary_plan: list[tuple[str, str]] = (),
+) -> list[dict]:
+    out = []
+    for s in sections:
+        # Only the secondary keywords TAGGED FOR this section are eligible to highlight in it — a
+        # keyword's words showing up by coincidence in an unrelated section (or the market name
+        # appearing without that keyword's own suffix nearby) is not a confirmed use of it, just a
+        # false positive. See _apply_keyword_spans for how each one is matched within this section.
+        section_secondary = [(kw, pipeline._keyword_suffix(kw)) for kw, sec in secondary_plan
+                              if sec in s.get("sop", [])]
+        paragraphs = []
+        for p in s.get("paragraphs", []):
+            segs = _segment_dicts(p, sponsor, report_url)
+            if primary_kw:
+                segs = _apply_keyword_spans(segs, primary_kw, section_secondary)
+            paragraphs.append(segs)
+        out.append({"heading": s.get("heading", ""), "paragraphs": paragraphs})
+    return out
+
+
+
+
+def _apply_keyword_spans(
+    segments: list[dict], primary_kw: str, section_secondary: list[tuple[str, str]],
+) -> list[dict]:
+    """Highlights the primary keyword's exact text, plus each SECTION-SCOPED secondary keyword's
+    suffix word (only the keywords actually tagged for the section this paragraph belongs to —
+    see _display_sections). A secondary keyword's words may be reordered and split across a
+    sentence (see WRITE_USER's REORDER rule), so a tight literal-phrase match finds almost nothing
+    real; checks.secondary_keyword_spans_in_paragraph instead requires the market's own words and
+    the suffix's own words to each appear SOMEWHERE in the paragraph, which matches how the
+    backend's own coverage check judges a secondary keyword as used (see pipeline._keyword_stats) —
+    the highlight should show the reader the same thing the pipeline itself credited, not a
+    stricter standard that silently finds nothing on genuinely well-written paragraphs."""
+    plain = "".join(s["text"] for s in segments)
+
+    # Pass 1: stake out the primary keyword's own EXACT, literal occurrences first (a plain
+    # case-insensitive substring search, not the concept matcher) — these are always correct and
+    # always win, since the primary keyword is never reworded and its exact text is the one thing
+    # every CMI_LINK anchor and every full market-name mention actually is.
+    taken: list[str | None] = [None] * len(plain)
+    if primary_kw:
+        low_plain, low_phrase = plain.lower(), primary_kw.lower()
+        pos = 0
+        while (i := low_plain.find(low_phrase, pos)) != -1:
+            for k in range(i, i + len(low_phrase)):
+                taken[k] = "primary"
+            pos = i + len(low_phrase)
+
+    # Pass 2: each section-scoped secondary keyword's suffix word fills in whatever's left, but
+    # TRIM at any cell the primary pass already claimed instead of discarding the whole match — a
+    # secondary keyword's suffix can legitimately sit right next to the primary keyword's own text.
+    for kw, suffix in section_secondary:
+        for start, end in checks.secondary_keyword_spans_in_paragraph(plain, primary_kw, suffix):
+            i = start
+            while i < end:
+                if taken[i] is not None:
+                    i += 1
+                    continue
+                j = i
+                while j < end and taken[j] is None:
+                    j += 1
+                for k in range(i, j):
+                    taken[k] = "secondary"
+                i = j
+
+    out: list[dict] = []
+    pos = 0
+    for seg in segments:
+        seg_len = len(seg["text"])
+        seg_start = pos
+        i = 0
+        while i < seg_len:
+            label = taken[seg_start + i]
+            j = i + 1
+            while j < seg_len and taken[seg_start + j] == label:
+                j += 1
+            piece = {"text": seg["text"][i:j], "url": seg.get("url")}
+            if label:
+                piece["kw"] = label
+            out.append(piece)
+            i = j
+        pos += seg_len
+    return out
 
 
 # ---------------------------------------------------------------- request models
@@ -547,7 +639,7 @@ def step4(req: Step4Request) -> dict:
             run.article, run.orient, run.sponsor, run.report, run.evidence, run.logger
         )
         title, sections, evidence_citations = pipeline.run_revise(
-            title, sections, evidence_citations, run.report, run.logger
+            title, sections, evidence_citations, run.report, run.logger, run.evidence, run.sponsor.text
         )
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "Step 4", e)
@@ -599,7 +691,9 @@ def finalize(req: FinalizeRequest) -> dict:
         )
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "finalize", e)
-    _RUNS.pop(req.run_token, None)  # single-use: the run is complete
+    # The run is kept alive (not popped) so the final page's "Regenerate draft" button can
+    # resend /step4 + /finalize against this same token for a different draft — it's still
+    # bounded by the normal RUN_TTL_S/200-run eviction in _prune_runs, same as any other run.
     run.logger.info("LLM COST FOR THIS RUN (logs only — not shown in the UI):")
     for line in llm.run_cost_summary(run.logger):
         run.logger.info(line)
@@ -611,17 +705,26 @@ def finalize(req: FinalizeRequest) -> dict:
         {"id": c["id"], "paragraph": c["paragraph"], "fact": facts_by_id.get(c["id"], "")}
         for c in result.evidence_citations
     ]
+    primary_kw, secondary_plan = pipeline._seo_keyword_plan(result.report.name)
+    secondary_kws = [kw for kw, _ in secondary_plan]
+    # Keyword spans are found server-side (checks.secondary_keyword_spans_in_paragraph — same
+    # paragraph-scoped, section-scoped matching the pipeline's own coverage check uses) rather
+    # than left to the frontend to re-search for the literal phrase, which finds nothing once a
+    # keyword has been naturally reworded (e.g. "the size of the market" for "market size") or
+    # when the market's name isn't repeated in every sentence that touches one of its keywords.
     return {
         "result": {
             "title": result.title,
-            "sections": _display_sections(result.sections, result.sponsor, result.report.url),
+            "sections": _display_sections(
+                result.sections, result.sponsor, result.report.url, primary_kw, secondary_plan,
+            ),
             "report": _report_dict(result.report),
             "checks": [
                 {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
             ],
             "evidence_citations": citations_out,
-            "primary_keyword": pipeline._seo_keyword_plan(result.report.name)[0],
-            "secondary_keywords": [kw for kw, _ in pipeline._seo_keyword_plan(result.report.name)[1]],
+            "primary_keyword": primary_kw,
+            "secondary_keywords": secondary_kws,
             "output_filename": result.output_path.name if result.output_path else None,
         }
     }

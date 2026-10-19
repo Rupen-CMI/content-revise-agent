@@ -10,6 +10,7 @@ import docx
 from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
 
+from checks import _BULLET_LINE_RE
 from config import CMI_HOST
 
 log = logging.getLogger(__name__)
@@ -115,25 +116,62 @@ def output_path_for(original_filename: str) -> Path:
     return OUTPUT_DIR / f"Revised_{stem}.docx"
 
 
+# A paragraph that is a short lead-in sentence followed by parallel items (3 trends, a
+# segmentation breakdown, ...) is written as ONE paragraph string with the items as "\n- " lines,
+# rather than as separate paragraph objects — this keeps every existing check (word counts,
+# keyword matching, verbatim overlap, citation lookup by exact string) working unchanged, since
+# they all operate on plain text and treat "\n" like any other whitespace (see checks.py's
+# count_items_in for the one check that needs to count bullets as separate items). Only the
+# renderers (here and app.js's renderSections) need to know about the convention, splitting it
+# back into a lead-in line plus real bullet-point paragraphs for display.
+
+
+def _split_bullet_lines(para_text: str) -> tuple[str, list[str]]:
+    """(lead-in text, [bullet item, ...]) if para_text contains "\n- " bullet lines, else
+    (para_text, [])."""
+    lines = para_text.split("\n")
+    lead = []
+    items = []
+    for line in lines:
+        if _BULLET_LINE_RE.match(line):
+            items.append(_BULLET_LINE_RE.sub("", line, count=1))
+        elif items:
+            # a non-bullet line after bullets started: treat the whole thing as plain text
+            # instead, rather than silently dropping a line that didn't fit the pattern.
+            return para_text, []
+        else:
+            lead.append(line)
+    return "\n".join(lead), items
+
+
 def write_docx(
     path: Path, title: str, sections: list[dict], segments_fn,
 ) -> None:
     """Writes the revamped article as a .docx: each paragraph's text segments (from
     segments_fn, which expands the sponsor/CMI-link placeholders) become real hyperlink
-    runs where a URL is present, plain runs otherwise."""
+    runs where a URL is present, plain runs otherwise. A paragraph containing "\n- " lines (see
+    _split_bullet_lines) renders as a lead-in paragraph followed by a real bulleted list."""
     document = docx.Document()
     document.add_heading(title, level=1)
+
+    def _add_run_segments(p, text: str) -> None:
+        for seg_text, url in segments_fn(text):
+            if url:
+                _add_hyperlink(p, seg_text, url)
+            else:
+                p.add_run(seg_text)
 
     for s in sections:
         if s["heading"]:
             document.add_heading(s["heading"], level=2)
         for para_text in s["paragraphs"]:
-            p = document.add_paragraph()
-            for text, url in segments_fn(para_text):
-                if url:
-                    _add_hyperlink(p, text, url)
-                else:
-                    p.add_run(text)
+            lead, items = _split_bullet_lines(para_text)
+            if lead.strip():
+                _add_run_segments(document.add_paragraph(), lead)
+            for item in items:
+                _add_run_segments(document.add_paragraph(style="List Bullet"), item)
+            if not items and not lead.strip():
+                document.add_paragraph()  # preserve an intentionally blank paragraph, if any
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     document.save(str(path))
