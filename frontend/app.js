@@ -136,7 +136,7 @@ async function resumeRunIfAny() {
     state.sponsorIdx = sponsorCandidatesFrom(data.article).findIndex((p) => p.index === data.sponsor_index);
     if (state.sponsorIdx < 0) state.sponsorIdx = 0;
 
-    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits };
+    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {} };
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.report = data.report;
@@ -536,6 +536,7 @@ document.getElementById("step1-confirm-btn").addEventListener("click", async () 
     state.run.chosenCandidate = picked;
     state.run.report = data.report;
     state.run.hits = data.hits;
+    state.run.claimHits = data.claim_hits || {};
   } catch (e) {
     showError("Step 2 (fetch market evidence)", e);
     state.run.stage = "orient_done";
@@ -581,7 +582,7 @@ document.getElementById("step3-confirm-btn").addEventListener("click", async () 
   render();
 });
 
-// Resends the SAME CALL 3 (write) + CALL 4 (revise) request against the run's already-frozen
+// Resends the SAME write request (two LLM calls: publisher block, then market block) against the run's already-frozen
 // evidence (run.evidence never changes here) to get a different draft from the LLM — lets a user
 // reroll Step 4's output without re-running Steps 1-3 if the first draft wasn't a good fit.
 document.getElementById("step4-regenerate-btn").addEventListener("click", async () => {
@@ -622,7 +623,7 @@ document.getElementById("step4-confirm-btn").addEventListener("click", async () 
   render();
 });
 
-// Resends /step4 (write + revise) then /finalize against the same frozen evidence, to get a
+// Resends /step4 (write) then /finalize against the same frozen evidence, to get a
 // different finished draft without re-running Steps 1-3 — same idea as step4-regenerate-btn,
 // just one step further along, for when the issue only became visible after seeing the final
 // SOP-checked/highlighted version.
@@ -790,6 +791,12 @@ function renderStep1Panel() {
   const marketsList = document.getElementById("step1-markets");
   marketsList.innerHTML = (orient.candidate_markets || []).map((m) => `<li>${escapeHtml(m)}</li>`).join("");
 
+  const claims = orient.claims_to_back || [];
+  document.getElementById("step1-claims").innerHTML = claims.length
+    ? claims.map((c) => `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}`
+        + (c.why ? ` <span class="option-caption">${escapeHtml(c.why)}</span>` : "") + `</li>`).join("")
+    : `<li class="empty-note">No unsourced claims were found in the article, so nothing needs outside backing.</li>`;
+
   const isOrientDone = state.run.stage === "orient_done";
   confirmBlock.hidden = !isOrientDone;
   doneBlock.hidden = isOrientDone;
@@ -863,6 +870,20 @@ function renderStep2Panel() {
       }).join("")
     : `<li class="empty-note">No results survived filtering for this market (too old, off-topic, or the search returned nothing). You can still continue — the writer will rely on the CMI report alone.</li>`;
 
+  const claimList = (state.run.orient && state.run.orient.claims_to_back) || [];
+  const claimHits = state.run.claimHits || {};
+  document.getElementById("step2-claims-block").hidden = claimList.length === 0;
+  document.getElementById("step2-claim-hits").innerHTML = claimList.map((c) => {
+    const pages = claimHits[c.id] || [];
+    const pageLis = pages.length
+      ? pages.map((h) => {
+          let host = h.source || "web";
+          return `<span class="option-caption"><a href="${escapeHtml(h.url)}" target="_blank" rel="noopener">${escapeHtml(h.title)}</a> &middot; ${escapeHtml(host)}</span>`;
+        }).join("")
+      : `<span class="option-caption">No usable page found for this claim.</span>`;
+    return `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}${pageLis}</li>`;
+  }).join("");
+
   const isSearchDone = state.run.stage === "search_done";
   document.getElementById("step2-confirm-block").hidden = !isSearchDone;
 }
@@ -908,6 +929,31 @@ function renderStep3Panel() {
         return `<li>${escapeHtml(e.fact)} <span class="option-caption">${escapeHtml(tag)} &middot; source: ${sourceEl}</span></li>`;
       }).join("")
     : `<li class="empty-note">No supporting web facts survived review — the writer will rely on the confirmed CMI report alone. You can still continue.</li>`;
+
+  const claimsForBacking = (state.run.orient && state.run.orient.claims_to_back) || [];
+  const backing = (state.run.selection && state.run.selection.claim_backing) || [];
+  const stanceLabel = { supports: "Supports", qualifies: "Qualifies", contradicts: "Contradicts" };
+  document.getElementById("step3-claims-block").hidden = claimsForBacking.length === 0;
+  document.getElementById("step3-claim-backing").innerHTML = claimsForBacking.map((c) => {
+    const items = backing.filter((b) => b.claim_id === c.id);
+    const body = items.length
+      ? items.map((b) => {
+          const src = b.url
+            ? `<a href="${escapeHtml(b.url)}" target="_blank" rel="noopener">${escapeHtml(b.source || "web")}</a>`
+            : escapeHtml(b.source || "web");
+          return `<span class="option-caption"><strong>${escapeHtml(stanceLabel[b.stance] || b.stance)}:</strong> ${escapeHtml(b.fact)} &middot; source: ${src}</span>`;
+        }).join("")
+      : `<span class="option-caption">No outside backing found. The writer will soften this claim or drop it.</span>`;
+    return `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}${body}</li>`;
+  }).join("");
+
+  // Exact tally of what the selector kept, so "how many did the LLM find useful" never has to be counted by eye.
+  const claimsBacked = new Set(backing.map((b) => b.claim_id)).size;
+  const countParts = [`<strong>${facts.length}</strong> of ${hits.length} gathered market items judged useful`];
+  if (claimsForBacking.length) {
+    countParts.push(`<strong>${backing.length}</strong> backing source${backing.length === 1 ? "" : "s"} chosen, covering ${claimsBacked} of ${claimsForBacking.length} claim${claimsForBacking.length === 1 ? "" : "s"}`);
+  }
+  document.getElementById("step3-counts").innerHTML = countParts.join(" &middot; ");
 
   const isSelectDone = state.run.stage === "select_done";
   document.getElementById("step3-confirm-block").hidden = !isSelectDone;

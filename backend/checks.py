@@ -449,6 +449,26 @@ def _stale_event_mentions(sections: list[dict], today: date | None = None) -> li
     return out
 
 
+def _layout_stats(sections: list[dict], sponsor_text: str = "") -> tuple[str, int, int, int]:
+    """(section order string, topic switches, publisher words, total words). A section is P
+    (publisher) when it is the unheaded intro or carries no SOP tag; every tagged section is M
+    (market), including the conclusion. A topic switch is an adjacent pair whose class differs, so
+    the intended layout (intro + publisher block, then market block) has exactly one. The sponsor
+    placeholder counts as the retained paragraph's real words, which belong to the publisher."""
+    classes = ["M" if s.get("sop") else "P" for s in sections]
+    switches = sum(1 for a, b in zip(classes, classes[1:]) if a != b)
+    order_parts: list[str] = []
+    publisher = total = 0
+    for s, cls in zip(sections, classes):
+        order_parts.append(f'{(s.get("heading") or "").strip() or "intro"} {cls}')
+        for p in s.get("paragraphs") or []:
+            words = _words(_sponsor_replacement(p, sponsor_text).replace(SPONSOR_TOKEN, " "))
+            total += words
+            if cls == "P":
+                publisher += words
+    return " | ".join(order_parts), switches, publisher, total
+
+
 def run_checks(
     title: str, sections: list[dict], source_text: str, sponsor_brand_terms: list[str],
     sponsor_text: str = "", original_body: str = "", report_name: str = "",
@@ -648,6 +668,20 @@ def run_checks(
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
     results.append(CheckResult("Length is 1,400-1,700 words (soft)", 1400 <= total <= 1700, f"{total} words"))
 
+    order, switches, publisher_words, layout_total = _layout_stats(sections, sponsor_text)
+    publisher_pct = (publisher_words / layout_total * 100) if layout_total else 0.0
+    results.append(CheckResult(
+        "Publisher content is the majority (~60%, soft)",
+        publisher_pct >= 50,
+        f"{publisher_pct:.0f}% publisher / {100 - publisher_pct:.0f}% market "
+        f"({publisher_words} of {layout_total} words; soft target 55-65% publisher)",
+    ))
+    results.append(CheckResult(
+        "Topics are grouped: publisher block, then market block",
+        switches <= 2,
+        f"{switches} topic switch(es) — order: {order}",
+    ))
+
     # Soft check: flags prose dense enough that a reader could lose the thread, without demanding
     # dumbed-down writing — this is still meant to read as a professional analyst brief, not a
     # children's book. Floor of 30 (~"difficult/graduate-level") is the bar; below that, sentences
@@ -674,12 +708,14 @@ def run_checks(
         # many original-topic/market-analysis sections this particular run produced. The ceiling
         # stays a loose sanity check, not a target: it only flags outright stuffing (several uses
         # crammed into one paragraph), which the per-paragraph "do NOT stack" rule already forbids.
+        needed = 1 + sum(1 for sec in sections if sec.get('sop'))
         primary_count = full.lower().count(primary_keyword.lower())
         primary_pct = primary_count / total * 100
         results.append(CheckResult(
             "Primary keyword present, not stuffed (soft)",
-            len(sections) <= primary_count and primary_pct <= 3.0,
-            f"{primary_keyword!r} used {primary_count}x ({primary_pct:.1f}% of {total} words) across {len(sections)} section(s)",
+            needed <= primary_count and primary_pct <= 3.0,
+            f"{primary_keyword!r} used {primary_count}x ({primary_pct:.1f}% of {total} words); at least {needed} expected "
+            "(the intro's link plus every market section)",
         ))
 
     if secondary_keywords:
@@ -716,8 +752,7 @@ def run_checks(
     ))
 
     sources = []
-    if original_body:
-        sources.append(("original article", original_body))
+    # Only the CMI report is a copy risk; the publisher's article is edited, so its wording may be reused.
     if report_text:
         sources.append(("CMI report", report_text))
     if sources:

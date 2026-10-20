@@ -133,6 +133,25 @@ def _entry_hit(e, source: str = "") -> search.SearchHit | None:
 
 # ------------------------------------------------------------------------------------------- Bing News
 
+# One Bing request at a time with a minimum gap between ANY two of them. The market stage and the claim-backing
+# stage run in separate threads; without a shared gate their two Bing streams would interleave unspaced.
+_BING_LOCK = threading.Lock()
+_bing_last_end = 0.0
+
+
+@contextmanager
+def _bing_turn():
+    global _bing_last_end
+    with _BING_LOCK:
+        wait_s = _bing_last_end + _BING_QUERY_DELAY_S + random.uniform(0, _BING_JITTER_S) - time.monotonic()
+        if _bing_last_end and wait_s > 0:
+            time.sleep(wait_s)
+        try:
+            yield
+        finally:
+            _bing_last_end = time.monotonic()
+
+
 class _Bing:
     """Sequential Bing News RSS client with retry/backoff and a circuit breaker."""
 
@@ -141,12 +160,12 @@ class _Bing:
         self._failed_in_a_row = 0
         self.disabled = False
 
-    def _get(self, query: str) -> list[search.SearchHit] | None:
+    def _get(self, query: str, web: bool = False) -> list[search.SearchHit] | None:
+        url = "https://www.bing.com/search" if web else "https://www.bing.com/news/search"
         for attempt in range(_BING_RETRIES + 1):
             try:
-                r = self._client.get(
-                    "https://www.bing.com/news/search", params={"q": query, "format": "rss", **_BING_MARKET}
-                )
+                with _bing_turn():
+                    r = self._client.get(url, params={"q": query, "format": "rss", **_BING_MARKET})
                 if r.status_code == 200:
                     return [h for e in _parse_feed(r.content).entries if (h := _entry_hit(e))]
                 self._logger.warning(f"[bing] {query!r}: HTTP {r.status_code} (attempt {attempt + 1})")
@@ -156,10 +175,10 @@ class _Bing:
                 time.sleep(_BING_RETRY_WAIT_S * (attempt + 1))
         return None
 
-    def search(self, query: str) -> list[search.SearchHit]:
+    def search(self, query: str, web: bool = False) -> list[search.SearchHit]:
         if self.disabled:
             return []
-        hits = self._get(query)
+        hits = self._get(query, web)
         if hits is None:
             self._failed_in_a_row += 1
             if self._failed_in_a_row >= _BING_TRIP_AFTER:
@@ -167,7 +186,7 @@ class _Bing:
                 self._logger.warning(f"[bing] {self._failed_in_a_row} failed queries in a row — abandoning Bing for this run")
             return []
         self._failed_in_a_row = 0
-        self._logger.info(f"[bing] {query!r} -> {len(hits)} result(s)")
+        self._logger.info(f"[bing{' web' if web else ''}] {query!r} -> {len(hits)} result(s)")
         return hits
 
     def run(self, queries: list[str]) -> list[search.SearchHit]:
@@ -179,6 +198,23 @@ class _Bing:
             if i < len(queries) - 1:
                 time.sleep(_BING_QUERY_DELAY_S + random.uniform(0, _BING_JITTER_S))
         return out
+
+
+class ClaimWebSearch:
+    """Bing WEB search (RSS) for claim backing: explainer, reference and vendor-documentation pages that a news
+    index never carries. One instance per run; shares the Bing gate and circuit breaker logic with the news
+    client. Bing's web RSS sometimes answers a query with unrelated pages, so callers must relevance-filter
+    (search.filter_claim_hits does) rather than trust what comes back."""
+
+    def __init__(self, logger: logging.Logger):
+        self._client = httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
+        self._bing = _Bing(self._client, logger)
+
+    def search(self, query: str) -> list[search.SearchHit]:
+        return self._bing.search(query, web=True)
+
+    def close(self) -> None:
+        self._client.close()
 
 
 def site_queries(core: str, group_ids: list[str]) -> list[str]:
@@ -322,7 +358,7 @@ def _best_excerpt(text: str, stems: set[str]) -> str:
 
 
 def attach_excerpts(
-    hits: list[search.SearchHit], market_name: str, logger: logging.Logger = _null_logger,
+    hits: list[search.SearchHit], market_name: str, logger: logging.Logger = _null_logger, focus: str = "",
 ) -> None:
     """Fetch each hit's article page (politely) and store an excerpt on hit.excerpt. A hit whose page can't
     be read keeps only its headline and snippet. Never raises."""
@@ -332,6 +368,8 @@ def attach_excerpts(
     freq = search._catalog_token_freq()
     g = search._gate_for_phrase(market_name, freq)
     stems = set(g[1] or [g[0]]) if g else set()
+    if focus:  # claim backing: pick the paragraphs that talk about the claim itself, not about a market
+        stems = search._content_tokens(focus)
     gate = _HostGate(_HOST_GAP_S)
     runtime_blocked: set[str] = set()
     stats = defaultdict(int)

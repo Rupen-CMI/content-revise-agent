@@ -1,5 +1,6 @@
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -177,6 +178,58 @@ def _bare_market_names(names) -> list[str]:
     return out
 
 
+# The originals' claims list is capped here too: more than 8 unbacked claims would turn the
+# publisher block into a fact-checking exercise and the claim-selection pool into noise.
+_MAX_ORIENT_CLAIMS = 8
+
+
+def _normalize_claims(raw, sponsor_text: str, logger: logging.Logger) -> list[dict]:
+    """Sanitise ORIENT's claims_to_back: dicts only, a claim short enough to actually read, none of
+    them the retained paragraph's own content (that paragraph is fixed and its wording is never
+    rewritten, so searching for its backing would be wasted — and its text must not drift), ids
+    renumbered C1..Cn sequentially (a model that miscounts must not desync the C-id the writer and
+    the checks use), at most 2 search queries each. Bad entries are dropped with a log, never
+    fatal — claim backing is an enhancement, not a requirement the run may fail on."""
+    sponsor_low = " ".join((sponsor_text or "").split()).lower()
+    out: list[dict] = []
+    for c in raw if isinstance(raw, list) else []:
+        if len(out) >= _MAX_ORIENT_CLAIMS:
+            break
+        if not isinstance(c, dict):
+            continue
+        claim = re.sub(r"\s+", " ", str(c.get("claim") or "")).strip()
+        if len(claim.split()) < 4:
+            logger.warning(f"[orient] dropped malformed claim entry {c.get('id')!r}: {claim!r}")
+            continue
+        if claim.lower() in sponsor_low:
+            logger.info(f"[orient] claim dropped (it is the retained paragraph's own text): {claim[:90]}")
+            continue
+        queries = [re.sub(r"\s+", " ", str(q)).strip() for q in (c.get("queries") or [])]
+        out.append({
+            "id": f"C{len(out) + 1}",
+            "claim": claim,
+            "kind": str(c.get("kind") or "").strip().lower() or "claim",
+            "why": re.sub(r"\s+", " ", str(c.get("why") or "")).strip(),
+            "queries": [q for q in queries if q][:2],
+        })
+    if out:
+        logger.info(f"[orient] claims to back ({len(out)}): " + "; ".join(f'{c["id"]}={c["claim"][:60]}' for c in out))
+    else:
+        logger.info("[orient] no unverifiable claims extracted")
+    return out
+
+
+def orient_claims(orient: dict | None) -> list[dict]:
+    """The step-1 claims list, safe to read from anywhere (main.py, replay tools): empty when the
+    orient call predated claim extraction, returned nothing, or returned the wrong shape."""
+    if not config.SEARCH_CLAIMS_ENABLED or not isinstance(orient, dict):
+        return []
+    return [
+        c for c in orient.get("claims_to_back") or []
+        if isinstance(c, dict) and re.sub(r"\s+", " ", str(c.get("claim") or "")).strip()
+    ]
+
+
 def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logger) -> dict:
     """CALL 1: identify the market and plan research. Returns the parsed JSON."""
     section(logger, "CALL 1: ORIENT")
@@ -194,6 +247,7 @@ def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logge
         sponsor=sponsor.text,
     ), call_name="orient", temperature=0.1, logger=logger)
     orient["candidate_markets"] = _bare_market_names(orient.get("candidate_markets"))
+    orient["claims_to_back"] = _normalize_claims(orient.get("claims_to_back"), sponsor.text, logger)
     names = [n for n in orient.get("candidate_markets") or [] if isinstance(n, str)]
     keywords = [k for k in orient.get("scope_keywords") or [] if isinstance(k, str)]
     if not names and not keywords:
@@ -368,7 +422,7 @@ def _plain(text: str) -> str:
 # report-template feel the WRITE prompt was already rewritten to move away from.
 _SECONDARY_KEYWORD_SUFFIXES: tuple[tuple[str, str], ...] = (
     # Rebalanced from the original brief's mapping, which put 6 of 12 keywords on report_context
-    # alone (size/forecast/growth/analysis/CAGR/opportunities/drivers) — a 2-paragraph section with
+    # alone (size/forecast/growth/analysis/CAGR/opportunities/drivers) — one short section with
     # that many keywords chasing it produced visibly stuffed prose in testing on two different
     # markets. Each move below is a content-fit judgment against what that SOP section is actually
     # specified to contain (see the per-section spec below in WRITE_USER), not just load-balancing:
@@ -428,11 +482,11 @@ def _secondary_keyword_lines(market_name: str, secondary_kw: list[tuple[str, str
     themselves are the requirement; only their order and surrounding sentence are free to vary."""
     lines = []
     for (suffix, _), (kw, section) in zip(_SECONDARY_KEYWORD_SUFFIXES, secondary_kw):
+        core = kw[: kw.lower().rindex(" market ")] if " market " in kw.lower() else market_name
         lines.append(
-            f"- TOPIC: {market_name}'s {suffix} — {label} the {section} section. Build a sentence around the "
-            f"keyword's own words (reordered to fit naturally); the static phrase \"{kw}\" is one valid order, but "
-            "any order that keeps every one of those same words is equally correct — vary which order you use so "
-            "it doesn't read like a template, but never substitute a different word for one of them."
+            f'- "{suffix}" ({label} the {section} section). Required words, all present in the sentence: "{suffix}", '
+            f'"{core}" and "market". Write it in a reordered form, for example "the {suffix} of the {core} market" or '
+            f'"the {core} market\'s {suffix}", whichever fits the sentence.'
         )
     return "\n".join(lines)
 
@@ -524,15 +578,125 @@ def run_search_evidence(
     return hits
 
 
+_CLAIM_BPOOL_KEEP = 6  # pages kept per claim for SELECT (which picks at most two)
+_CLAIM_POOL_GOOD = 2   # kept hits at which a claim's first query no longer needs its second
+
+
+def run_claim_evidence(
+    claims: list[dict], logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
+) -> dict[str, list[search.SearchHit]]:
+    """Web search for backing of the claims ORIENT extracted from the original article — Bing web search
+    with DDGS text search as the fallback (the sources are explainers/encyclopedias/vendor reference
+    pages, which news indexes don't carry; see feeds.ClaimWebSearch and search.run_text_searches). Returns {claim_id: [hits]}.
+    Callers run this CONCURRENTLY with run_search_evidence (its own thread): different source
+    profile, different rate-limit budget, and both stages are network-bound.
+
+    Per claim: the first search query from Step 1; a second one only if the first was thin (kept
+    hits below _CLAIM_POOL_GOOD). A claim with no queries from Step 1 gets a deterministic fallback
+    built from its own distinctive words, in article order, unquoted — right-shaped for a topic
+    search, not a phrase-match search."""
+    section(logger, "CLAIM BACKING SEARCH")
+    pool: dict[str, list[search.SearchHit]] = {}
+    if not claims:
+        return pool
+    total = 0
+    bing_web = feeds.ClaimWebSearch(logger)
+    for c in claims:
+        queries = list(c.get("queries") or [])
+        if not queries:  # Step 1 gave none: the claim's own distinctive words, in article order, unquoted
+            words: list[str] = []
+            for w in re.findall(r"[A-Za-z0-9']+", c["claim"]):
+                w = w.strip("'.,").lower()
+                if len(w) > 2 and w not in search._STOPWORDS and w not in words:
+                    words.append(w)
+            queries = [" ".join(words[:8])] if words else []
+        # Two channels per query, polite and sequential: Bing web search first (no rate-limit trouble at our pace),
+        # DDGS text search only when the claim is still thin. Hits accumulate across queries and channels and are
+        # filtered together, so a claim ends with the best of everything found, not the last query's batch.
+        raw: list[search.SearchHit] = []
+        kept: list[search.SearchHit] = []
+        for q in queries:
+            raw += bing_web.search(q)
+            kept = search.filter_claim_hits(raw, c["claim"], logger, limit=_CLAIM_BPOOL_KEEP)
+            if len(kept) >= _CLAIM_POOL_GOOD:
+                break
+            raw += search.run_text_searches([q], logger)
+            kept = search.filter_claim_hits(raw, c["claim"], logger, limit=_CLAIM_BPOOL_KEEP)
+            if len(kept) >= _CLAIM_POOL_GOOD:
+                break
+        if not kept:
+            logger.info(f"[claim-search] {c['id']} ({c['claim'][:70]!r}): nothing usable found")
+        for h in kept:
+            h.scope, h.claim_id = "claim", c["id"]
+        feeds.attach_excerpts(kept, c["claim"], logger, focus=c["claim"])
+        pool[c["id"]] = kept
+        total += len(kept)
+    bing_web.close()
+    backed_pool = sum(1 for hits in pool.values() if hits)
+    progress(
+        f"Claim backing search: {total} candidate page(s) across {backed_pool}/{len(claims)} claim(s)"
+    )
+    logger.info(f"[claim-search] pool: {backed_pool}/{len(claims)} claim(s) have candidates, {total} page(s) total")
+    return pool
+
+
+def _format_claims_for_select(claims: list[dict]) -> str:
+    """The claims list handed to SELECT (and, via run_build_evidence, to the writer): one line per
+    claim, its id, kind and text — the text must carry the claim's own distinctive names so SELECT
+    can judge a pool hit's stance against exactly what the article asserted."""
+    if not claims:
+        return "(none — the Step 1 call extracted no unverifiable claims from this article)"
+    lines = []
+    for c in claims:
+        line = f'- {c["id"]} [{c.get("kind") or "claim"}] "{c["claim"]}"'
+        if c.get("why"):
+            line += f" — needs backing because: {c['why']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _flatten_claim_pool(
+    claims: list[dict], pool: dict[str, list[search.SearchHit]],
+) -> list[tuple[str, str, search.SearchHit]]:
+    """(P-number, claim id, hit) in deterministic claim order — P-numbers are sequential across all
+    claims (P1, P2, …) and are the ids SELECT is told to cite. Empty when there are no claims, so
+    callers can distinguish 'no claims' from 'claims but no results'."""
+    if not claims:
+        return []
+    out: list[tuple[str, str, search.SearchHit]] = []
+    for c in claims:
+        for h in (pool or {}).get(c["id"]) or []:
+            out.append((f"P{len(out) + 1}", c["id"], h))
+    return out
+
+
+def _format_pool_for_select(pool: list[tuple[str, str, search.SearchHit]], claims: list[dict]) -> str:
+    if claims and not pool:
+        return "(none — the claim searches found nothing usable for any claim)"
+    lines = []
+    for pid, cid, h in pool:
+        tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
+        body = h.excerpt or h.snippet[:300]
+        lines.append(f"[{pid}] (for: {cid}) {h.title} | {h.source or h.host} | {tag}\n      {body}")
+    return "\n".join(lines) or "(no claims were extracted, so there are no claim results)"
+
+
 def run_select(
     article: SourceArticle, orient: dict, sponsor: Paragraph,
     report: reports.Report, hits: list[search.SearchHit],
-    logger: logging.Logger,
+    logger: logging.Logger, claim_hits: dict[str, list[search.SearchHit]] | None = None,
 ) -> dict:
     """CALL 2: select evidence for the human-confirmed report. Returns the parsed JSON.
     Report choice is no longer this call's job — the human picked the market/report in Step 1
-    (see run_fetch_confirmed_report), so this call only judges which search hits are usable."""
+    (see run_fetch_confirmed_report), so this call only judges which search hits are usable.
+
+    Claim backing (when Step 1 extracted claims and the caller searched for them, claim_hits maps
+    claim id -> candidate pages): SELECT additionally picks at most 2 pages per claim and tags each
+    supports/qualifies/contradicts; without a pool the claims still reach SELECT and the writer so
+    unbacked ones get softened, not asserted bare."""
     section(logger, "CALL 2: SELECT EVIDENCE")
+    claims = orient_claims(orient)
+    claim_flat = _flatten_claim_pool(claims, claim_hits or {})
     selection = llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
         title=article.title,
         topic_summary=orient.get("topic_summary", ""),
@@ -540,11 +704,14 @@ def run_select(
         sponsor=sponsor.text,
         report_name=report.name,
         hits=_format_hits(hits),
+        claims_block=_format_claims_for_select(claims),
+        claim_pool=_format_pool_for_select(claim_flat, claims),
         max_selected=config.SEARCH_MAX_SELECTED,
     ), call_name="select", logger=logger, max_tokens=8000)
     _normalize_selection_tags(selection, hits, logger)
     _drop_stale_facts(selection, logger)
     _verify_selection_figures(selection, hits, logger)
+    _normalize_claim_backing(selection, claims, claim_flat, logger)
     return selection
 
 
@@ -585,6 +752,92 @@ def _verify_selection_figures(selection: dict, hits: list[search.SearchHit], log
         e["detail"] = detail
         kept.append(e)
     selection["evidence"] = kept
+
+
+# A claim's backing is only an enhancement: each entry must cite a pool id that exists, carry a
+# valid stance, and state only figures that appear in that pool hit's own text (verified below, the
+# same way market-evidence figures are) — never guessed at. At most two entries per claim; the
+# claim-id comes from the pool tag itself, so a mislabelled entry lands under the claim it was
+# actually searched for.
+_CLAIM_STANCES = frozenset({"supports", "qualifies", "contradicts"})
+
+
+def _fresh_detail(detail: str, pid: str, logger: logging.Logger) -> str:
+    """A backing item's detail is the opening of the source page; blank it when it states a stale date."""
+    stale = [
+        m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(detail)
+        if (d := freshness.event_date(m)) is not None and freshness.is_stale(d)
+    ]
+    if stale:
+        logger.info(f"[select] blanked the detail of claim backing {pid}: it states a stale date {stale}")
+        return ""
+    return detail
+
+
+def _normalize_claim_backing(
+    selection: dict, claims: list[dict], pool: list[tuple[str, str, search.SearchHit]], logger: logging.Logger,
+) -> None:
+    """Sanitise SELECT's claim_backing, the same way _verify_selection_figures polices the market
+    evidence: every entry must cite a pool id that exists (an id SELECT invented is dropped, never
+    guessed at), carry a valid stance, and state only figures that appear in that pool hit's own
+    text. At most two entries per claim; the claim-id comes from the pool tag itself, so a
+    mislabelled entry lands under the claim it was actually searched for. Writes the cleaned list
+    back to selection["claim_backing"] with source/excerpt strings attached for run_build_evidence."""
+    claims_ids = {c["id"] for c in claims}
+    pool_by_pid = {pid: (cid, h) for pid, cid, h in pool}
+    per_claim: dict[str, int] = {}
+    kept: list[dict] = []
+    for e in selection.get("claim_backing") or []:
+        if not isinstance(e, dict):
+            continue
+        pid = str(e.get("id") or "").strip().upper()
+        stance = str(e.get("stance") or "").strip().lower()
+        if pid not in pool_by_pid:
+            logger.info(f"[select] dropped claim backing entry (unknown pool id {pid!r}): {e}")
+            continue
+        pid_cid, hit = pool_by_pid[pid]
+        # trust the pool tag over whichever claim id SELECT typed
+        cid = pid_cid if pid_cid in claims_ids else (str(e.get("claim_id") or "").strip().upper() or pid_cid)
+        if cid not in claims_ids:
+            logger.info(f"[select] dropped claim backing entry (unresolvable claim id) [pid {pid}]: {e}")
+            continue
+        if stance not in _CLAIM_STANCES:
+            logger.info(f"[select] dropped claim backing {pid} (bad stance {stance!r})")
+            continue
+        fact = re.sub(r"\s+", " ", str(e.get("fact") or "")).strip()
+        if not fact:
+            fact = " ".join((hit.snippet or "").split())[:220]
+            logger.info(f"[select] backing {pid} had no fact, substituted first words of the snippet")
+        source = f"{hit.title} {hit.snippet} {hit.excerpt}".replace(",", "")
+        bad = sorted(n for n in _figures(fact) if n not in source)
+        if bad:
+            logger.warning(f"[select] dropped claim backing {pid}: its fact states {bad}, which is not in the source text")
+            continue
+        # Same freshness policy as the market evidence (_drop_stale_facts): the draft may not cite a dated event older than
+        # the freshness window, whichever stream it came from. The claim search has no recency cutoff on purpose (a
+        # background explainer need not be recent), so the date check has to happen here, on what SELECT wrote.
+        stale = [
+            m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(fact)
+            if (d := freshness.event_date(m)) is not None and freshness.is_stale(d)
+        ]
+        if stale:
+            logger.info(f"[select] dropped claim backing {pid}: its fact states a stale date {stale}")
+            continue
+        per_claim[cid] = per_claim.get(cid, 0) + 1
+        if per_claim[cid] > 2:
+            logger.info(f"[select] {cid} already has 2 backing entries — dropped {pid}")
+            continue
+        kept.append({
+            "claim_id": cid, "id": pid, "stance": stance, "fact": fact,
+            "source": hit.source or hit.host, "url": hit.url,
+            "detail": _fresh_detail(" ".join((hit.excerpt or "").split())[:320], pid, logger),
+        })
+    selection["claim_backing"] = kept
+    if claims:
+        logger.info(
+            f"[select] claim backing: {len(kept)} entry(ies) across {len(per_claim)} of {len(claims_ids)} claim(s) "
+            f"({', '.join(sorted(per_claim)) or 'none backed'})"
+        )
 
 
 def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
@@ -651,17 +904,39 @@ def run_fetch_confirmed_report(chosen: reports.CatalogEntry, logger: logging.Log
 # Evidence reaches the writer grouped by the part of the article each item mainly serves (its FIRST use_for
 # tag); a flat list with every item tagged for every section left the writer nothing to route by.
 _EVIDENCE_GROUPS = (
-    ("trends", "MARKET TRENDS (back each of the three trends with at least two of these)"),
-    ("us", "THE U.S. ANALYSIS"),
-    ("players", "KEY PLAYERS (one company per item)"),
-    ("context", "SEGMENTS, GROWTH DRIVERS, REPORT CONTEXT AND THE CONCLUSION"),
+    ("trends", "MARKET TRENDS (back each of the three trends with at least one of these, two where space allows)"),
+    ("us", "THE U.S. PARAGRAPH"),
+    ("players", "KEY PLAYERS (give each named company one concrete detail from here)"),
+    ("context", "SEGMENTS, SUB-SEGMENTS, GROWTH DRIVERS AND THE BRIDGE (the conclusion adds nothing new)"),
 )
 
 
 def run_build_evidence(
-    selection: dict, hits: list[search.SearchHit], logger: logging.Logger,
+    selection: dict, hits: list[search.SearchHit], logger: logging.Logger, orient: dict | None = None,
 ) -> str:
-    """Build the evidence block passed to the writer from Call 2 output + search hits."""
+    """Build the evidence block passed to the writer from Call 2 output + search hits. Two groups:
+    ARTICLE EVIDENCE (backing for claims extracted from the original article, one entry per claim id)
+    followed by that claims list with each claim's status, then the MARKET EVIDENCE groups."""
+    backing = [b for b in selection.get("claim_backing") or [] if isinstance(b, dict)]
+    claims = orient_claims(orient)
+    parts: list[str] = []
+    if backing or claims:
+        backed_ids = {b["claim_id"] for b in backing}
+        if backing:
+            parts.append("### ARTICLE EVIDENCE (backs, qualifies or corrects the original article's own claims; publisher block only)")
+            for b in backing:
+                parts.append(f"- ({b['claim_id']}) [{b['stance']}] {b['fact']} (source: {b.get('source') or 'web'})")
+                if str(b.get("detail") or "").strip():
+                    parts.append(f"    DETAIL: {str(b['detail']).strip()}")
+        if claims:
+            parts.append("### CLAIMS FROM THE ORIGINAL ARTICLE (handle each one under the CLAIMS rules, in the publisher block)")
+            for c in claims:
+                line = f'* {c["id"]} [{c.get("kind") or "claim"}] "{c["claim"]}"'
+                if c["id"] in backed_ids:
+                    line += " — BACKED: apply CLAIMS rule 1, 2 or 3, whichever matches the stance of its ARTICLE EVIDENCE item(s) above, naming the source in the sentence"
+                else:
+                    line += " — NO OUTSIDE BACKING FOUND: apply CLAIMS rule 4 (hedged and attributed if it is a general statement; dropped if it is a superlative or a verdict about a named product); never state it as fact"
+                parts.append(line)
     grouped: dict[str, list[str]] = {key: [] for key, _ in _EVIDENCE_GROUPS}
     for e in selection.get("evidence") or []:
         m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
@@ -676,10 +951,9 @@ def run_build_evidence(
         if str(e.get("detail") or "").strip():
             line += f"\n    DETAIL: {str(e['detail']).strip()}"
         grouped[tags[0] if tags[0] in grouped else "context"].append(line)
-    parts: list[str] = []
     for key, label in _EVIDENCE_GROUPS:
         if grouped[key]:
-            parts.append(f"### EVIDENCE FOR {label}")
+            parts.append(f"### MARKET EVIDENCE FOR {label}")
             parts.extend(grouped[key])
     evidence = "\n".join(parts) or "(none)"
     section(logger, "FINAL EVIDENCE PASSED TO WRITER")
@@ -687,33 +961,39 @@ def run_build_evidence(
     return evidence
 
 
-_EVIDENCE_LINE_RE = re.compile(r"^- \((W\d+)\) \[([^\]]*)\] (.*) \(source: .*\)\s*$")
+_EVIDENCE_LINE_RE = re.compile(r"^- \(([A-Z]+\d+)\) \[([^\]]*)\] (.*) \(source: (.*)\)\s*$")
 
 
 def _parse_evidence(evidence: str) -> list[dict]:
-    """Inverse of run_build_evidence: [{id, tags, group, fact, detail}]. Parsing the block (rather than threading
-    the structured list through every caller) keeps the string interface that saved fixtures and the stepwise API use."""
+    """Inverse of run_build_evidence: [{id, tags, group, fact, detail, source}]. Parsing the block (rather than threading
+    the structured list through every caller) keeps the string interface that saved fixtures and the stepwise API use.
+    ARTICLE EVIDENCE lines are identified by their C-number id and get group "article"; market lines keep the live
+    use_for tag's group."""
     items: list[dict] = []
     for line in (evidence or "").splitlines():
         m = _EVIDENCE_LINE_RE.match(line)
         if m:
             tags = [t.strip() for t in m.group(2).split(",") if t.strip()]
-            items.append({"id": m.group(1), "tags": tags, "group": tags[0] if tags else "context",
-                          "fact": m.group(3).strip(), "detail": ""})
+            is_article = m.group(1).startswith("C")
+            items.append({"id": m.group(1), "tags": tags,
+                          "group": "article" if is_article else (tags[0] if tags else "context"),
+                          "fact": m.group(3).strip(), "detail": "", "source": m.group(4).strip()})
         elif items and line.strip().startswith("DETAIL:"):
             items[-1]["detail"] = line.strip()[len("DETAIL:"):].strip()
     return items
 
 
 def _min_evidence_total(n_items: int) -> int:
-    """How many distinct evidence items a draft must use: about 45% of what SELECT vetted, never fewer than 6
-    nor more than 14 (a ~1,500-word article can carry that many without crowding), and never more than exists."""
-    return min(n_items, max(6, min(14, round(n_items * 0.45)))) if n_items else 0
+    """How many distinct MARKET evidence items a draft must use: about 45% of what SELECT vetted, never fewer
+    than 6 nor more than 10 (the claim-backing half of the run now also asks the writer for ARTICLE EVIDENCE in
+    the publisher block, so a higher market cap crowds both into the same article; a ~1,500-word piece carries
+    10 market items alongside them), and never more than exists."""
+    return min(n_items, max(6, min(10, round(n_items * 0.45)))) if n_items else 0
 
 
 # (SOP tag, evidence group it draws on, distinct items the section should use, label for the feedback)
 _SECTION_EVIDENCE_NEEDS = (
-    ("trends", "trends", 6, "market-trends"),
+    ("trends", "trends", 3, "market-trends"),
     ("country_us", "us", 2, "U.S. analysis"),
     ("key_players", "players", 3, "key-players"),
 )
@@ -791,8 +1071,15 @@ def _evidence_used_ids(text: str, items: list[dict]) -> set[str]:
 
 def _evidence_problems(sections: list[dict], items: list[dict], min_total: int) -> list[str]:
     """Deterministic backstop for the evidence-backing rule (see _evidence_used_ids for what counts as "used"). The
-    prompt states every minimum; a prompt-only rule was ignored (5 of 33 items cited in testing)."""
-    if not items:
+    prompt states every minimum; a prompt-only rule was ignored (5 of 33 items cited in testing).
+    ARTICLE EVIDENCE items (group "article", C-numbered) are judged separately from the market ones: the market
+    minimum only counts market items, while the claim list gets (a) a lower aggregate floor in the publisher block
+    and (b) a per-claim requirement — every backed claim's backing must actually be worked into the publisher's
+    own sections, or a retry instruction names it."""
+    market_items = [it for it in items if it.get("group") != "article"]
+    article_items = [it for it in items if it.get("group") == "article"]
+    items = market_items
+    if not items and not article_items:
         return []
 
     def used_in(text: str) -> set[str]:
@@ -804,10 +1091,10 @@ def _evidence_problems(sections: list[dict], items: list[dict], min_total: int) 
     body = [p for s in sections for p in s["paragraphs"] if _word_count(p)]
     used_all = used_in("\n".join(_sponsor_blank(p) for p in body))
     problems: list[str] = []
-    if len(used_all) < min_total:
+    if items and len(used_all) < min_total:
         unused = [it for it in items if it["id"] not in used_all]
         problems.append(
-            f"only {len(used_all)} of the {len(items)} evidence items are actually used in the article but at least "
+            f"only {len(used_all)} of the {len(items)} market evidence items are actually used in the article but at least "
             f"{min_total} must be — work more of them into the sections they belong to, with their specifics, for "
             f"example: {hint(unused)}"
         )
@@ -832,6 +1119,28 @@ def _evidence_problems(sections: list[dict], items: list[dict], min_total: int) 
             f"{len(bare)} market-trend paragraph(s) rest on no evidence item at all (a trend must be backed by a named "
             "company, source or figure, not asserted): " + " | ".join(f'"{" ".join(p.split()[:9])}..."' for p in bare[:3])
         )
+    if article_items:
+        publisher_sections = [s for s in sections if _section_class(s) == "P"]
+        publisher_text = "\n".join(_sponsor_blank(p) for s in publisher_sections for p in s["paragraphs"])
+        used_a = _evidence_used_ids(publisher_text, article_items)
+        claim_ids = sorted({it["id"] for it in article_items})
+        min_article = min(3, len(claim_ids))
+        if len(used_a) < min_article:
+            unused = [it for it in article_items if it["id"] not in used_a]
+            problems.append(
+                f"the publisher's own sections (the unheaded intro and the three untagged ones) use "
+                f"{len(used_a)} of the ARTICLE EVIDENCE items backing the original article's claims, but at least "
+                f"{min_article} must be worked into them there, each with its named source and what it establishes — "
+                f"use from: {hint(unused)}"
+            )
+        for cid in claim_ids:
+            if cid not in used_a:
+                its = [it for it in article_items if it["id"] == cid]
+                problems.append(
+                    f"claim ({cid}) has backing ({its[0]['fact'][:110]} — source: {its[0].get('source') or 'web'}) but "
+                    "no publisher section actually uses it — work this claim, corrected or qualified as the stance "
+                    "requires, and its named source into the intro or one of the untagged publisher sections"
+                )
     return problems
 
 
@@ -958,6 +1267,33 @@ def _force_sponsor_placeholder(sections: list[dict]) -> list[dict]:
     return sections
 
 
+_INTRO_TOTAL_WORDS = 210  # intro target INCLUDING the retained paragraph's real words
+
+
+def _intro_budget(mode: str, sponsor_words: int) -> str:
+    """Per-paragraph intro word targets computed from the retained text's real length, so the intro always adds up
+    to _INTRO_TOTAL_WORDS: a static "45-60 words each" was wrong for a 4-word phrase (intro came out ~105 words
+    against a ~170 budget) and for a long prose paragraph alike."""
+    own = max(100, _INTRO_TOTAL_WORDS - sponsor_words)
+    if mode == "phrase":
+        p2 = min(110, max(70, own - 110))
+        total = 55 + p2 + 55 + sponsor_words
+        return (
+            f"Paragraph 1 (lead-in): 3 sentences, about 55 words. Paragraph 2 (your own paragraph that holds the retained "
+            f"phrase inside one of its sentences): 5 sentences, about {p2} words of your own. Paragraph 3 (pivot): 3 "
+            f"sentences, about 55 words. The intro comes to about {total} words once the retained phrase's own "
+            f"{sponsor_words} words are counted."
+        )
+    each = min(70, max(40, round(own / 2)))
+    total = 2 * each + sponsor_words
+    return (
+        f"Paragraph 1 (lead-in): 3 sentences, about {each} words. Paragraph 2: the retained paragraph's slot "
+        f"({sponsor_words} real words, which are not counted as yours; if you embed it inside a paragraph of your own, that "
+        f"paragraph's own words add to the intro). Paragraph 3 (pivot): 3 sentences, about {each} words. The intro comes to "
+        f"about {total} words once the retained paragraph is counted."
+    )
+
+
 def _sponsor_rule(mode: str, sponsor_text: str) -> str:
     """The short, mode-specific placement instruction injected into prompts.WRITE_USER. Every
     illustrative example is generalised (no real market or product names)."""
@@ -1037,6 +1373,89 @@ def _repeated_keyword_shape_problem(full_text: str, secondary_kw: list[tuple[str
     return None
 
 
+def _section_class(section: dict) -> str:
+    """P (publisher) for the unheaded intro and every section with an empty `sop` list; M (market) for
+    every section carrying a SOP tag — the conclusion counts as market."""
+    return "M" if section.get("sop") else "P"
+
+
+def _layout_share(sections: list[dict], sponsor_text: str = "") -> tuple[int, int]:
+    """(publisher words, total words), counting the sponsor placeholder as the retained paragraph's
+    real words because those real words belong to the publisher's side of the article."""
+    sponsor_words = len(_WORD_RE.findall(sponsor_text)) if sponsor_text else 0
+    publisher = total = 0
+    for s in sections:
+        for p in s.get("paragraphs") or []:
+            words = _word_count(p) + (sponsor_words if prompts.SPONSOR_TOKEN in p else 0)
+            total += words
+            if _section_class(s) == "P":
+                publisher += words
+    return publisher, total
+
+
+def _layout_problems(sections: list[dict], sponsor_text: str = "") -> list[str]:
+    """Deterministic backstop for the layout the WRITE prompt asks for: the unheaded intro, then the
+    publisher's own sections as one consecutive block, then ONE transition (report_context, as the
+    bridge) into the market block, with the conclusion last. The prompt-only version of this rule
+    produced badly interleaved drafts (about five subject changes, publisher content at ~40%), so the
+    hard parts are enforced here and fed back as retry instructions."""
+    if not sections:
+        return []
+    classes = [_section_class(s) for s in sections]
+    switches = sum(1 for a, b in zip(classes, classes[1:]) if a != b)
+    order = " | ".join(
+        f"{(s.get('heading') or '').strip() or 'intro'} {c}" for s, c in zip(sections, classes)
+    )
+    problems: list[str] = []
+    if switches > 2:
+        problems.append(
+            f"the article changes subject {switches} times in this order: {order} — it must change subject only once, "
+            "from ONE publisher block into ONE market block. Keep the intro's publisher sections consecutive (no "
+            "market section between them), then put every market section, starting with report_context, after the last "
+            "publisher section"
+        )
+    publisher_sections = [s for s, c in zip(sections, classes) if c == "P" and (s.get("heading") or "").strip()]
+    if len(publisher_sections) != 3:
+        problems.append(
+            f"the publisher block has {len(publisher_sections)} headed section(s) but must have exactly 3, one for each "
+            "main point of the original article (merge small points; never drop a main point)"
+        )
+    first_market = next((s for s in sections if s.get("sop")), None)
+    if first_market is not None and "report_context" not in first_market["sop"]:
+        problems.append(
+            f'the first market section is "{first_market.get("heading") or "untitled"}" but report_context must be '
+            "the first market section and act as the bridge: it opens by turning from the publisher's subject to the "
+            "market that subject lives in, then gives that market's size and direction"
+        )
+    publisher, total = _layout_share(sections, sponsor_text)
+    market = total - publisher
+    if total:
+        share = publisher / total * 100
+        if share < 50:
+            add = max(0, round(total * 0.55) - publisher)
+            problems.append(
+                f"publisher content is only {share:.0f}% of the article ({publisher} of {total} words) but it must be "
+                f"the clear majority: at least 50%, with a soft target of 55-65%. Add about {add} words across the "
+                "three publisher sections (2 paragraphs of about 125-130 words each, roughly 250-260 words per "
+                "section), expanding the publisher's own points with its steps and examples rather than padding"
+            )
+        if market > 720:
+            cut = market - 650
+            add = max(0, 950 - publisher)
+            grow = (
+                f"add about {add} words across the three publisher sections so the publisher block reaches roughly "
+                f"950 words (it is {publisher} now)"
+                if add >= 20
+                else f"keep the publisher block at roughly 900-1,000 words (it is {publisher} now)"
+            )
+            problems.append(
+                f"the market block is {market} words but the whole market block must stay around 600-700 words "
+                f"(never above 720) — cut about {cut} words, mostly whole sentences from the longest market "
+                f"paragraphs, and {grow}"
+            )
+    return problems
+
+
 def _write_problems(
     sections: list[dict], report: reports.Report, original_body: str, report_text: str, sponsor_text: str = "",
     secondary_kw: list[tuple[str, str]] = (), evidence_items: list[dict] = (), min_evidence: int = 0,
@@ -1045,6 +1464,7 @@ def _write_problems(
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
     problems = []
+    problems.extend(_layout_problems(sections, sponsor_text))
     repeated_shape_problem = _repeated_keyword_shape_problem(full, secondary_kw)
     if repeated_shape_problem:
         problems.append(repeated_shape_problem)
@@ -1091,8 +1511,10 @@ def _write_problems(
             )
         )
     problems.extend(_evidence_problems(sections, list(evidence_items), min_evidence))
-    sources = [("original article", original_body)] + ([("CMI report", report_text)] if report_text else [])
-    pct, examples = _verbatim_overlap(paragraphs, sources, report_name=report.name)
+    # Only the CMI report is a copy risk (CMI repeating its own text); the publisher's article is edited, so its wording
+    # may be reused.
+    sources = [("CMI report", report_text)] if report_text else []
+    pct, examples = _verbatim_overlap(paragraphs, sources, report_name=report.name) if sources else (0.0, [])
     if pct > 5.0:
         problems.append(
             f"{pct:.0f}% of the words are copied in runs of 10 or more words from the original article or the CMI "
@@ -1102,11 +1524,55 @@ def _write_problems(
     return problems
 
 
+def _split_evidence(evidence: str) -> tuple[str, str]:
+    """(article part, market part) of the evidence block: ARTICLE EVIDENCE plus the claims list go to the publisher
+    call, MARKET EVIDENCE to the market call. Blocks from before claim backing existed (no ARTICLE/CLAIMS header)
+    are all market evidence."""
+    lines = (evidence or "").splitlines()
+    has_article = any(l.startswith("### ARTICLE EVIDENCE") or l.startswith("### CLAIMS FROM") for l in lines)
+    if not has_article:
+        return "(none: no claims were extracted from the original article)", evidence or "(none)"
+    idx = next((i for i, l in enumerate(lines) if l.startswith("### MARKET EVIDENCE")), len(lines))
+    article = "\n".join(lines[:idx]).strip() or "(none: no claims were extracted from the original article)"
+    market = "\n".join(lines[idx:]).strip() or "(none)"
+    return article, market
+
+
+def _render_part1(sections: list[dict], sponsor: Paragraph) -> str:
+    """The publisher block as the market call reads it: headings and paragraphs, the retained paragraph's REAL text
+    substituted for its placeholder and the CMI link shown as the plain market name."""
+    lines: list[str] = []
+    for s in sections:
+        if (s.get("heading") or "").strip():
+            lines.append(f"## {s['heading'].strip()}")
+        for p in s["paragraphs"]:
+            lines.append(re.sub(prompts.CMI_LINK_PATTERN, r"\1", p.replace(prompts.SPONSOR_TOKEN, sponsor.text)))
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _clean_sections(raw_sections, force_untagged: bool = False) -> list[dict]:
+    return [
+        {
+            "heading": str(s.get("heading") or ""),
+            "sop": [] if force_untagged else [str(t) for t in s.get("sop") or [] if str(t) in _VALID_SOP_TAGS],
+            "paragraphs": [_plain(str(p)) for p in s.get("paragraphs") or [] if str(p).strip()],
+        }
+        for s in raw_sections or [] if isinstance(s, dict)
+        if any(str(p).strip() for p in s.get("paragraphs") or [])  # a section with no text is dropped
+    ]
+
+
 def run_write(
     article: SourceArticle, orient: dict, sponsor: Paragraph,
     report: reports.Report, evidence: str, logger: logging.Logger,
 ) -> tuple[dict, str, list[dict], list[dict]]:
-    """CALL 3: write the article. Returns (raw_json, title, sections, evidence_citations)."""
+    """CALL 3: write the article in two LLM calls, each with one job. 3A edits the publisher's own article into an
+    intro plus three sections (claims backed from ARTICLE EVIDENCE) and is told it is Part 1, so it does not conclude.
+    3B reads that finished text and writes the market block, the bridge from it and the title. A single call that
+    had to do both sometimes stopped after the publisher block (about 1 draft in 5 in testing); with one job per call
+    that cannot happen. There is no quality retry: problems the deterministic checks find are logged, not re-asked.
+    Returns (raw_json, title, sections, evidence_citations)."""
     section(logger, "CALL 3: WRITE")
     report_text = _report_text(report)
     body_text, removed = freshness.strip_stale_developments(article.body)
@@ -1120,98 +1586,97 @@ def run_write(
     secondary_kw_lines = _secondary_keyword_lines(report.name, secondary_kw, "use in")
     sponsor_words = len(re.findall(r"\b\w[\w'-]*\b", sponsor.text))
     mode = sponsor_mode(sponsor.text)
-    max_own_words = max(0, 1700 - sponsor_words)
     logger.info(f"[write] sponsor mode: {mode} ({sponsor_words} word(s): {sponsor.text[:80]!r})")
-    logger.info(f"[write] word budget: sponsor={sponsor_words}, own writing max={max_own_words}")
     evidence_items = _parse_evidence(evidence)
-    min_evidence = _min_evidence_total(len(evidence_items))
-    logger.info(f"[write] evidence: {len(evidence_items)} item(s), at least {min_evidence} must be used")
-    user_prompt = prompts.WRITE_USER.format(
-        min_evidence=min_evidence,
+    article_ids = {it["id"] for it in evidence_items if it.get("group") == "article"}
+    market_count = sum(1 for it in evidence_items if it.get("group") != "article")
+    min_evidence = _min_evidence_total(market_count)
+    article_min = min(3, len(article_ids)) if article_ids else 0
+    logger.info(
+        f"[write] evidence: {market_count} market item(s), at least {min_evidence} must be used; "
+        f"{len(article_ids)} claim(s) with backing, publisher block must use at least {article_min} of them"
+    )
+    article_evidence, market_evidence = _split_evidence(evidence)
+    today = date.today().isoformat()
+
+    # ---- 3A: the publisher block (intro + three sections)
+    pub_prompt = prompts.PUBLISHER_USER.format(
+        title=article.title,
+        topic_summary=orient.get("topic_summary", ""),
+        original_body=body_text[:_BODY_CHARS],
+        sponsor=sponsor.text,
+        report_name=report.name,
+        evidence=article_evidence,
+        intro_budget=_intro_budget(mode, sponsor_words),
         sponsor_words=sponsor_words,
-        max_own_words=max_own_words,
+        sponsor_token=prompts.SPONSOR_TOKEN,
+        sponsor_rule=_sponsor_rule(mode, sponsor.text),
+        article_min=article_min,
+        today=today,
+    )
+    written_a = llm.chat_json(
+        prompts.PUBLISHER_SYSTEM, pub_prompt, temperature=0.3, call_name="write-publisher", logger=logger, max_tokens=6000,
+    )
+    pub_sections = _clean_sections(written_a.get("sections"), force_untagged=True)
+    if not pub_sections:
+        raise PipelineError("Call 3A returned no publisher sections")
+    pub_words = sum(_word_count(p) for s in pub_sections for p in s["paragraphs"]) + sponsor_words
+    logger.info(
+        f"[write] 3A done: {len(pub_sections)} section(s), about {pub_words} words including the retained paragraph"
+    )
+
+    # ---- 3B: the market block, the bridge from the publisher text, and the title
+    market_prompt = prompts.MARKET_USER.format(
         sop=prompts.SOP,
         title=article.title,
         topic_summary=orient.get("topic_summary", ""),
         bridge_angle=orient.get("bridge_angle", ""),
-        original_body=body_text[:_BODY_CHARS],
-        sponsor=sponsor.text,
-        sponsor_token=prompts.SPONSOR_TOKEN,
-        sponsor_rule=_sponsor_rule(mode, sponsor.text),
         report_name=report.name,
+        part1=_render_part1(pub_sections, sponsor),
+        part1_words=pub_words,
+        today=today,
         report_text=report_text,
+        key_players=", ".join(reports.key_players(report)) or "(none listed: use the companies the report text names)",
         cmi_keywords=", ".join(prompts.CMI_KEYWORDS),
         primary_keyword=primary_kw,
         secondary_keywords=secondary_kw_lines,
-        evidence=evidence,
-        today=date.today().isoformat(),
+        evidence=market_evidence,
+        min_evidence=min_evidence,
     )
+    written_b = llm.chat_json(
+        prompts.MARKET_SYSTEM, market_prompt, temperature=0.3, call_name="write-market", logger=logger, max_tokens=6000,
+    )
+    market_sections = _clean_sections(written_b.get("sections"))
+    if not market_sections:
+        raise PipelineError("Call 3B returned no market sections")
+    title = _plain(str(written_b.get("title") or ""))
+    sections = pub_sections + market_sections
+    written = {"title": title, "sections": sections,
+               "evidence_citations": list(written_a.get("evidence_citations") or []) + list(written_b.get("evidence_citations") or [])}
 
-    # One retry, with the specific problems appended, when the first draft breaks a hard
-    # requirement the final checks would fail it on anyway (seen in testing: a draft with no CMI
-    # link at all and 17% of its words copied from the sources). A retry that errors out falls back
-    # to the first draft rather than failing the run.
-    feedback = ""
-    first_attempt = None
-    for attempt in (1, 2):
-        try:
-            written = llm.chat_json(
-                prompts.WRITE_SYSTEM, user_prompt + feedback, temperature=0.5,
-                call_name="write" if attempt == 1 else "write-retry", logger=logger,
-            )
-        except llm.LLMError:
-            if first_attempt is None:
-                raise
-            logger.warning("[write] retry failed, keeping the first draft", exc_info=True)
-            written, sections, title = first_attempt
-            break
-
-        sections = [
-            {
-                "heading": str(s.get("heading") or ""),
-                "sop": [str(t) for t in s.get("sop") or [] if str(t) in _VALID_SOP_TAGS],
-                "paragraphs": [_plain(str(p)) for p in s.get("paragraphs") or [] if str(p).strip()],
-            }
-            for s in written.get("sections") or []
-        ]
-        title = _plain(str(written.get("title") or ""))
-        if not sections:
-            if first_attempt is None:
-                raise PipelineError("Call 3 returned no article sections")
-            written, sections, title = first_attempt
-            break
-
-        problems = _write_problems(
-            sections, report, article.body, report_text, sponsor.text, secondary_kw, evidence_items, min_evidence,
-        )
-        if not problems or attempt == 2:
-            if problems:
-                logger.warning(f"[write] draft still has problems after the retry: {'; '.join(problems)}")
-            break
-        logger.warning(f"[write] first draft has problems ({'; '.join(problems)}) — retrying once with that feedback")
-        first_attempt = (written, sections, title)
-        feedback = (
-            "\n\nYOUR PREVIOUS DRAFT WAS REJECTED FOR THESE PROBLEMS: " + "; ".join(problems) + ". Write the whole "
-            "article again from scratch, in the same JSON shape, fixing exactly these problems while still meeting "
-            "every other requirement above."
-        )
+    problems = _write_problems(
+        sections, report, article.body, report_text, sponsor.text, secondary_kw, evidence_items, min_evidence,
+    )
+    if problems:
+        logger.warning(f"[write] draft problems found by the deterministic checks (no retry is run): {'; '.join(problems)}")
+    else:
+        logger.info("[write] the draft passed every deterministic write check")
 
     # Deterministic last resort: whatever the model did, the paying guest's backlink must never be
-    # lost. If the placeholder is missing, duplicated, or outside the intro after the retry, insert
-    # it as its own paragraph at intro position 2 (the pre-inline-token behaviour) and carry on.
+    # lost. If the placeholder is missing, duplicated, or outside the intro, insert it as its own
+    # paragraph at intro position 2 (the pre-inline-token behaviour) and carry on.
     location_problem = _sponsor_location_problem(sections)
     if location_problem:
         logger.warning(f"[write] {location_problem} — inserting the placeholder as intro paragraph 2 so the link is not lost")
         sections = _force_sponsor_placeholder(sections)
 
-    # Only trust a self-reported citation if its paragraph text is a VERBATIM match against a
-    # real paragraph in the draft — the model could misreport (summarize rather than quote, or
-    # cite a paragraph it then edited before finalizing), so this is validated against ground
-    # truth rather than taken on faith. An unmatched citation is dropped, not corrected, since
-    # there's no reliable way to know which real paragraph it actually meant.
+    # Only trust a self-reported citation if its paragraph text is a VERBATIM match against a real
+    # paragraph in the draft; an unmatched citation is dropped, not corrected.
     real_paragraphs = {p for s in sections for p in s["paragraphs"]}
     evidence_citations = []
     for c in written.get("evidence_citations") or []:
+        if not isinstance(c, dict):
+            continue
         para = _plain(str(c.get("paragraph") or ""))
         eid = str(c.get("id") or "").strip().upper()
         if eid and para in real_paragraphs:
@@ -1779,14 +2244,28 @@ def _revamp_inner(
     report = run_fetch_confirmed_report(candidates[0], logger)
 
     progress("Searching the web for supporting evidence")
-    hits = run_search_evidence(
-        candidates[0].keyword, sponsor, candidates, logger, progress,
-        key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
-    )
+    claims = orient_claims(orient)
+    if claims:
+        # Claim backing runs in its own thread, concurrently with the market stage: different
+        # sources (general web explainers vs news feeds), and both stages are network-bound, so
+        # the run waits once for whichever finishes last, not for their sum.
+        with ThreadPoolExecutor(1) as claim_ex:
+            claim_future = claim_ex.submit(run_claim_evidence, claims, logger, progress)
+            hits = run_search_evidence(
+                candidates[0].keyword, sponsor, candidates, logger, progress,
+                key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
+            )
+            claim_pool = claim_future.result()
+    else:
+        hits = run_search_evidence(
+            candidates[0].keyword, sponsor, candidates, logger, progress,
+            key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
+        )
+        claim_pool = {}
 
     progress("Step 2: selecting evidence")
-    selection = run_select(article, orient, sponsor, report, hits, logger)
-    evidence = run_build_evidence(selection, hits, logger)
+    selection = run_select(article, orient, sponsor, report, hits, logger, claim_hits=claim_pool)
+    evidence = run_build_evidence(selection, hits, logger, orient=orient)
 
     progress("Step 3: writing the article")
     written, title, sections, evidence_citations = run_write(article, orient, sponsor, report, evidence, logger)

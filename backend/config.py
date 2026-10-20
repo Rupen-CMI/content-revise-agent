@@ -24,6 +24,9 @@ SEARCH_PRIMARY_MIN_HITS = int(os.getenv("SEARCH_PRIMARY_MIN_HITS", "12"))
 SEARCH_KEEP_HITS = int(os.getenv("SEARCH_KEEP_HITS", "80"))  # articles handed to SELECT
 SEARCH_MAX_SELECTED = int(os.getenv("SEARCH_MAX_SELECTED", "60"))  # most articles SELECT may pick as evidence
 SEARCH_MAX_PER_HOST = int(os.getenv("SEARCH_MAX_PER_HOST", "8"))  # per site, so one prolific publisher cannot fill the shortlist
+# Claim backing: Step 1 extracts the original article's unbacked claims, DDGS text search looks for backing, SELECT keeps
+# at most two sources per claim. False restores the market-only behaviour everywhere (orient_claims() returns []).
+SEARCH_CLAIMS_ENABLED = os.getenv("SEARCH_CLAIMS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
 CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"

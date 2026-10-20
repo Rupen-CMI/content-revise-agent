@@ -152,9 +152,14 @@
             <span class="kv-label">How it connects to a market</span>
             <p class="kv-value" id="step1-bridge"></p>
           </div>
-          <div class="kv-block kv-block-last">
+          <div class="kv-block">
             <span class="kv-label">Markets considered</span>
             <ul class="tag-list" id="step1-markets"></ul>
+          </div>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Claims in your article that need backing</span>
+            <p class="field-hint">Statements the article makes as fact without a source. After you confirm the market, the agent looks for outside sources that support, qualify or correct each one; the draft uses what it finds and softens or drops what it cannot back.</p>
+            <ul class="plain-list" id="step1-claims"></ul>
           </div>
         </div>
 
@@ -204,6 +209,13 @@
             <ul class="plain-list" id="step2-hits"></ul>
           </div>
         </div>
+        <div class="content-card" id="step2-claims-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Pages found for your article's own claims</span>
+            <p class="field-hint">Reference and explainer pages found for each claim from Step 1, before Step 3 picks which ones actually back it.</p>
+            <ul class="plain-list" id="step2-claim-hits"></ul>
+          </div>
+        </div>
         <div id="step2-confirm-block" class="btn-row">
           <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 (report facts)</button>
           <button class="btn btn-ghost" id="step2-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
@@ -218,6 +230,7 @@
         <span>Step 3: selecting usable facts from the gathered evidence…</span>
       </div>
       <div id="step3-content" hidden>
+        <p class="status-note" id="step3-counts"></p>
         <div class="content-card">
           <div class="kv-block kv-block-last">
             <span class="kv-label">CMI report used by the writer</span>
@@ -231,9 +244,16 @@
         </div>
         <div class="content-card">
           <div class="kv-block kv-block-last">
-            <span class="kv-label">Supporting facts from web search</span>
-            <p class="field-hint">Supplementary evidence pulled from open web sources (not the CMI report) to support specific claims. Each fact shows where it came from.</p>
+            <span class="kv-label">Market facts from web search</span>
+            <p class="field-hint">Recent news about the confirmed market (not from the CMI report). They are used in the market half of the article. Each fact shows where it came from.</p>
             <ul class="plain-list" id="step3-evidence"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step3-claims-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Backing for your article's own claims</span>
+            <p class="field-hint">Outside sources chosen for each claim from Step 1, with what each one does to the claim: supports, qualifies or contradicts it. They are used in the article's own sections. A claim with no backing is softened or dropped by the writer, never stated as fact.</p>
+            <ul class="plain-list" id="step3-claim-backing"></ul>
           </div>
         </div>
         <div id="step3-confirm-block" class="btn-row">

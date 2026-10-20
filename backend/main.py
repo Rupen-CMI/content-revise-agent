@@ -42,6 +42,7 @@ import secrets
 import signal
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
@@ -217,6 +218,8 @@ class RunState:
     # market the LLM guessed first in Step 1 (its guess and the human's pick can differ).
     report: reports.Report | None = None
     hits: list[search.SearchHit] | None = None
+    # claim backing pool from Step 2 ({claim id: candidate pages}) — SELECT consumes it in Step 3.
+    claim_pool: dict[str, list[search.SearchHit]] | None = None
     selection: dict | None = None
     evidence: str | None = None
     title: str = ""
@@ -312,6 +315,20 @@ def _hit_dict(h: search.SearchHit) -> dict:
         "date": h.date.isoformat() if h.date else None,
         "is_news": h.is_news,
         "excerpt": h.excerpt,
+        "scope": h.scope,
+        "claim_id": h.claim_id,
+    }
+
+
+def _claim_hits_dict(pool: dict[str, list[search.SearchHit]] | None) -> dict:
+    """{claim id: [candidate pages the claim-backing search kept]} for the UI (Step 2 and a reloaded run)."""
+    return {
+        cid: [
+            {"title": h.title, "url": h.url, "source": h.source or h.host, "snippet": h.snippet,
+             "date": h.date.isoformat() if h.date else None}
+            for h in hits
+        ]
+        for cid, hits in (pool or {}).items()
     }
 
 
@@ -591,15 +608,32 @@ def step2(req: Step2Request) -> dict:
         raise HTTPException(400, f"Report {req.report_id} is not one of the matched reports for this run.")
     try:
         report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
-        hits = pipeline.run_search_evidence(
-            report.name, run.sponsor, run.candidates, run.logger,
-            key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
-        )
+        claims = pipeline.orient_claims(run.orient)
+        if claims:
+            # Same split as the ungated path: the claim-backing search (text web) runs in its own
+            # thread next to the market search (news + feeds), and the request waits once.
+            with ThreadPoolExecutor(1) as claim_ex:
+                claim_future = claim_ex.submit(
+                    pipeline.run_claim_evidence, claims, run.logger,
+                )
+                hits = pipeline.run_search_evidence(
+                    report.name, run.sponsor, run.candidates, run.logger,
+                    key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
+                )
+                run.claim_pool = claim_future.result()
+        else:
+            hits = pipeline.run_search_evidence(
+                report.name, run.sponsor, run.candidates, run.logger,
+                key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
+            )
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)
     run.report, run.hits = report, hits
     run.logger.info(f"STEP 2 DONE — report {report.news_id} {report.name}, {len(hits)} hits")
-    return {"report": _report_dict(report), "hits": [_hit_dict(h) for h in hits]}
+    return {
+        "report": _report_dict(report), "hits": [_hit_dict(h) for h in hits],
+        "claim_hits": _claim_hits_dict(run.claim_pool),
+    }
 
 
 @app.post("/step3")
@@ -610,8 +644,8 @@ def step3(req: Step3Request) -> dict:
     if run.report is None or run.hits is None:
         raise HTTPException(400, "No confirmed report/evidence yet — finish Step 2 first.")
     try:
-        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger)
-        evidence = pipeline.run_build_evidence(selection, run.hits, run.logger)
+        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger, claim_hits=run.claim_pool)
+        evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
     except (PipelineError, LLMError, LookupError) as e:
         raise _pipeline_failure(run.logger, "Step 3", e)
     run.selection, run.evidence = selection, evidence
@@ -656,6 +690,7 @@ def get_run(run_token: str) -> dict:
         "orient": run.orient,
         "candidates": [_candidate_dict(c) for c in run.candidates],
         "hits": [_hit_dict(h) for h in run.hits] if run.hits is not None else [],
+        "claim_hits": _claim_hits_dict(run.claim_pool),
         "report": _report_dict(run.report) if run.report else None,
         "selection": run.selection,
         "title": run.title,
@@ -692,6 +727,11 @@ def finalize(req: FinalizeRequest) -> dict:
     # Map each citation's evidence ID back to its original fact text for a human-readable label
     # in the UI (e.g. a hover tooltip) — the citation itself only carries the ID + paragraph.
     facts_by_id = {str(e.get("id", "")).strip().upper(): e.get("fact", "") for e in (run.selection.get("evidence") or [])}
+    # Article-evidence citations carry their CLAIM id (C1, C2, ...); one claim can have up to two backing items.
+    for b in run.selection.get("claim_backing") or []:
+        cid = str(b.get("claim_id", "")).strip().upper()
+        line = f"[{b.get('stance', '')}] {b.get('fact', '')} ({b.get('source', '')})"
+        facts_by_id[cid] = f"{facts_by_id[cid]} | {line}" if facts_by_id.get(cid) else line
     citations_out = [
         {"id": c["id"], "paragraph": c["paragraph"], "fact": facts_by_id.get(c["id"], "")}
         for c in result.evidence_citations

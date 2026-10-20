@@ -2,7 +2,9 @@ import hashlib
 import logging
 import random
 import re
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -192,6 +194,9 @@ class SearchHit:
     # Query-relevant paragraphs from the article page itself (feeds.attach_excerpts), when the page was
     # readable. Empty for hits that only have a headline and snippet.
     excerpt: str = ""
+    # "claim" for pages retrieved to back one claim of the original article (claim_id), else "market".
+    scope: str = "market"
+    claim_id: str = ""
 
     @property
     def host(self) -> str:
@@ -288,16 +293,52 @@ def _safe(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[Se
     return news + text
 
 
+# One DDGS user at a time, with the politeness gap between ANY two uses. The claim-backing stage runs in its
+# own thread next to the market stage, and the market stage may fall back to DDGS: without this gate both could
+# hit the provider at once, and the claim stage (one query per call) would have no spacing between its queries.
+_DDGS_LOCK = threading.Lock()
+_ddgs_last_end = 0.0
+
+
+@contextmanager
+def _ddgs_turn():
+    global _ddgs_last_end
+    with _DDGS_LOCK:
+        wait = _ddgs_last_end + _QUERY_DELAY_S + random.uniform(0, 2.5) - time.monotonic()
+        if _ddgs_last_end and wait > 0:
+            time.sleep(wait)
+        try:
+            yield
+        finally:
+            _ddgs_last_end = time.monotonic()
+
+
 def run_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
     """Runs queries one at a time, in order, with a politeness gap between them —
     never more than one request to DDGS in flight, and never a rapid-fire burst.
     Reuses one DDGS session across the whole run (opening a fresh client per query was an
     unnecessary extra per-query cost with no benefit, and some DDGS backends track sessions)."""
     hits: list[SearchHit] = []
-    with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
+    with _ddgs_turn(), DDGS(timeout=_QUERY_TIMEOUT_S) as d:
         for i, q in enumerate(queries):
             batch = _safe(d, q, logger=logger)
             logger.info(f"[search] query {q!r} -> {len(batch)} raw result(s)")
+            hits += batch
+            if i < len(queries) - 1:
+                time.sleep(_QUERY_DELAY_S + random.uniform(0, 2.5))
+    return hits
+
+
+def run_text_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
+    """Text-only DDGS queries (no news call): used for CLAIM BACKING, whose useful sources are
+    explainers, encyclopedias and reference pages — kinds of pages that never appear in a news
+    index, so the news half of _safe() would be pure wasted latency and requests. Same politeness
+    pacing and session reuse as run_searches."""
+    hits: list[SearchHit] = []
+    with _ddgs_turn(), DDGS(timeout=_QUERY_TIMEOUT_S) as d:
+        for i, q in enumerate(queries):
+            batch = _attempt(lambda d, q: _text(d, q, logger), d, q, "text", logger)
+            logger.info(f"[claim-search] query {q!r} -> {len(batch)} raw result(s)")
             hits += batch
             if i < len(queries) - 1:
                 time.sleep(_QUERY_DELAY_S + random.uniform(0, 2.5))
@@ -547,4 +588,118 @@ def filter_hits(
         per_host[hit.host] = per_host.get(hit.host, 0) + 1
         final.append(hit)
     logger.info(f"[filter] kept {kept}, dropped {dropped}, returning top {len(final)} of {kept}")
+    return final
+
+
+# ------------------------------------------------------------------------------- claim backing
+# Claim-backing searches judge a DIFFERENT question than market news does: does any outside page
+# support, qualify, or contradict one factual claim made in the original article? That changes the
+# filter profile in four deliberate ways (each one reuses filter_hits's reasoning, inverted for the
+# different purpose — see filter_claim_hits for the per-rule notes):
+#   - no recency cutoff at all: "commission-free apps are regulated like brokers" is backed just as
+#     well by a 2021 regulator explainer as by this month's news, and stale-dating a BACKGROUND
+#     claim's source is wrong, not cautious;
+#   - encyclopedia/dictionary/explainer hosts (wikipedia, investopedia, …) are ALLOWED here — for
+#     market news they are useless, but for backing a definition/practice/comparison claim they are
+#     exactly the useful kind, so they must not sit in the blocked list;
+#   - DEFINITIONAL_TITLE_RE does not apply: a "What is X?" page is the prize here, not junk —
+#     still dropped: adult, PR wires/social/content farms, vendor login/landing pages, section
+#     hubs, bare company quote pages, and the market-report-SEO ad pattern (a page titled
+#     "<Market> Size, Share, Growth…" advertises a rival report; it is not claim backing);
+#   - the topical bar is overlap with THE CLAIM's own vocabulary (not the market's), verified
+#     token-wise, because these hits were retrieved BY the claim's queries — the gate only has to
+#     catch a stray irrelevant result from the same engine, not re-derive the market.
+
+# Encyclopedia / dictionary / reference hosts the market filter bans (they answer "what is X",
+# never "what happened in X") — re-listed so filter_claim_hits can un-block them.
+_ENC_REFS = frozenset({
+    "wikipedia.org", "grokipedia.com", "wallstreetmojo.com", "investopedia.com", "britannica.com",
+    "merriam-webster.com", "dictionary.com", "corporatefinanceinstitute.com",
+})
+# The big software vendors' own sites are blocked for MARKET evidence (a vendor blog is not reporting) but they are
+# the primary source for exactly the claims this stage backs: what a product category is ("What is marketing
+# automation?"), what a named company offers, how a named product works. Vendor login/landing pages are still
+# caught by _VENDOR_PAGE_TITLE_RE; whether a page SUPPORTS the claim is SELECT's stance call, not the host list's.
+_CLAIM_ALLOWED_VENDORS = frozenset({
+    "microsoft.com", "learn.microsoft.com", "oracle.com", "ibm.com", "adobe.com", "business.adobe.com",
+    "salesforce.com", "hubspot.com", "academy.hubspot.com", "blog.hubspot.com", "knowledge.hubspot.com",
+    "aws.amazon.com", "g2.com", "learn.g2.com",
+})
+_CLAIM_BLOCKED_HOSTS = tuple(h for h in _BLOCKED_HOSTS if h not in _ENC_REFS and h not in _CLAIM_ALLOWED_VENDORS)
+
+# A 2-word title ("Robinhood") is a ticker/quote page; for claim backing even a short page title
+# naming the claim's subject can be fine, so the floor sits between filter_hits's 4 and 0.
+_MIN_CLAIM_TITLE_WORDS = 3
+
+# Distinctive claim words that must survive into a hit's text for the hit to be judged related.
+# Two tokens minimum: one token is almost always a category word the claim shares with half the web
+# (different token sets per claim keep this honest), two is the loosest bar that still discriminates.
+_CLAIM_OVERLAP_MIN = 2
+_CLAIM_MAX_PER_HOST = 2
+
+
+def _site_of(host: str) -> str:
+    """The site a host belongs to ("blog.converted.in" -> "converted.in", "news.bbc.co.uk" -> "bbc.co.uk")."""
+    parts = host.split(".")
+    keep = 3 if len(parts) >= 3 and len(parts[-1]) == 2 and len(parts[-2]) <= 3 else 2
+    return ".".join(parts[-keep:])
+
+
+def filter_claim_hits(
+    hits: list[SearchHit], claim: str, logger: logging.Logger = _null_logger, limit: int = 6,
+) -> list[SearchHit]:
+    """The claim-backing filter profile (see the block comment above for how and why it differs
+    from filter_hits). Ranks by overlap with the claim's own vocabulary; `limit` caps the handful
+    handed to SELECT per claim, which only ever picks at most two."""
+    claim_tokens = _content_tokens(claim)
+    logger.info(f"[filter:claim] gate ({len(claim_tokens)} tokens): {sorted(claim_tokens)}")
+    seen: set[str] = set()
+    scored: list[tuple[int, SearchHit]] = []
+    dropped = 0
+    for hit in hits:
+        if _is_adult(hit) or not hit.title or not hit.url:
+            dropped += 1
+            continue
+        if any(hit.host == b or hit.host.endswith("." + b) for b in _CLAIM_BLOCKED_HOSTS):
+            dropped += 1
+            logger.info(f"[filter:claim] DROP (blocked host {hit.host}): {hit.title!r}")
+            continue
+        title_words = len(hit.title.split())
+        if (
+            title_words < _MIN_CLAIM_TITLE_WORDS
+            or _HUB_TITLE_RE.search(hit.title)
+            or _JUNK_ANY_TITLE_RE.search(hit.title)
+            or (title_words <= 5 and _BARE_COMPANY_TITLE_RE.match(hit.title))
+            or (not hit.is_news and _VENDOR_PAGE_TITLE_RE.search(hit.title))
+        ):
+            dropped += 1
+            logger.info(f"[filter:claim] DROP (junk shape) [{hit.host}] {hit.title!r}")
+            continue
+        fingerprint = hashlib.sha256(re.sub(r"\W+", " ", hit.title.lower()).strip().encode()).hexdigest()
+        if fingerprint in seen or hit.url in seen:
+            dropped += 1
+            continue
+        seen.update((fingerprint, hit.url))
+        overlap = claim_tokens & _content_tokens(f"{hit.title} {hit.snippet} {hit.excerpt}")
+        if len(overlap) < _CLAIM_OVERLAP_MIN:
+            dropped += 1
+            logger.info(f"[filter:claim] DROP (no claim overlap) [{hit.host}] {hit.title!r}")
+            continue
+        scored.append((len(overlap), hit))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Independent sources back a claim; one site's five pages on the same topic are one opinion. Bing's web feed
+    # in particular fills a result list with a single site's pages, so each host supplies at most two.
+    per_host: dict[str, int] = {}
+    ranked: list[tuple[int, SearchHit]] = []
+    for n, h in scored:
+        site = _site_of(h.host)
+        if per_host.get(site, 0) >= _CLAIM_MAX_PER_HOST:
+            continue
+        per_host[site] = per_host.get(site, 0) + 1
+        ranked.append((n, h))
+    final = [h for _, h in ranked[:limit]]
+    logger.info(
+        f"[filter:claim] kept {len(scored)}, dropped {dropped}, returning top {len(final)}; "
+        + "; ".join(f"{n}:{h.host}" for n, h in ranked[:limit])
+    )
     return final
