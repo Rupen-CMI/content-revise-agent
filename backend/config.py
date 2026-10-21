@@ -21,6 +21,7 @@ LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "600"))
 # (or Bing was abandoned), "always" runs it every time, "off" never does.
 SEARCH_DDGS_MODE = os.getenv("SEARCH_DDGS_MODE", "fallback").strip().lower()
 SEARCH_PRIMARY_MIN_HITS = int(os.getenv("SEARCH_PRIMARY_MIN_HITS", "12"))
+SEARCH_DDGS_MAX_QUERIES = int(os.getenv("SEARCH_DDGS_MAX_QUERIES", "10"))  # DDGS fallback is ~9s per query; cap it
 SEARCH_KEEP_HITS = int(os.getenv("SEARCH_KEEP_HITS", "80"))  # articles handed to SELECT
 SEARCH_MAX_SELECTED = int(os.getenv("SEARCH_MAX_SELECTED", "60"))  # most articles SELECT may pick as evidence
 SEARCH_MAX_PER_HOST = int(os.getenv("SEARCH_MAX_PER_HOST", "8"))  # per site, so one prolific publisher cannot fill the shortlist

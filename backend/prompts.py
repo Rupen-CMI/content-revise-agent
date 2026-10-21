@@ -106,8 +106,9 @@ practice asserted as universal, a how-it-works explanation with no source). For 
     contain every quoted name at once finds almost nothing).
   Skip: claims the article itself already backs with a specific source, figure, or named event; claims stated \
   inside PARAGRAPH THAT MUST STAY IN THE FINAL ARTICLE above (that paragraph is fixed and its text is not \
-  rewritten, so its wording needs no backing); claims about the MARKET ITSELF (its size, growth, segments, regions, \
-  vendors or trends): CMI's own report and market evidence cover those, so they must not be extracted here; \
+  rewritten, so its wording needs no backing); claims about the MARKET ITSELF (its size, growth rate, segments, regions or the list \
+  of vendors in it): CMI's own report and market evidence cover those, so they must not be extracted here. How firms or \
+  practitioners work, adopt tools or compete in general is NOT the market itself: that stays a claim to extract; \
   purely subjective opinions the article itself clearly frames as \
   opinion. If the article makes fewer than 8 unbacked claims, return only those; if none, return []. Order \
   most-challengeable first."""
@@ -188,7 +189,17 @@ best matches the confirmed market (most relevant first); pick fewer rather than 
 about the INDUSTRY the market lives in, not the article's own topic.
 {source_group_menu}
 
-Return JSON: {{"queries": ["<query 1>", "<query 2>", ...], "source_groups": ["<group id>", ...]}}"""
+TOPIC TERMS — also list the vocabulary that headlines and summaries of REAL news about this market contain: the words \
+a journalist uses for its technology, its activities, its products or services, and what its vendors and buyers do. A \
+filter later keeps a news item only if it uses one of these terms or names the market itself, so they decide what news \
+can reach the article at all. Give 10 to 16 terms of 1 to 3 words, lowercase, covering the market's different \
+segments and the alternate names the coverage uses (format only, placeholder not a real market: for a "Zzz Widget \
+Services" market: "zzz widget", "widget maker", "widget supply", "widget testing"). Never a word that appears in \
+news about almost any technology company ("ai", "data", "cloud", "software", "platform", "digital", "security", \
+"enterprise", "market") standing alone: pair it with the word that makes it specific to this market, or leave it out.
+
+Return JSON: {{"queries": ["<query 1>", "<query 2>", ...], "source_groups": ["<group id>", ...], \
+"topic_terms": ["<term 1>", "<term 2>", ...]}}"""
 
 
 SELECT_SYSTEM = """You are a senior market-intelligence editor at Coherent Market Insights (CMI). \
@@ -240,6 +251,9 @@ adds nothing a reader doesn't already assume. Reject anything that DEFINES or EX
 an event: dictionary or encyclopedia entries, "what is X" / "meaning of X" / "types of X" / glossary / tutorial / \
 guide pages, and any page whose first sentence is a definition. Explaining the subject is the article's job, not a \
 source's — a source earns a place only by telling the reader what happened.
+   Market sizing is not evidence either: reject any result whose fact is the size, forecast, growth rate or share of a market \
+or industry, whoever states it — a research firm, a blog or news page quoting one, or a vendor's own report. CMI's report is \
+the only source of market sizing in the article, and a second figure for the same market would contradict it.
 4. Actually usable in the final draft: ask yourself "would this specific fact, cited by name, strengthen the Market \
 Trends, U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
 would not actually improve a single sentence of that article, do not select it just because it is on-topic.
@@ -368,9 +382,10 @@ headed sections, merge neighbours; if fewer, split by idea; never end up with mo
 too short, and one over 8 sentences is too long: when a point covers many items (for example several named products or options), \
 give each item ONE sentence and keep to the two paragraphs.
   - Headings read as blog section headers for this article's subject, specific to what the section discusses, not generic labels.
-  - These sections are about the publisher's subject only. They contain no statement about any market's size, growth, segments, \
-regions or vendor landscape, and no market figure. If the original article makes such statements, leave them out: the market
-block, written afterwards, covers the market from CMI's report.
+  - These sections are about the publisher's subject only. They contain no statement about any market's size, growth rate, segments, \
+regions or list of vendors, and no market figure. If the original article makes such statements, leave them out: the market
+block, written afterwards, covers the market from CMI's report. This does not apply to the claims in the claims list: a claim \
+about how firms or practitioners work or adopt tools is the article's own point, so it is stated as its status requires, with its source.
   - Only the LAST publisher section may end with one short, natural sentence that points toward the wider market this subject \
 belongs to; the market analysis picks up from it. Do not conclude, do not summarize the post, do not address the reader with a closing \
 thought. The first two sections never mention the market.
@@ -421,11 +436,15 @@ to hold a list or clause in memory before reaching the verb, split it into two p
 reader as "you", name who is acting in generic terms ("a business", "marketing teams", "companies") the first time a paragraph \
 needs an actor, and use "the team", "the company", "the business" or "it" only after an earlier sentence of the same paragraph \
 has named them. Every "the X" must point to something this piece has already named.
+- NO ANALYST VIEWS HERE. Do not attribute any view to a CMI analyst, expert or research team in these sections: the market block \
+that follows carries the post's only analyst opinions.
 - FORMAT. Paragraph strings are plain text; no bullet lists here.
 
 OUTPUT CHECKLIST (verify before you answer): "sections" holds exactly 4 objects: (1) the intro with "heading": "" and 3 \
 paragraphs; (2)-(4) the three publisher sections, each with a heading and exactly 2 paragraphs. Every "sop" is []. No section is \
-a conclusion. "evidence_citations" lists the ARTICLE EVIDENCE items you used.
+a conclusion. Every claim in the claims list marked BACKED ({backed_claims}) is stated in one of the publisher sections, with its \
+source named in the same sentence: go through those claim ids one by one before you answer, and do not skip one to save words (a \
+claim is shortened, never left out). "evidence_citations" lists the ARTICLE EVIDENCE items you used.
 
 Return JSON in exactly this shape (4 section objects; every "sop" is an empty list; paragraph text is plain prose):
 {{"sections": [
@@ -446,11 +465,13 @@ Voice: plain, everyday English, the way a knowledgeable person explains somethin
 sentences are fine, and the normal word beats the formal synonym when both mean the same thing. It is a blog post, not a filed \
 research report: casual and easy to read, but correct and professional, with no slang, no internet-speak, no emoji, no hype, no \
 rhetorical hook, no calls to action, no sales enthusiasm about the market or the report, and no direct address of the reader \
-("you"). State what the evidence shows; do not sell. Avoid generic engagement filler such as "in today's fast-paced world", \
+("you"). State what the evidence shows; do not sell, apart from the one or two labelled analyst opinions the CMI OPINION rule \
+asks for. Avoid generic engagement filler such as "in today's fast-paced world", \
 "delve", "navigate the landscape", "game-changer", "unlock", "revolutionize".
 Sources: you are given the opening, the confirmed CMI report, and MARKET EVIDENCE (recent news about that market). They must never \
 cross-contaminate: a name, figure or claim that belongs to one source must never be written as if it came from another. Before \
 naming any company, market or figure, check which source in THIS prompt it came from; if you are not certain, do not use it. \
+The only text that is your own inference is the CMI analyst opinion, and it is always labelled as such. \
 Respond with JSON only."""
 
 MARKET_USER = """Write the rest of the post (the market block) and the title of the CMI blog post whose opening is given below.
@@ -501,7 +522,7 @@ WORD TARGETS: the market block comes to about 570-650 words; with the post so fa
 a section.
 
 SECTION SPECIFICATIONS
-  - report_context (the BRIDGE): exactly ONE paragraph of 3 sentences (55-65 words). Its FIRST sentence explicitly turns from the \
+  - report_context (the BRIDGE): exactly ONE paragraph of 3 sentences, each at most 22 words (55-65 words in all). Its FIRST sentence explicitly turns from the \
 publisher's subject to the market that subject lives in, picking up from the last paragraph of the post so far (the point of the turn, not a \
 fixed wording: this subject sits inside this market, and here is that market's size and direction). The rest integrates the CMI \
 report's framing, its overall size/growth story and key dynamics (drivers, demand factors), and explicitly connects the market's \
@@ -514,22 +535,26 @@ impact on the market and rests on at least one MARKET EVIDENCE item (two where s
 list.
   - segmentation: ONE paragraph of 50-60 words INCLUDING its bullets. A single lead-in sentence that uses the word "segment" or \
 "segmentation" itself (not a stand-in word such as "axes" or "breakdown") and states how many segments the report uses, then each \
-segmentation line as its own "\\n- " bullet inside the same paragraph string (3 bullets maximum, 10-20 words each, for example \
-"- By <segment type>: <its categories>."). Say it directly; the shortest grammatical lead-in beats a longer one padded with \
-connector words. Any words left belong in the same paragraph, saying how the sub-segments relate to the market; do not add a \
-second paragraph.
-  - subsegment: exactly TWO paragraphs of 3 sentences each (45-55 words), each a detailed analysis of one sub-segment from two \
+segmentation line as its own "\\n- " bullet inside the same paragraph string (3 bullets maximum, 10-14 words each, for example \
+"- By <segment type>: <its categories>."). The lead-in is at most 15 words and the shortest grammatical lead-in beats a longer one padded with \
+connector words. Nothing else goes in the paragraph: the lead-in and the bullets are the whole 50-60 words, and there is no second paragraph.
+  - subsegment: exactly TWO analyses, each its own entry in "paragraphs" (an object with "segment", "sub_segment" and \
+"paragraph", see the shape below). Each "paragraph" is 3 sentences of at most 18 words each (45-55 words) analysing ONE sub-segment, and the two come from \
 DIFFERENT major segments (for example one from "by type" and one from "by application"), covering its growth or adoption drivers, \
-its major applications or end uses and its contribution to the overall market.
-  - country_us: ONE paragraph of 5 sentences (100-115 words; the SOP requires at least 100 and at most 200) on U.S. market \
+its major applications or end uses and its contribution to the overall market. Choose the two sub-segments by the post so \
+far: take the ones that connect most directly to its subject or that it already gives the most weight to; only if it points to none, \
+take the two the CMI report lists first. Name the segment and the sub-segment in the object first, then write the paragraph about \
+exactly that sub-segment and no other: the second analysis never continues the first.
+  - country_us: ONE paragraph of 5 sentences of 24-28 words each (120-140 words; the SOP requires at least 100 and at most 200, so never fewer than 100) on U.S. market \
 factors, growth drivers, adoption trends and relevant industry developments, using MARKET EVIDENCE for the developments.
   - key_players: exactly TWO paragraphs (two, never one). The first (2 sentences, 22-30 words) introduces the competitive \
 landscape generally. The second (4 sentences, one per company, each at most 15 words, 50-60 words in all) names exactly FOUR \
 companies from the COMPANY NAMES TO USE list or from MARKET EVIDENCE, and gives each ONE concrete detail (a product, a move, a \
 partnership or a date) taken from the report or the evidence. Never write a bare list of names and never name a company without a \
 concrete detail. Use each company's name exactly as in COMPANY NAMES TO USE or as the evidence prints it.
-  - conclusion: ONE paragraph of 4 sentences (70-80 words), last in the post: (1) the main takeaway for the publisher's subject, \
-(2) where the market is heading, in one sentence, (3) what that means for a reader of the publisher's subject. It closes BOTH the \
+  - conclusion: ONE paragraph of 4 sentences, each at most 20 words (70-80 words), last in the post: (1) the main takeaway for the publisher's subject, \
+(2) where the market is heading, in one sentence, (3) what that means for a reader of the publisher's subject, (4) ONE sentence giving a CMI analyst's view (the CMI OPINION rule \
+below), which is the post's closing judgement. It closes BOTH the \
 publisher's subject and the market. Grounded only in points already made in the post so far or above: no new figures, companies or claims, \
 no direct address of the reader and no call to action.
   - Every market paragraph is written in terms of the publisher's subject: it says what its trend, segment, region or company \
@@ -578,6 +603,15 @@ as a current development. Forecast periods, base years and market sizes are proj
 - THE MARKET NAME. The one CMI report link is in the post so far, so in your text the market name is plain text. Never say or imply that \
 the market IS a product, software or company: it is an industry category that CMI sizes and tracks, made of many vendors' \
 products. Say that a company or product belongs to, competes in or is tracked by the market.
+- CMI OPINION (one or two in the whole market block, no more). The conclusion's fourth sentence is always one. You may add ONE \
+more in trends, subsegment, key_players or country_us when the evidence there supports a real judgement; otherwise write only the \
+conclusion's. Each is a sentence that gives a CMI analyst's own view, so the post carries a point of view as well as facts. Attribute it by role, never by name and never in quotation marks: "A CMI analyst \
+expects…", "An analyst at CMI believes…", "CMI's research team suggests…", "An expert at Coherent Market Insights argues…" (if \
+you write two, word them differently). What follows the attribution is a judgement a reader could reasonably disagree with: a \
+prediction, a ranking of what matters more, or a trade-off, worded fresh for this post in the writer's own words each time. It must be built only from the CMI REPORT and MARKET EVIDENCE above and must tie to the publisher's subject: it \
+interprets facts already in the post, it adds no new fact, figure, company or event, and it is not a restated fact or a \
+both-sides hedge. Never put one in report_context or segmentation. It takes the place of an ordinary sentence, so the section's \
+sentence count stays as specified. This is the only place you state your own inference, and it is always labelled as the analyst's view.
 - COMPANY SPELLING. Spell every company and product name the way COMPANY NAMES TO USE or the evidence prints it, and drop any \
 scraping artifact glued onto a name.
 - HEADINGS. Headings read as blog section headers for THIS post's subject, specific to what the section discusses, not labels \
@@ -612,12 +646,14 @@ would fit a different article on the same market, it is too generic; the origina
 CMI term only supports it. Vary the shape from run to run, for example (format only): "Warehouse Safety Planning and the Zzz \
 Widget Market: Key Trends".
 - FORMAT. A paragraph string may contain real newline characters ("\\n") only to hold a lead-in sentence followed by "- " bullet \
-lines, exactly where the trends and segmentation rules call for it, and nowhere else.
+lines, exactly where the trends and segmentation rules call for it, and nowhere else. A section with two paragraphs (subsegment, \
+key_players) has two separate strings in its "paragraphs" array, never one string holding both.
 
 OUTPUT CHECKLIST (verify before you answer): "title" is filled. "sections" holds exactly 7 objects in this order: report_context, \
 then trends, segmentation, subsegment, country_us and key_players in the order you choose, then conclusion last. Each has a \
 heading and exactly one entry in "sop". The subsegment and key_players sections have exactly 2 paragraphs; every other section has \
-exactly 1. No intro and no publisher section. "evidence_citations" lists the market evidence items you used.
+exactly 1. No intro and no publisher section. One or two sentences in the block (no more) are labelled CMI analyst opinions, in \
+sections the CMI OPINION rule allows. "evidence_citations" lists the market evidence items you used.
 
 Return JSON in exactly this shape (a title and 7 section objects; the sections after report_context and before conclusion may \
 be in any order you choose):
@@ -626,7 +662,9 @@ be in any order you choose):
   {{"heading": "<heading>", "sop": ["report_context"], "paragraphs": ["<the bridge paragraph>"]}},
   {{"heading": "<heading>", "sop": ["trends"], "paragraphs": ["<lead-in sentence>\\n- <trend 1>\\n- <trend 2>\\n- <trend 3>"]}},
   {{"heading": "<heading>", "sop": ["segmentation"], "paragraphs": ["<lead-in sentence>\\n- <segment line 1>\\n- <segment line 2>\\n- <segment line 3>"]}},
-  {{"heading": "<heading>", "sop": ["subsegment"], "paragraphs": ["<sub-segment 1 paragraph>", "<sub-segment 2 paragraph>"]}},
+  {{"heading": "<heading>", "sop": ["subsegment"], "paragraphs": [
+    {{"segment": "<major segment A>", "sub_segment": "<a sub-segment of A>", "paragraph": "<3-sentence analysis of that sub-segment only>"}},
+    {{"segment": "<a DIFFERENT major segment B>", "sub_segment": "<a sub-segment of B>", "paragraph": "<3-sentence analysis of that sub-segment only>"}}]}},
   {{"heading": "<heading>", "sop": ["country_us"], "paragraphs": ["<U.S. paragraph>"]}},
   {{"heading": "<heading>", "sop": ["key_players"], "paragraphs": ["<landscape paragraph>", "<four-company paragraph>"]}},
   {{"heading": "<heading>", "sop": ["conclusion"], "paragraphs": ["<the conclusion paragraph>"]}}

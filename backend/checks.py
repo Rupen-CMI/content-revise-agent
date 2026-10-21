@@ -5,6 +5,28 @@ from datetime import date
 import freshness
 from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
 
+# A sentence that gives a view in the voice of a CMI analyst ("A CMI analyst expects...", "An analyst at CMI believes...",
+# "CMI's research team suggests..."). The post carries one or two of them, no more.
+_CMI_NAME = r"(?:CMI|Coherent Market Insights)"
+_CMI_OPINION_RE = re.compile(
+    r"\b(?:an?|one)\s+(?:senior |lead |market |industry )?(?:analyst|expert|researcher|strategist)s?\s+(?:at|from|with)\s+" + _CMI_NAME + r"\b"
+    r"|\banalysts?\s+(?:at|from|with)\s+" + _CMI_NAME + r"\b"
+    r"|\b" + _CMI_NAME + r"(?:'s|\u2019s)?\s+(?:senior |lead |market )?(?:analysts?|experts?|researchers?|research team|analyst team)\b",
+    re.IGNORECASE,
+)
+CMI_OPINIONS_MIN, CMI_OPINIONS_MAX = 1, 2
+
+
+def count_cmi_opinions(paragraphs: list[str]) -> int:
+    """Sentences that attribute a view to a CMI analyst/expert/research team."""
+    n = 0
+    for p in paragraphs:
+        for sentence in re.split(r"(?<=[.!?])\s+", p):
+            if _CMI_OPINION_RE.search(sentence):
+                n += 1
+    return n
+
+
 _FIGURE = re.compile(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(%|percent|bn\b|billion|mn\b|million|tn\b|trillion)", re.IGNORECASE)
 _NUMBER = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
 
@@ -735,20 +757,19 @@ def run_checks(
             f"not found: {', '.join(unused)}" if unused else f"used {used} of {len(secondary_keywords)}",
         ))
 
-    known = _numbers(source_text)
-    unverified = sorted({m.group(0) for m in _FIGURE.finditer(full) if float(m.group(1).replace(",", "")) not in known})
-    results.append(CheckResult(
-        "All figures traceable to the report or evidence",
-        not unverified,
-        "unverified: " + ", ".join(unverified) if unverified else "",
-    ))
-
     non_sponsor = "\n".join(p for p in paragraphs if p.replace(SPONSOR_TOKEN, " ").strip()).lower()
     leaked = [t for t in sponsor_brand_terms if t and t.lower() in non_sponsor]
     results.append(CheckResult(
         "Guest brand not mentioned outside the retained paragraph",
         not leaked,
         ", ".join(leaked),
+    ))
+
+    opinions = count_cmi_opinions(paragraphs)
+    results.append(CheckResult(
+        f"CMI analyst opinion: {CMI_OPINIONS_MIN} to {CMI_OPINIONS_MAX} labelled statements in the article",
+        CMI_OPINIONS_MIN <= opinions <= CMI_OPINIONS_MAX,
+        f"found {opinions}",
     ))
 
     sources = []

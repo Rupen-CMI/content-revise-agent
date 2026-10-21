@@ -220,6 +220,9 @@ class RunState:
     hits: list[search.SearchHit] | None = None
     # claim backing pool from Step 2 ({claim id: candidate pages}) — SELECT consumes it in Step 3.
     claim_pool: dict[str, list[search.SearchHit]] | None = None
+    # The claim-backing search starts in Step 1, right after the claims are extracted: it depends only on the article, not
+    # on the market the human picks, so it runs while the human reads and confirms. Step 2 collects the result.
+    claim_future: "Future | None" = None
     selection: dict | None = None
     evidence: str | None = None
     title: str = ""
@@ -228,6 +231,24 @@ class RunState:
 
 
 _RUNS: dict[str, RunState] = {}
+
+# Background work that must outlive the request that started it (the claim-backing search runs while the human chooses a market).
+_BACKGROUND = ThreadPoolExecutor(2, thread_name_prefix="background")
+
+
+def _start_claim_search(orient: dict, logger: logging.Logger) -> "Future | None":
+    claims = pipeline.orient_claims(orient)
+    if not claims:
+        return None
+
+    def work() -> dict:
+        try:
+            return pipeline.run_claim_evidence(claims, logger)
+        except Exception:  # claim backing is best-effort: a failure here must never fail the run
+            logger.warning("[claim-search] failed; the draft will treat every claim as unbacked", exc_info=True)
+            return {}
+
+    return _BACKGROUND.submit(work)
 
 
 def _prune_runs() -> None:
@@ -575,6 +596,7 @@ def step1(req: Step1Request) -> dict:
     logger.info(f"SPONSOR PARAGRAPH: {sponsor.text}")
     try:
         orient = pipeline.run_orient(article, sponsor, logger)
+        claim_future = _start_claim_search(orient, logger)
         candidates = pipeline.run_match_catalog(orient, logger)
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(logger, "Step 1", e)
@@ -584,7 +606,7 @@ def step1(req: Step1Request) -> dict:
     _RUNS[token] = RunState(
         filename=Path(req.filename).name or "upload.docx",
         article=article, sponsor=sponsor, orient=orient,
-        candidates=candidates, logger=logger, log_path=log_path,
+        candidates=candidates, logger=logger, log_path=log_path, claim_future=claim_future,
     )
     logger.info(f"STEP 1 DONE — run token {token[:8]}…, {len(candidates)} candidates")
     return {
@@ -608,24 +630,15 @@ def step2(req: Step2Request) -> dict:
         raise HTTPException(400, f"Report {req.report_id} is not one of the matched reports for this run.")
     try:
         report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
-        claims = pipeline.orient_claims(run.orient)
-        if claims:
-            # Same split as the ungated path: the claim-backing search (text web) runs in its own
-            # thread next to the market search (news + feeds), and the request waits once.
-            with ThreadPoolExecutor(1) as claim_ex:
-                claim_future = claim_ex.submit(
-                    pipeline.run_claim_evidence, claims, run.logger,
-                )
-                hits = pipeline.run_search_evidence(
-                    report.name, run.sponsor, run.candidates, run.logger,
-                    key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
-                )
-                run.claim_pool = claim_future.result()
-        else:
-            hits = pipeline.run_search_evidence(
-                report.name, run.sponsor, run.candidates, run.logger,
-                key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
-            )
+        # The claim-backing search has been running since Step 1 (see RunState.claim_future); start it now only if it
+        # never started (a run restored without it).
+        if run.claim_future is None:
+            run.claim_future = _start_claim_search(run.orient, run.logger)
+        hits = pipeline.run_search_evidence(
+            report.name, run.sponsor, run.candidates, run.logger,
+            key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
+        )
+        run.claim_pool = run.claim_future.result() if run.claim_future is not None else {}
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)
     run.report, run.hits = report, hits

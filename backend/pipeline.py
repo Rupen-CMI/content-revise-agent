@@ -17,7 +17,7 @@ import reports
 import search
 import sources
 from checks import (
-    _FIGURE, MAX_LINK_WORD_OFFSET, CheckResult, _CMI_TITLE_TERMS, _numbers, _stale_event_mentions,
+    _FIGURE, MAX_LINK_WORD_OFFSET, CMI_OPINIONS_MAX, CMI_OPINIONS_MIN, CheckResult, count_cmi_opinions, _CMI_TITLE_TERMS, _numbers, _stale_event_mentions,
     _title_subject_stems, _verbatim_overlap, cmi_link_placement, run_checks,
 )
 from docx_io import Paragraph, SourceArticle, output_path_for, write_docx
@@ -493,7 +493,7 @@ def _secondary_keyword_lines(market_name: str, secondary_kw: list[tuple[str, str
 
 def _llm_search_queries(
     market_name: str, key_players: list[str], logger: logging.Logger, segments: list[str] = (),
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
     """LLM-generated search queries, seeded with the confirmed market name, the article's own
     topic/angle, and real company names pulled from the CMI report — lets query phrasing adapt
     per-market instead of blindly applying the same fixed event-word templates to every market
@@ -512,12 +512,15 @@ def _llm_search_queries(
         ), call_name="search_queries", logger=logger)
         queries = [str(q).strip() for q in result.get("queries") or [] if str(q).strip()]
         groups = [str(g).strip() for g in result.get("source_groups") or [] if str(g).strip() in sources.PACKS]
+        topic_terms = list(dict.fromkeys(
+            re.sub(r"\s+", " ", str(t)).strip().lower() for t in result.get("topic_terms") or [] if str(t).strip()
+        ))[:20]
         if queries:
-            return queries, groups
+            return queries, groups, topic_terms
         logger.warning("[search] LLM returned no usable queries, falling back to deterministic templates")
     except llm.LLMError:
         logger.warning("[search] LLM query generation failed, falling back to deterministic templates", exc_info=True)
-    return _market_search_queries(market_name), []
+    return _market_search_queries(market_name), [], []
 
 
 def run_search_evidence(
@@ -530,10 +533,10 @@ def run_search_evidence(
     market the human ultimately rejected."""
     section(logger, "WEB SEARCH")
     logger.info(f"[search] key players for {market_name!r}: {list(key_players) or '(none)'}")
-    queries, groups = (
+    queries, groups, topic_terms = (
         _llm_search_queries(market_name, list(key_players), logger, list(segments))
         if orient is not None
-        else (_market_search_queries(market_name), [])
+        else (_market_search_queries(market_name), [], [])
     )
     logger.info(f"[search] queries ({len(queries)}): {queries}")
     logger.info(f"[search] source groups chosen: {groups or '(none — general business + funding only)'}")
@@ -547,29 +550,41 @@ def run_search_evidence(
         # contradicting this function's own job of never surfacing evidence for a rejected market.
         return search.filter_hits(
             raw, [market_name], sponsor_hosts, limit=config.SEARCH_KEEP_HITS, logger=logger, key_players=key_players,
-            max_per_host=config.SEARCH_MAX_PER_HOST, sector_hosts=feeds.sector_hosts(groups),
+            max_per_host=config.SEARCH_MAX_PER_HOST, sector_hosts=feeds.sector_hosts(groups), topic_terms=topic_terms,
         )
+
+    # FALLBACK: DDGS, which is rate-sensitive and slow (about 9s per query), runs only when the primary stage came up
+    # short (or when config says always/never). It uses the LLM's own queries only: the site: queries it used to repeat
+    # are the ones Bing already ran, and a DDGS text search on them returns site landing pages. The slow part overlaps
+    # with the rest of the primary stage: as soon as Bing's first few keyword queries are done and clearly thin, DDGS starts in a
+    # background thread while the site: queries and the publisher feeds are still running.
+    mode = config.SEARCH_DDGS_MODE
+    if mode not in ("fallback", "always", "off"):
+        logger.warning(f"[search] unknown SEARCH_DDGS_MODE {mode!r}; DDGS not run")
+    ddgs_queries = queries[:config.SEARCH_DDGS_MAX_QUERIES]
+    ddgs_pool = ThreadPoolExecutor(1)
+    ddgs_future = None
+
+    def after_keywords(bing_hits: list[search.SearchHit]) -> None:
+        nonlocal ddgs_future
+        early = len(filtered(bing_hits))
+        if mode == "always" or (mode == "fallback" and early < max(1, config.SEARCH_PRIMARY_MIN_HITS // 4)):
+            logger.info(f"[search] DDGS fallback starts early ({'configured to always run' if mode == 'always' else f'the first Bing keyword queries kept only {early}'}): {len(ddgs_queries)} queries, overlapping the rest of the primary stage")
+            progress(f"Primary sources thin — adding web search in parallel ({len(ddgs_queries)} queries)")
+            ddgs_future = ddgs_pool.submit(search.run_searches, ddgs_queries, logger)
 
     # PRIMARY: Bing News RSS (keyword + site: queries) and the curated publisher feeds.
     progress(f"Gathering evidence for {market_name} (Bing News + publisher feeds)")
-    raw_hits = feeds.gather(market_name, core, queries, groups, list(key_players), logger)
+    raw_hits = feeds.gather(market_name, core, queries, groups, list(key_players), logger, topic_terms, after_keywords)
     hits = filtered(raw_hits)
     logger.info(f"[search] primary stage kept {len(hits)} article(s)")
-
-    # FALLBACK: DDGS, which is rate-sensitive, runs only when the primary stage came up short (or when
-    # config says always/never).
-    mode = config.SEARCH_DDGS_MODE
-    short = len(hits) < config.SEARCH_PRIMARY_MIN_HITS
-    if mode == "always" or (mode == "fallback" and short):
-        reason = "configured to always run" if mode == "always" else (
-            f"primary stage kept only {len(hits)} < {config.SEARCH_PRIMARY_MIN_HITS}"
-        )
-        ddgs_queries = queries + sources.targeted_queries(core, groups)
-        logger.info(f"[search] DDGS fallback ({reason}): {len(ddgs_queries)} queries")
+    if ddgs_future is not None:
+        hits = filtered(raw_hits + ddgs_future.result())
+    elif mode == "fallback" and len(hits) < config.SEARCH_PRIMARY_MIN_HITS:
+        logger.info(f"[search] DDGS fallback (primary stage kept only {len(hits)} < {config.SEARCH_PRIMARY_MIN_HITS}): {len(ddgs_queries)} queries")
         progress(f"Primary sources thin ({len(hits)} articles) — adding web search ({len(ddgs_queries)} queries)")
         hits = filtered(raw_hits + search.run_searches(ddgs_queries, logger=logger))
-    elif mode not in ("fallback", "always", "off"):
-        logger.warning(f"[search] unknown SEARCH_DDGS_MODE {mode!r}; DDGS not run")
+    ddgs_pool.shutdown(wait=False)
 
     # Full-text pass over what survived, so SELECT and the writer see article text, not just a snippet.
     progress(f"Reading {len(hits)} candidate articles")
@@ -710,6 +725,7 @@ def run_select(
     ), call_name="select", logger=logger, max_tokens=8000)
     _normalize_selection_tags(selection, hits, logger)
     _drop_stale_facts(selection, logger)
+    _drop_market_sizing_facts(selection, logger)
     _verify_selection_figures(selection, hits, logger)
     _normalize_claim_backing(selection, claims, claim_flat, logger)
     return selection
@@ -865,6 +881,40 @@ def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
     selection["evidence"] = kept
 
 
+# Market sizing belongs to the CMI report alone. SELECT is told to reject it (prompts.SELECT_USER, test 3); this is the
+# backstop for a model that keeps one anyway: a fact that gives the size/forecast/growth of a market or industry, or that
+# attributes anything to a rival market-research firm, would put a second, contradicting figure in the draft.
+_RIVAL_RESEARCH_RE = re.compile(
+    r"\b(mordor intelligence|marketsandmarkets|markets and markets|grand view research|research and markets|technavio|"
+    r"fortune business insights|precedence research|allied market research|imarc|verified market research|"
+    r"transparency market research|future market insights|persistence market research|market research future|"
+    r"polaris market research|straits research|expert market research|data bridge market research)\b", re.IGNORECASE)
+_MARKET_SIZING_RE = re.compile(
+    r"\bcagr\b|\bcompound annual growth\b|\b(market|industry) size\b"
+    r"|\b(market|industry|sector|segment)\b[^.;]{0,90}\b(valued|worth|sized|projected|forecast(ed)?|"
+    r"expected to (reach|grow|hit|double)|will (reach|grow|add|double|hit)|estimated (at|to)|to reach|to grow)\b",
+    re.IGNORECASE)
+
+
+def _is_market_sizing(text: str) -> bool:
+    return bool(_RIVAL_RESEARCH_RE.search(text) or _MARKET_SIZING_RE.search(text))
+
+
+def _drop_market_sizing_facts(selection: dict, logger: logging.Logger) -> None:
+    """Remove selected market facts that state a market's size/forecast/growth or cite a rival research firm; blank a
+    kept item's `detail` when it does. Claim backing is exempt: it backs the article's own claims, not market sizing."""
+    kept = []
+    for e in selection.get("evidence") or []:
+        if _is_market_sizing(str(e.get("fact", ""))):
+            logger.info(f"[select] dropped {e.get('id')}: market sizing/forecast or a rival research firm ({str(e.get('fact', ''))[:80]!r})")
+            continue
+        if _is_market_sizing(str(e.get("detail", ""))):
+            logger.info(f"[select] blanked the detail of {e.get('id')}: it states market sizing or cites a rival research firm")
+            e["detail"] = ""
+        kept.append(e)
+    selection["evidence"] = kept
+
+
 _VALID_USE_FOR = ("trends", "us", "players", "context")
 
 
@@ -944,6 +994,11 @@ def run_build_evidence(
             logger.info(f"evidence item dropped (bad id {e.get('id')!r}): {e}")
             continue
         h = hits[int(m.group(1)) - 1]
+        if h.date and freshness.is_stale(h.date.date()):
+            # Last gate before the writer: the draft may not cite anything older than the freshness window, and the
+            # source's own date is what the evidence label shows the writer, whatever earlier filter let the item by.
+            logger.info(f"evidence item dropped (source dated {h.date:%Y-%m-%d}, older than the freshness window): {e.get('id')}")
+            continue
         date = h.date.strftime("%Y-%m") if h.date else "undated"
         evidence_id = e["id"].strip().upper()
         tags = e.get("use_for_all") or [e.get("use_for", "context")]
@@ -1491,6 +1546,12 @@ def _write_problems(
         )
     elif "conclusion" not in sections[-1]["sop"]:
         problems.append('the conclusion section must be the last section')
+    opinions = count_cmi_opinions(paragraphs)
+    if not CMI_OPINIONS_MIN <= opinions <= CMI_OPINIONS_MAX:
+        problems.append(
+            f"it has {opinions} sentence(s) giving a labelled CMI analyst opinion; the post carries {CMI_OPINIONS_MIN} to "
+            f"{CMI_OPINIONS_MAX} (\"A CMI analyst expects…\", placed in trends, subsegment, key_players, country_us or conclusion)"
+        )
     stale = _stale_event_mentions(sections)
     if stale:
         problems.append(
@@ -1551,16 +1612,62 @@ def _render_part1(sections: list[dict], sponsor: Paragraph) -> str:
     return "\n".join(lines).strip()
 
 
+def _split_fused_paragraphs(text: str) -> list[str]:
+    """A paragraph string may hold real line breaks only for a lead-in followed by "- " bullet lines (trends,
+    segmentation). Any other line break is the model putting two paragraphs into one array entry (seen: both sub-segment
+    analyses in one string, so the draft had one paragraph where the SOP needs two). Split there; bullet lines stay
+    attached to the text above them. Nothing is rewritten, only the array shape is restored."""
+    out: list[str] = []
+    for line in str(text).split("\n"):
+        if not line.strip():
+            continue
+        if out and line.lstrip().startswith(("- ", "• ")):
+            out[-1] += "\n" + line.strip()
+        else:
+            out.append(line.strip())
+    return out
+
+
+def _drop_repeated_tags(sections: list[dict], logger: logging.Logger) -> list[dict]:
+    """The market block has exactly one section per SOP tag. A model sometimes writes the whole list twice, or adds a
+    second conclusion; keep the first section of each tag, in order, and log what was dropped. Nothing is rewritten."""
+    seen: set[str] = set()
+    kept = []
+    for s in sections:
+        tags = set(s["sop"])
+        if tags and tags <= seen:
+            logger.warning(f"[write] dropped a repeated {sorted(tags)} section ({s['heading']!r}): the market block has one section per tag")
+            continue
+        seen |= tags
+        kept.append(s)
+    return kept
+
+
+def _paragraph_text(entry) -> str:
+    """A "paragraphs" entry is a string, or an object {"paragraph": "..."} when the prompt asks the writer to name what
+    each paragraph is about (the sub-segment analyses: segment, sub-segment, paragraph)."""
+    if isinstance(entry, dict):
+        return str(entry.get("paragraph") or entry.get("text") or "")
+    return str(entry)
+
+
 def _clean_sections(raw_sections, force_untagged: bool = False) -> list[dict]:
-    return [
-        {
+    out = []
+    for s in raw_sections or []:
+        if not isinstance(s, dict):
+            continue
+        paragraphs = [
+            _plain(q) for p in s.get("paragraphs") or [] if _paragraph_text(p).strip()
+            for q in _split_fused_paragraphs(_paragraph_text(p))
+        ]
+        if not paragraphs:  # a section with no text is dropped
+            continue
+        out.append({
             "heading": str(s.get("heading") or ""),
             "sop": [] if force_untagged else [str(t) for t in s.get("sop") or [] if str(t) in _VALID_SOP_TAGS],
-            "paragraphs": [_plain(str(p)) for p in s.get("paragraphs") or [] if str(p).strip()],
-        }
-        for s in raw_sections or [] if isinstance(s, dict)
-        if any(str(p).strip() for p in s.get("paragraphs") or [])  # a section with no text is dropped
-    ]
+            "paragraphs": paragraphs,
+        })
+    return out
 
 
 def run_write(
@@ -1600,7 +1707,9 @@ def run_write(
     today = date.today().isoformat()
 
     # ---- 3A: the publisher block (intro + three sections)
+    backed_ids = re.findall(r"^\* (C\d+) \[[^\]]*\].*— BACKED", article_evidence, re.MULTILINE)
     pub_prompt = prompts.PUBLISHER_USER.format(
+        backed_claims=", ".join(backed_ids) if backed_ids else "none this time",
         title=article.title,
         topic_summary=orient.get("topic_summary", ""),
         original_body=body_text[:_BODY_CHARS],
@@ -1646,7 +1755,7 @@ def run_write(
     written_b = llm.chat_json(
         prompts.MARKET_SYSTEM, market_prompt, temperature=0.3, call_name="write-market", logger=logger, max_tokens=6000,
     )
-    market_sections = _clean_sections(written_b.get("sections"))
+    market_sections = _drop_repeated_tags(_clean_sections(written_b.get("sections")), logger)
     if not market_sections:
         raise PipelineError("Call 3B returned no market sections")
     title = _plain(str(written_b.get("title") or ""))

@@ -3,6 +3,7 @@ import logging
 import random
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -285,63 +286,61 @@ def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list
     return []
 
 
-def _safe(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[SearchHit]:
-    news = _attempt(_news, d, query, "news", logger)
-    time.sleep(_INTRA_QUERY_DELAY_S + random.uniform(0, 0.6))
-    text = _attempt(lambda d, q: _text(d, q, logger), d, query, "text", logger)
-    logger.info(f"[search] query {query!r}: {len(news)} news + {len(text)} text")
-    return news + text
-
-
-# One DDGS user at a time, with the politeness gap between ANY two uses. The claim-backing stage runs in its
-# own thread next to the market stage, and the market stage may fall back to DDGS: without this gate both could
-# hit the provider at once, and the claim stage (one query per call) would have no spacing between its queries.
-_DDGS_LOCK = threading.Lock()
-_ddgs_last_end = 0.0
+# DDGS politeness is per REQUEST, per kind. News calls go to the news engines (bing, yahoo) and text calls to the text
+# engines (startpage, mojeek, yahoo, duckduckgo), so the two kinds can run side by side without either engine seeing more
+# than one request per gap; within a kind, any two requests, from the market fallback or the claim stage, are spaced by
+# the gap. (The old single lock, held for a whole run, made the claim stage wait for the entire market fallback and made
+# every query do its news call, a pause, then its text call, one after the other.)
+_DDGS_LOCKS = {"news": threading.Lock(), "text": threading.Lock()}
+_ddgs_last_end = {"news": 0.0, "text": 0.0}
 
 
 @contextmanager
-def _ddgs_turn():
-    global _ddgs_last_end
-    with _DDGS_LOCK:
-        wait = _ddgs_last_end + _QUERY_DELAY_S + random.uniform(0, 2.5) - time.monotonic()
-        if _ddgs_last_end and wait > 0:
+def _ddgs_gate(kind: str):
+    with _DDGS_LOCKS[kind]:
+        wait = _ddgs_last_end[kind] + _QUERY_DELAY_S + random.uniform(0, 2.5) - time.monotonic()
+        if _ddgs_last_end[kind] and wait > 0:
             time.sleep(wait)
         try:
             yield
         finally:
-            _ddgs_last_end = time.monotonic()
+            _ddgs_last_end[kind] = time.monotonic()
+
+
+def _lane(kind: str, fn, queries: list[str], logger: logging.Logger) -> list[SearchHit]:
+    """One kind of DDGS call (news or text) for every query, in order, each request through that kind's gate."""
+    out: list[SearchHit] = []
+    with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
+        for q in queries:
+            with _ddgs_gate(kind):
+                batch = _attempt(fn, d, q, kind, logger)
+            logger.info(f"[search] {kind} {q!r}: {len(batch)} raw result(s)")
+            out += batch
+    return out
 
 
 def run_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
-    """Runs queries one at a time, in order, with a politeness gap between them —
-    never more than one request to DDGS in flight, and never a rapid-fire burst.
-    Reuses one DDGS session across the whole run (opening a fresh client per query was an
-    unnecessary extra per-query cost with no benefit, and some DDGS backends track sessions)."""
-    hits: list[SearchHit] = []
-    with _ddgs_turn(), DDGS(timeout=_QUERY_TIMEOUT_S) as d:
-        for i, q in enumerate(queries):
-            batch = _safe(d, q, logger=logger)
-            logger.info(f"[search] query {q!r} -> {len(batch)} raw result(s)")
-            hits += batch
-            if i < len(queries) - 1:
-                time.sleep(_QUERY_DELAY_S + random.uniform(0, 2.5))
-    return hits
+    """DDGS news and text searches for every query. The two kinds run concurrently, each one query at a time with a
+    politeness gap, so the wall time is that of the slower kind, not the sum of both."""
+    with ThreadPoolExecutor(2) as ex:
+        news_f = ex.submit(_lane, "news", _news, queries, logger)
+        text_f = ex.submit(_lane, "text", lambda d, q: _text(d, q, logger), queries, logger)
+        news, text = news_f.result(), text_f.result()
+    logger.info(f"[search] DDGS: {len(news)} news + {len(text)} text raw result(s) from {len(queries)} queries")
+    return news + text
 
 
 def run_text_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
-    """Text-only DDGS queries (no news call): used for CLAIM BACKING, whose useful sources are
-    explainers, encyclopedias and reference pages — kinds of pages that never appear in a news
-    index, so the news half of _safe() would be pure wasted latency and requests. Same politeness
-    pacing and session reuse as run_searches."""
+    """Text-only DDGS queries (no news call): used for CLAIM BACKING, whose useful sources are explainers,
+    encyclopedias and reference pages — kinds of pages that never appear in a news index. Same per-request text gate as
+    the market fallback's text lane."""
     hits: list[SearchHit] = []
-    with _ddgs_turn(), DDGS(timeout=_QUERY_TIMEOUT_S) as d:
-        for i, q in enumerate(queries):
-            batch = _attempt(lambda d, q: _text(d, q, logger), d, q, "text", logger)
+    with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
+        for q in queries:
+            with _ddgs_gate("text"):
+                batch = _attempt(lambda d, q: _text(d, q, logger), d, q, "text", logger)
             logger.info(f"[claim-search] query {q!r} -> {len(batch)} raw result(s)")
             hits += batch
-            if i < len(queries) - 1:
-                time.sleep(_QUERY_DELAY_S + random.uniform(0, 2.5))
     return hits
 
 
@@ -422,6 +421,23 @@ def _word_or_compound(token: str, hit_tokens: set[str]) -> bool:
     ))
 
 
+def stem_hit(word: str, stem: str) -> bool:
+    """A word matches a market-identity stem as a whole word, or by prefix only when the stem is long enough to
+    identify something ("wealth" -> "wealthtech"). A 3-letter stem such as "web" must not match by prefix: it
+    matches "website" in every press release's boilerplate and "web shells" in every security story."""
+    return word == stem or (len(stem) >= 5 and word.startswith(stem))
+
+
+def compile_topic_terms(terms: list[str]) -> list[re.Pattern]:
+    """Whole-word/phrase patterns (plural allowed) for the topic vocabulary the query-writing step produced."""
+    out = []
+    for t in terms:
+        t = re.sub(r"\s+", " ", str(t).strip().lower())
+        if len(t) >= 3:
+            out.append(re.compile(r"\b" + re.escape(t) + r"s?\b", re.IGNORECASE))
+    return out
+
+
 def _head_matched(head: str, hit_tokens: set[str]) -> bool:
     if head in hit_tokens:
         return True
@@ -454,8 +470,12 @@ def filter_hits(
     hits: list[SearchHit], phrases: list[str], blocked_hosts: tuple[str, ...] = (),
     limit: int = 30, logger: logging.Logger = _null_logger,
     key_players: list[str] = (), max_per_host: int = 0, sector_hosts: frozenset[str] = frozenset(),
+    topic_terms: list[str] = (),
 ) -> list[SearchHit]:
     """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market.
+    topic_terms is the market's own vocabulary as the query-writing step produced it (technologies, activities,
+    what vendors and buyers do): a dated news item that uses one is on-topic even when its headline lacks the
+    market NAME, and a sector-source item that uses none is not kept on the strength of its host alone.
     max_per_host (0 = unlimited) keeps one prolific site from filling the whole shortlist.
     sector_hosts are the trade-press sites of the market's own industry: a dated news item from one is on-topic by
     SOURCE, so it reaches SELECT (the LLM judge) even when its headline lacks the market's words
@@ -469,6 +489,8 @@ def filter_hits(
     logger.info(f"[filter] gate phrases ({len(full_phrases)}): {full_phrases}")
     logger.info(f"[filter] key players ({len(key_players)}): {list(key_players)}")
     player_res = _player_patterns(list(key_players))
+    topic_res = compile_topic_terms(list(topic_terms))
+    logger.info(f"[filter] topic terms ({len(topic_res)}): {list(topic_terms)}")
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
     web_cutoff = datetime.now(timezone.utc) - _MAX_WEB_AGE
     blocked = _BLOCKED_HOSTS + tuple(h.lower() for h in blocked_hosts)
@@ -541,8 +563,14 @@ def filter_hits(
         # prefix". That is what lets "Wealthtech" / "Martech" / "Marketers" count for wealth / marketing,
         # and lets a hit with no head noun ("Adhesion Wealth Launches Custom Model Solutions") through.
         # SELECT still judges relevance afterwards.
+        topic_hit = next((rx.pattern for rx in topic_res if rx.search(text)), None)
+        # With a topic vocabulary, one market-identity word is not enough on its own either: a market named by a
+        # generic word plus a specific one ("web" + "scraping") would otherwise pass every story that merely
+        # contains the generic word ("web shells", "web apps"). The item must also use the market's head noun
+        # or one of its topic terms.
         trusted_ok = hit.is_news and sources.is_trusted(hit.host) and any(
-            any(w.startswith(t) for w in hit_tokens for t in (required or [head]))
+            any(stem_hit(w, t) for w in hit_tokens for t in (required or [head]))
+            and (not topic_res or topic_hit is not None or _head_matched(head, hit_tokens))
             for _, (head, required, _, _) in gates
         )
         # A key-player name plus a generic category word is too weak a bar on its own — it is
@@ -558,11 +586,18 @@ def filter_hits(
                 for _, (head, _, _, non_head) in gates
             )
         )
-        sector_ok = hit.is_news and any(hit.host == h or hit.host.endswith("." + h) for h in sector_hosts)
+        # A sector-source item needs a topical signal beyond its host once the topic vocabulary exists: the trade press
+        # of a broad industry (security, enterprise IT) publishes mostly stories that have nothing to do with this
+        # market (patch notices, earnings dates, breaches). Without a vocabulary (the LLM step failed) the old
+        # host-only rule stands.
+        sector_ok = hit.is_news and any(hit.host == h or hit.host.endswith("." + h) for h in sector_hosts) and (
+            topic_hit is not None or not topic_res
+        )
+        topic_ok = hit.is_news and topic_hit is not None
         rules = "|".join(
             r for ok, r in (
                 (matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player"), (trusted_ok, "trusted_source"),
-                (sector_ok, "sector_source"),
+                (sector_ok, "sector_source"), (topic_ok, "topic_terms"),
             ) if ok
         )
         if rules:

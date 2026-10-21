@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -40,13 +41,14 @@ _HEADERS = {"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"}
 
 # --- politeness knobs. Measured Bing News RSS held up with no throttling at ~1-1.8s spacing; these are
 # deliberately wider than that. Raise them rather than lower them if anything ever starts failing.
-_BING_QUERY_DELAY_S = 2.5        # base gap between Bing queries (+ up to _BING_JITTER_S)
-_BING_JITTER_S = 1.5
+_BING_QUERY_DELAY_S = 1.8        # base gap between Bing queries (+ up to _BING_JITTER_S); measured: no throttling at 1-1.8s
+_BING_JITTER_S = 1.0
 _BING_RETRY_WAIT_S = 6.0         # wait after a throttled/failed Bing call, multiplied by the attempt number
 _BING_RETRIES = 2
 _BING_TRIP_AFTER = 3             # consecutive failed queries before Bing is abandoned for this run
 _BING_MAX_KEYWORD_QUERIES = 10   # of the LLM's open-web queries
 _BING_MAX_SITE_QUERIES = 9
+_BING_EARLY_QUERIES = 4          # keyword queries after which the caller may already judge the market 'thin' (see gather)
 _BING_MARKET = {"setmkt": "en-US", "cc": "US"}  # the articles have a U.S.-market section
 _FEED_WORKERS = 6
 _HOST_GAP_S = 2.0                # minimum gap between two requests to the same host (feeds and articles)
@@ -238,7 +240,7 @@ def site_queries(core: str, group_ids: list[str]) -> list[str]:
 
 # ---------------------------------------------------------------------------------------------- RSS
 
-def _topical_filter(phrases: list[str], key_players: list[str]):
+def _topical_filter(phrases: list[str], key_players: list[str], topic_terms: list[str] = ()):
     """Cheap pre-filter for feed items so only plausibly relevant ones reach filter_hits (which applies the
     real topical gate): the item must mention one of the market's identifying words (prefix match, so
     'wealthtech' counts for 'wealth') or a key player."""
@@ -250,11 +252,16 @@ def _topical_filter(phrases: list[str], key_players: list[str]):
             head, required, _, _ = g
             stems |= set(required or [head])
     players = search._player_patterns(list(key_players))
+    topics = search.compile_topic_terms(list(topic_terms))
 
     def ok(hit: search.SearchHit) -> bool:
         text = f"{hit.title} {hit.snippet}"
         words = search._content_tokens(text)
-        return any(w.startswith(s) for w in words for s in stems) or any(rx.search(text) for _, rx in players)
+        return (
+            any(search.stem_hit(w, s) for w in words for s in stems)
+            or any(rx.search(text) for _, rx in players)
+            or any(rx.search(text) for rx in topics)
+        )
 
     return ok
 
@@ -313,20 +320,27 @@ def feeds_for(group_ids: list[str]) -> list[dict]:
 
 def gather(
     market_name: str, core: str, queries: list[str], group_ids: list[str], key_players: list[str],
-    logger: logging.Logger = _null_logger,
+    logger: logging.Logger = _null_logger, topic_terms: list[str] = (),
+    after_keywords: "Callable[[list[search.SearchHit]], None] | None" = None,
 ) -> list[search.SearchHit]:
     """Bing keyword queries + Bing site: queries + the relevant publisher feeds. Returns raw (unfiltered)
-    hits, possibly empty; the caller filters them and decides whether the DDGS fallback is needed."""
+    hits, possibly empty; the caller filters them and decides whether the DDGS fallback is needed.
+    after_keywords, if given, is called with the Bing hits after the first few keyword queries, before the rest of
+    them and the site: queries run, so the caller can start slow work (the DDGS fallback) that overlaps with the rest."""
     feed_defs = feeds_for(group_ids)
-    bing_queries = queries[:_BING_MAX_KEYWORD_QUERIES] + site_queries(core, group_ids)
-    logger.info(f"[gather] {len(feed_defs)} feed(s), {len(bing_queries)} Bing query(ies) for groups {group_ids or '(none)'}")
-    keep = _topical_filter([market_name], key_players)
+    keyword_queries = queries[:_BING_MAX_KEYWORD_QUERIES]
+    site_qs = site_queries(core, group_ids)
+    logger.info(f"[gather] {len(feed_defs)} feed(s), {len(keyword_queries) + len(site_qs)} Bing query(ies) for groups {group_ids or '(none)'}")
+    keep = _topical_filter([market_name], key_players, topic_terms)
     gate = _HostGate(_HOST_GAP_S)
     with ThreadPoolExecutor(1) as ex:
         rss_future = ex.submit(_fetch_feeds, feed_defs, keep, gate, logger)
         with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
             bing = _Bing(client, logger)
-            bing_hits = bing.run(bing_queries)
+            bing_hits = bing.run(keyword_queries[:_BING_EARLY_QUERIES])
+            if after_keywords is not None:
+                after_keywords(list(bing_hits))
+            bing_hits += bing.run(keyword_queries[_BING_EARLY_QUERIES:] + site_qs)
         rss_hits = rss_future.result()
     logger.info(f"[gather] Bing {len(bing_hits)} + RSS {len(rss_hits)} raw hit(s){' (Bing was abandoned)' if bing.disabled else ''}")
     return bing_hits + rss_hits

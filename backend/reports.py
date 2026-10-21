@@ -262,9 +262,47 @@ def _segment_terms(segmentation_text: str) -> list[str]:
         if lowered.startswith(("by ", "global")) or " by " in lowered:
             in_geography = False
             continue
-        if not in_geography and term and len(term) <= 60 and lowered != "others":
+        if not in_geography and re.search(r"[a-z0-9]", lowered) and len(term) <= 60 and lowered != "others":
             terms.append(term)
     return list(dict.fromkeys(terms))
+
+
+_TAXONOMY_LEAD_RE = re.compile(r"(on the basis of|segmented (into|as|by)|is (divided|classified|categorized) (into|by))", re.IGNORECASE)
+_GEOGRAPHY_WORDS = ("region", "geograph", "countr")
+
+
+def taxonomy_segment_terms(page_text: str) -> list[str]:
+    """Sub-segment names from the live report page's own taxonomy block: a lead line such as "On the basis of type, the
+    global X market is segmented into:" followed by "- Name" lines. The database `segmentation` column is empty or in an
+    older shape for many reports, so the live page is the reliable source (found: a report whose DB column parsed to
+    nothing left the query-writing step with "MARKET SEGMENTS: (none listed)"). Geography groups and "Other" are left out."""
+    terms: list[str] = []
+    lines = page_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.endswith(":") and _TAXONOMY_LEAD_RE.search(line):
+            skip = any(w in line.lower() for w in _GEOGRAPHY_WORDS)
+            i += 1
+            while i < len(lines) and lines[i].lstrip().startswith(("- ", "• ")):
+                term = re.sub(r"\(.*?\)", "", lines[i].lstrip()[2:]).strip(" :.")
+                if not skip and term and len(term) <= 60 and term.lower() not in ("other", "others"):
+                    terms.append(term)
+                i += 1
+            continue
+        i += 1
+    return list(dict.fromkeys(terms))
+
+
+def _merge_terms(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for g in groups:
+        for t in g:
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                out.append(t)
+    return out
 
 
 _FAQ_HEADING_RE = re.compile(r"frequently asked questions", re.IGNORECASE)
@@ -331,7 +369,7 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
         url=url,
         source="live",
         sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
-        segment_terms=_segment_terms(segmentation),
+        segment_terms=_merge_terms(_segment_terms(segmentation), taxonomy_segment_terms(live)),
     )
 
 
