@@ -191,7 +191,7 @@ Step 4  PLAN ──> validate + repair in code ──> WRITE ──> FAQ ANSWERS
 ```
 
 LLM calls per run (one job each): orient, fact sheet, search demand, publisher points, search queries, select,
-plan, write, FAQ = 9, the same as today.
+plan, write, FAQ = 9, the same as today. A tenth, FIGURE BACKING, runs only when the report lacks headline figures.
 
 Each new stage is timed with `StageTimer` and shown in the Step 2 timing panel and logs.
 
@@ -226,18 +226,24 @@ This applies to every number in the article and FAQ.
 1. **CMI report first.** A verified fact-sheet figure is used and credited to CMI.
 2. **Evidence second, only for a gap.** If size, forecast or CAGR is `null`, the FIGURE GAP SEARCH runs in
    Step 2:
-   - Deterministic queries built from the market's quoted core phrase plus size, CAGR or forecast wording.
-     Bing web results, DDGS fallback, existing page-text fetch.
-   - This search bypasses the rival-research-page filters (`_RIVAL_RESEARCH_RE`, `_MARKET_SIZING_RE`), because
-     sizing pages are exactly what it needs.
-   - SELECT's FIGURE BACKING job picks at most ONE source:
+   - Two plain-keyword queries built from the market's core phrase (size and forecast; CAGR). The text-search
+     engines are used. Bing's web feed is not: measured on this market, it answers these queries with
+     unrelated pages (messaging apps, dictionaries).
+   - The market-news filters (`_RIVAL_RESEARCH_RE`, `_MARKET_SIZING_RE`) are not applied, because sizing pages are
+     exactly what is wanted. Excluded: CMI's own site, the guest article's site, adult and junk pages.
+   - A separate small LLM call, FIGURE BACKING (one job, run only when a gap and candidate pages exist), picks at
+     most ONE page:
      - **Same market scope:** a broader or narrower market is rejected, never relabelled.
-     - **One source for the set:** size, forecast and CAGR all come from it, never mixed across sources.
-     - **Excluded:** CMI's own site (its blogs conflict) and the guest article's domain.
-     - **Fresh:** dated, or a base year within 2 years of today.
-   - Code verifies every value verbatim in that hit's text (reusing `_verify_selection_figures`); a failure drops
-     it.
-   - Accepted values enter the fact sheet with `source: "<publisher/site name>"` and the hit id.
+     - **One source for the set:** every accepted figure comes from that page.
+     - **Fresh:** the page is dated within 2 years or, if undated, the figure's year is within 2 years of today.
+     - **Quote:** each figure carries a continuous quote from the page that names the market. If the sentence
+       only says "the market", the quote starts one sentence earlier.
+   - Code verifies each figure: the quote is in the page text, every number of the value is in the quote, and
+     every word of the market's core name is in the quote (so "web scraping market" never passes for "web
+     scraping services market"). A figure that fails is dropped; the others from that page are kept.
+   - Accepted values enter the fact sheet with `source: "<site>"` and the page URL.
+   - If the report already holds some of the three figures, the page fills only the missing ones, and the mix is
+     logged as a warning.
 3. **Nothing third.** An unbacked figure is never stated. The plan cannot assign it and the writer is never asked
    for it.
 

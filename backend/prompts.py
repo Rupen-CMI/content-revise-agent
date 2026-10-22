@@ -1070,3 +1070,134 @@ about this market that the report text or article answers well) if you have room
 same direct-answer-first style and the same grounding rule in point 1.
 
 Return JSON: {{"faq": [{{"question": "<market question>", "answer": "<answer>"}}, ...], "publisher_faq": [{{"question": "<question about the publisher's subject>", "answer": "<answer>"}}, ...]}}"""
+
+
+# ---------------------------------------------------------------- market-first chain: FACT SHEET
+FACT_SHEET_SYSTEM = """You are a research analyst at Coherent Market Insights (CMI). You read one CMI market report page and record, as structured data, only what that page itself states about the market. You never fill a gap from general knowledge, from other markets or from other reports. Respond with JSON only."""
+
+FACT_SHEET_USER = """CONFIRMED MARKET: {market_name}
+
+CMI REPORT PAGE TEXT:
+----- BEGIN CMI REPORT PAGE -----
+{report_text}
+----- END CMI REPORT PAGE -----
+
+PURPOSE
+The facts you record are the only report facts a writer will be allowed to use, and an editor reads them to see exactly what the report does and does not state. A field left empty tells the editor something useful. A figure that was guessed, rounded, combined or borrowed from another scope is a defect, however plausible it looks.
+
+HOW TO WORK
+1. Read the whole page. For each field below, look for a sentence that states it for THIS market as a whole.
+2. Record what that sentence says and copy the sentence word for word into "quote". The quote is how your answer gets checked, so it must be a continuous stretch of the page text and must itself name the market the figure belongs to. When the sentence only says "the market" or "it", start the quote with the sentence before it that names the market, so one continuous stretch carries both.
+3. If the page does not state a field for this market, return null (or an empty list). Do not infer it, calculate it, round it or combine two figures.
+4. A figure counts only when the page gives it as that field of the market itself. A figure about something else (a country's industry, a related sector, a survey about another subject, one company's revenue) is not the market's figure, even when it looks like the number you are hunting for.
+
+FIELDS
+- size: the market's value in a stated year ("value" as the page writes it, "year" the year the value is for).
+- forecast: the market's expected value in a later year (same shape).
+- cagr: the market's compound annual growth rate ("value" as written, "period" the years it covers).
+- segments: how the report splits the market. Each entry names the segment type as the page names it and lists its categories as the page lists them. Leave out a split the page only mentions in passing.
+- regions: "leader" is the region the page says holds the largest share or dominates; "fastest" is the region the page says grows fastest. Each gives the region "name", the "basis" the page gives for it (a year, a share, a reason) and the "quote". Either is null when the page does not say.
+- us: statements the page makes about the United States specifically (not about North America or the world).
+- drivers: what the page says pushes the market's growth, one entry per distinct driver.
+- restraints: what the page says holds the market back, one entry per distinct restraint.
+- opportunities: what the page presents as openings for the market, one entry per distinct opportunity.
+For us, drivers, restraints and opportunities each entry has "text" (one plain sentence in your own words, carrying only what the quote says) and "quote".
+
+TESTS BEFORE ANSWERING
+- Every "quote" appears word for word in the page text above.
+- Every figure in an entry appears inside that entry's quote.
+- The quote says the figure belongs to this market as a whole.
+- Nothing was filled from memory or from a different report.
+- An empty field is left empty. Fewer correct entries beat more doubtful ones.
+
+Return JSON in exactly this shape:
+{{"size": {{"value": "<as written>", "year": "<year>", "quote": "<sentence from the page>"}} or null,
+ "forecast": {{"value": "<as written>", "year": "<year>", "quote": "<sentence from the page>"}} or null,
+ "cagr": {{"value": "<as written>", "period": "<years>", "quote": "<sentence from the page>"}} or null,
+ "segments": [{{"type": "<segment type>", "items": ["<category>", "..."]}}],
+ "regions": {{"leader": {{"name": "<region>", "basis": "<basis>", "quote": "<sentence>"}} or null, "fastest": {{"name": "<region>", "basis": "<basis>", "quote": "<sentence>"}} or null}},
+ "us": [{{"text": "<statement>", "quote": "<sentence>"}}],
+ "drivers": [{{"text": "<statement>", "quote": "<sentence>"}}],
+ "restraints": [{{"text": "<statement>", "quote": "<sentence>"}}],
+ "opportunities": [{{"text": "<statement>", "quote": "<sentence>"}}]}}"""
+
+
+# ---------------------------------------------------------------- market-first chain: FIGURE BACKING
+FIGURE_BACKING_SYSTEM = """You are a research analyst at Coherent Market Insights (CMI). The CMI report for a market does not state some of its headline figures, so you check whether one outside web page states them for exactly that market. You accept a page only when it clearly does, and you copy what it says word for word. Respond with JSON only."""
+
+FIGURE_BACKING_USER = """CONFIRMED MARKET: {market_name}
+FIGURES STILL MISSING: {missing}
+
+WEB PAGES (each shows its id, site, publish date if known, and the text we could read):
+{pages}
+
+PURPOSE
+These figures will be printed in an article under the name of the page they come from, so a wrong or loosely matched figure misleads readers and puts a false claim under someone else's name. Saying that no page qualifies is a normal, good answer.
+
+HOW TO WORK
+1. For each page, find a sentence that states one of the missing figures for the confirmed market itself.
+2. Decide whether the page is about the SAME market: the market's own name, or the same words in the same meaning. A page sizing a broader market, a narrower one or a neighbouring one is a different market, even when the words overlap heavily. Reject it; never adjust or relabel its figure.
+3. Choose at most ONE page. If more than one qualifies, take the one that states the most of the missing figures, then the most recent. Take every figure from that single page, never a mix of pages, so the figures agree with one another.
+4. For each missing figure the chosen page states, record "value" as the page writes it, the "year" (or "period" for a growth rate) it refers to, and the "quote": a continuous stretch of the page text that contains the figure and names the market. When the sentence with the figure only says "the market" or "it", start the quote with the sentence before it that names the market, so one continuous stretch carries both.
+5. Leave out a figure the page does not state. Do not calculate, round or fill one in.
+
+TESTS BEFORE ANSWERING
+- The quote appears word for word in that page's text above.
+- The quote names the confirmed market and gives the figure for it.
+- The figure is for a year that is not more than two years before {today}.
+- No figure came from a page other than the chosen one.
+
+Return JSON in exactly this shape (use null for "source" when no page qualifies):
+{{"source": {{"id": "<page id>", "size": {{"value": "<as written>", "year": "<year>", "quote": "<text>"}} or null, "forecast": {{"value": "<as written>", "year": "<year>", "quote": "<text>"}} or null, "cagr": {{"value": "<as written>", "period": "<years>", "quote": "<text>"}} or null}} or null}}"""
+
+# ---------------------------------------------------------------- market-first chain: SEARCH DEMAND
+SEARCH_DEMAND_SYSTEM = """You are a search-intent researcher at Coherent Market Insights (CMI). You work out what ordinary people type into Google, or ask an AI assistant, when they want to learn about a market, so that CMI can publish pages that answer those searches directly. Respond with JSON only."""
+
+SEARCH_DEMAND_USER = """CONFIRMED MARKET: {market_name}
+
+REPORT FACTS (what CMI's report on this market actually covers; each has an id):
+{facts}
+
+PURPOSE
+CMI wants its market page to be the answer a searcher or an AI assistant gives when someone asks about this market. So the questions you write must be ones many different people really do ask, in the plain way they ask them. A question that only an insider would think of, or that fits one article, is worth nothing here.
+
+WHO ASKS
+Students, job seekers, small-business owners, investors, journalists and analysts who are just starting to research the market. They know the market's name and everyday words. They do not know the report's wording, the vendors' jargon or the facts listed above.
+
+PART 1: THE MOST SEARCHED QUESTIONS
+Each kind of question below is one need that people have about a market. Go through them one at a time:
+- size: how large the market is today
+- growth: how fast the market is growing and how large it is expected to become
+- trends: what is changing in the market right now
+- drivers: what is pushing the market to grow
+- challenges: what holds the market back or makes it hard
+- technology_impact: how a new technology is changing the market
+- segments: how the market is divided and which parts of it matter
+- region: which part of the world leads the market or is growing fastest
+- us: how the market looks in the United States
+- players: which companies lead the market
+- outlook: where the market is heading over the next several years
+- opportunities: where there is room to grow or invest in the market
+
+How to write each question:
+1. Imagine one of the people above with that need. Write the shortest natural way they would put it as a search about THIS market as a whole.
+2. Include the market's own name, or its everyday short form, so the question can only mean this market.
+3. Skip a kind only if it makes no sense for this market. Never stretch one to fill a slot.
+
+Tests before keeping a question:
+- Typed into a search box with no other context, it still makes sense.
+- Its answer is a fact about the market, not a definition, a how-to, a buying choice or a question about one product.
+- It is not about one company, one product feature or one article.
+- It asks something different from every other question in the list, not the same need reworded.
+- Everyday words only: a word that only the market's own insiders use is replaced by the plain word.
+
+PART 2: RELATED TERMS
+Write 6 to 10 short terms (1 to 4 words, lowercase) that people searching this market also use: the names of its segments and categories (the facts above name some), the kinds of products, technologies or buyers in it, and the close category names it belongs to. A term must not merely repeat the market's name.
+
+PART 3: LONGER SEARCHES
+Write 6 to 8 longer searches (3 to 8 words, in the order a person types them) from people who already know the market and want one specific piece of it: one segment, one region, one kind of buyer or one kind of change. They are searches for information (what is happening, how big, how fast, who), never for prices, buying advice or a vendor comparison. Each rests on one fact from the list above (give its id), so a section built from that fact could answer it. A search must not be the market's name with one word added, and must hold no placeholder or bracket.
+
+Return JSON in exactly this shape:
+{{"questions": [{{"intent": "<one of the kinds above>", "question": "<the question>"}}],
+ "terms": ["<term>", "..."],
+ "long_tail": [{{"keyword": "<the search>", "fact": "<fact id>", "why": "<one short clause: who searches this and why>"}}]}}"""
