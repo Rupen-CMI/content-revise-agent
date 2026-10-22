@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 import re
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -64,6 +65,10 @@ class Report:
     source: str
     sections: dict[str, str] = field(default_factory=dict)
     segment_terms: list[str] = field(default_factory=list)
+    # The report page's OWN FAQ ([{"question", "answer"}, ...], read from its FAQPage markup). Never a content
+    # source (_strip_stale_faq drops that block from the text because it can carry stale figures); kept only so
+    # the article's FAQ can avoid repeating the questions the report page already answers.
+    page_faq: list[dict] = field(default_factory=list)
 
 
 def report_url(news_id: int, slug: str, fmt: int) -> str:
@@ -319,7 +324,32 @@ def _strip_stale_faq(text: str) -> str:
     return text[:m.start()].rstrip() if m else text
 
 
+_FAQ_JSONLD_RE = re.compile(
+    r'"@type"\s*:\s*"Question"\s*,\s*"name"\s*:\s*"(.*?)"\s*,\s*"acceptedAnswer"\s*:\s*\{\s*"@type"\s*:\s*"Answer"\s*,\s*"text"\s*:\s*"(.*?)"\s*\}',
+    re.DOTALL,
+)
+
+
+def extract_page_faq(page_html: str) -> list[dict]:
+    """The report page's own FAQ, read from its schema.org FAQPage markup: [{"question", "answer"}, ...]. Empty when
+    the page has none (or the markup changes) — callers treat that as 'nothing to avoid'."""
+    out = []
+    for q, a in _FAQ_JSONLD_RE.findall(page_html or ""):
+        try:
+            q, a = json.loads(f'"{q}"'), json.loads(f'"{a}"')
+        except ValueError:
+            pass
+        q, a = html_to_text(q).strip(), html_to_text(a).strip()
+        if q:
+            out.append({"question": q, "answer": a})
+    return out
+
+
 def fetch_live_page(url: str, logger: logging.Logger = _null_logger) -> str:
+    return fetch_live_page_with_faq(url, logger)[0]
+
+
+def fetch_live_page_with_faq(url: str, logger: logging.Logger = _null_logger) -> tuple[str, list[dict]]:
     try:
         resp = httpx.get(url, headers=_BROWSER_HEADERS, timeout=20, follow_redirects=True)
         resp.raise_for_status()
@@ -337,7 +367,7 @@ def fetch_live_page(url: str, logger: logging.Logger = _null_logger) -> str:
             logger.info(f"[reports]   stale: {line[:160]}")
     if len(text) < _MIN_LIVE_CHARS:
         raise LiveFetchError(f"live page at {url} yielded only {len(text)} chars of text (minimum {_MIN_LIVE_CHARS})")
-    return text
+    return text, extract_page_faq(resp.text)
 
 
 def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
@@ -360,7 +390,8 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
 
     url = report_url(r["newsId"], r["CustomName"], r["isNewFormat"])
     segmentation = html_to_text(r["segmentation"])
-    live = fetch_live_page(url, logger=logger)
+    live, page_faq = fetch_live_page_with_faq(url, logger=logger)
+    logger.info(f"[reports] the report page's own FAQ has {len(page_faq)} question(s) (used only to avoid repeating them)")
 
     return Report(
         news_id=r["newsId"],
@@ -370,6 +401,7 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
         source="live",
         sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
         segment_terms=_merge_terms(_segment_terms(segmentation), taxonomy_segment_terms(live)),
+        page_faq=page_faq,
     )
 
 

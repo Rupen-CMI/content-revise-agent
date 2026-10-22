@@ -52,16 +52,29 @@ def main() -> None:
     chosen = candidates[0]
     print(f"confirmed market (top candidate, same as UI default): {chosen.keyword} ({chosen.news_id})")
 
-    print("Step 2: fetch report + web search (real live fetch + real DDGS + real LLM query gen)...")
+    print("Step 2: fetch report, draft questions + report claims, long-tail keywords, web search (real calls)...")
     report = pipeline.run_fetch_confirmed_report(chosen, logger)
-    hits = pipeline.run_search_evidence(
-        report.name, sponsor, candidates, logger,
-        key_players=reports.key_players(report), orient=orient,
-    )
+    questions = pipeline.run_draft_questions(report.name, orient, report, logger).get("subheading_questions") or []
+    longtails = pipeline.resolve_longtails(report.name, report, orient, logger)
+    report_claims = pipeline.run_report_claims(report.name, report, logger)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as pool:
+        question_future = pool.submit(pipeline.run_question_evidence, questions, logger)
+        report_claim_future = pool.submit(pipeline.run_report_claim_evidence, report_claims, logger)
+        hits = pipeline.run_search_evidence(
+            report.name, sponsor, candidates, logger,
+            key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
+        )
+        question_evidence = question_future.result()
+        report_claim_evidence = report_claim_future.result()
 
     print("Step 3: select evidence (real LLM call)...")
-    selection = pipeline.run_select(article, orient, sponsor, report, hits, logger)
-    evidence = pipeline.run_build_evidence(selection, hits, logger)
+    selection = pipeline.run_select(
+        article, orient, sponsor, report, hits, logger,
+        questions=questions, question_hits=question_evidence,
+        report_claims=report_claims, report_claim_hits=report_claim_evidence,
+    )
+    evidence = pipeline.run_build_evidence(selection, hits, logger, orient=orient, questions=questions)
 
     fixture = {
         "article": dataclasses.asdict(article),
@@ -72,6 +85,9 @@ def main() -> None:
         "hits": [_serialize_hit(h) for h in hits],
         "selection": selection,
         "evidence": evidence,
+        "questions": questions,
+        "longtails": longtails,
+        "report_claims": report_claims,
         "original_filename": docx_path.name,
     }
     out_path.write_text(json.dumps(fixture, indent=2))

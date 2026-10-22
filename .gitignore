@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 backend/logs/
 backend/output/
+backend/.search_cache/
 node_modules/
 .claude
 input_docs/

@@ -822,6 +822,8 @@ button.menu-toggle {
   --hl-secondary-text: #14532d;
   --hl-evidence-bg: #bfdbfe;
   --hl-evidence-text: #1e3a8a;
+  --hl-longtail-bg: #fbcfe8;
+  --hl-longtail-text: #831843;
 }
 [data-theme="dark"] {
   --hl-primary-bg: #78350f;
@@ -830,10 +832,13 @@ button.menu-toggle {
   --hl-secondary-text: #bbf7d0;
   --hl-evidence-bg: #1e3a8a;
   --hl-evidence-text: #bfdbfe;
+  --hl-longtail-bg: #831843;
+  --hl-longtail-text: #fbcfe8;
 }
 
 mark.hl-primary { background: var(--hl-primary-bg); color: var(--hl-primary-text); border-radius: 3px; padding: 0 2px; }
 mark.hl-secondary { background: var(--hl-secondary-bg); color: var(--hl-secondary-text); border-radius: 3px; padding: 0 2px; }
+mark.hl-longtail { background: var(--hl-longtail-bg); color: var(--hl-longtail-text); border-radius: 3px; padding: 0 2px; }
 mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-text); border-radius: 3px; padding: 0 2px; cursor: help; }
 
 .highlight-legend {
@@ -852,6 +857,7 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .legend-swatch--primary { background: var(--hl-primary-bg); }
 .legend-swatch--secondary { background: var(--hl-secondary-bg); }
+.legend-swatch--longtail { background: var(--hl-longtail-bg); }
 .legend-swatch--evidence { background: var(--hl-evidence-bg); }
 .legend-count { font-weight: 700; color: var(--text); }
 
@@ -995,3 +1001,12 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
   .btn-row .btn { width: 100%; }
   .panel-title { font-size: 19px; }
 }
+
+/* ---------- FAQ block (final page) ---------- */
+#final-faq-block { margin-top: 24px; }
+.faq-item { padding: 16px 0; border-top: 1px solid var(--border); }
+.faq-item:first-child { border-top: 0; padding-top: 6px; }
+.faq-item:last-child { padding-bottom: 0; }
+.faq-item .faq-question { margin: 0 0 6px; font-size: 15.5px; letter-spacing: 0.01em; }
+.faq-item .faq-question strong { font-weight: 700; color: var(--accent); }
+.faq-item .faq-answer { margin: 0; color: var(--text); line-height: 1.65; }

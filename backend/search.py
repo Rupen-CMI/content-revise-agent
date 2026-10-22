@@ -1,5 +1,7 @@
 import hashlib
+import json
 import logging
+import os
 import random
 import re
 import threading
@@ -16,6 +18,7 @@ from ddgs import DDGS
 from ddgs.exceptions import DDGSException, TimeoutException
 
 import sources
+import config
 from config import CMI_HOST
 
 _null_logger = logging.getLogger("revamp.null")
@@ -204,6 +207,66 @@ class SearchHit:
         return urlparse(self.url).netloc.lower().removeprefix("www.")
 
 
+# --------------------------------------------------------------- dev-only disk cache (config.SEARCH_CACHE)
+# See config.SEARCH_CACHE — enabled only via CMI_SEARCH_CACHE=1, for iterating on dev runs of the
+# same market without re-hitting rate-limited engines. One tiny JSON file per (kind, query) under
+# config.SEARCH_CACHE_DIR; live fetch paths are untouched when disabled. scope/claim_id/excerpt are
+# deliberately NOT stored: they are set by the caller AFTER the search, so a cached hit must arrive
+# blank and get its caller-side annotations exactly at a fresh hit would.
+def _cache_path(kind: str, query: str):
+    h = hashlib.sha256(f"{kind}|{query}".encode("utf-8")).hexdigest()[:24]
+    return config.SEARCH_CACHE_DIR / f"{h}.json"
+
+
+def _hit_to_cache(h: SearchHit) -> dict:
+    return {"title": h.title, "snippet": h.snippet, "url": h.url, "source": h.source,
+            "date": h.date.isoformat() if h.date else None, "is_news": h.is_news}
+
+
+def _hit_from_cache(d: dict) -> SearchHit:
+    date = None
+    if d.get("date"):
+        try:
+            date = datetime.fromisoformat(d["date"])
+        except ValueError:
+            pass
+    return SearchHit(d.get("title", ""), d.get("snippet", ""), d.get("url", ""), d.get("source", ""), date, bool(d.get("is_news")))
+
+
+def cache_lookup(kind: str, query: str) -> list[SearchHit] | None:
+    """The cached results for one (kind, query), or None on a miss/expiry/corruption (which callers
+    treat exactly like needing a live fetch). Never raises."""
+    if not config.SEARCH_CACHE:
+        return None
+    try:
+        blob = json.loads(_cache_path(kind, query).read_text(encoding="utf-8"))
+        if time.time() - blob["t"] <= config.SEARCH_CACHE_TTL_S:
+            return [_hit_from_cache(h) for h in blob.get("hits") or []]
+    except OSError:
+        pass  # absent cache behaves like a miss
+    except Exception:
+        logging.getLogger("revamp.cachecorrupt").debug("corrupt cache entry ignored", exc_info=True)
+    return None
+
+
+def cache_store(kind: str, query: str, hits: list[SearchHit]) -> None:
+    """Record one successful engine answer to disk. Best-effort: any cache bookkeeping failure is
+    swallowed — search must never break because the cache could not write. Atomic via temp+replace
+    (concurrent writes to the same key come from the parallel evidence threads)."""
+    if not config.SEARCH_CACHE:
+        return
+    try:
+        path = _cache_path(kind, query)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}{threading.get_ident()}")
+        tmp.write_text(json.dumps(
+            {"t": time.time(), "hits": [_hit_to_cache(h) for h in hits]}, ensure_ascii=False,
+        ), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def _parse_date(raw) -> datetime | None:
     if not raw:
         return None
@@ -262,10 +325,20 @@ def _text(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[Se
 def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list[SearchHit]:
     """One search call (news OR text) with timeout retries. Never raises: the two calls for a
     query must fail independently — previously a text-search "No results found." escaped from the
-    shared function and discarded the news hits already collected, wiping out every query."""
+    shared function and discarded the news hits already collected, wiping out every query.
+
+    With the dev-only cache on (config.SEARCH_CACHE), the successful result of each (kind, query)
+    is reused instead of re-hitting DDGS; the retry loop stays outside the cache, so a transient
+    engine failure inside fn is never recorded as an empty answer."""
     for attempt in range(_QUERY_RETRIES + 1):
         try:
-            return fn(d, query)
+            cached = cache_lookup(kind, query)
+            if cached is not None:
+                logger.info(f"[cache] {kind} {query!r}: {len(cached)} cached result(s)")
+                return cached
+            hits = fn(d, query)
+            cache_store(kind, query, hits)
+            return hits
         except TimeoutException as e:
             if attempt < _QUERY_RETRIES:
                 wait = 3.0 * (attempt + 1)

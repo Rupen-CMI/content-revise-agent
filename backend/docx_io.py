@@ -10,7 +10,7 @@ import docx
 from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
 
-from checks import _BULLET_LINE_RE
+from checks import split_bullet_lines
 from config import CMI_HOST
 
 log = logging.getLogger(__name__)
@@ -117,31 +117,16 @@ def output_path_for(original_filename: str) -> Path:
 
 
 # A paragraph that is a short lead-in sentence followed by parallel items (3 trends, a
-# segmentation breakdown, ...) is written as ONE paragraph string with the items as "\n- " lines,
-# rather than as separate paragraph objects — this keeps every existing check (word counts,
-# keyword matching, verbatim overlap, citation lookup by exact string) working unchanged, since
-# they all operate on plain text and treat "\n" like any other whitespace (see checks.py's
-# count_items_in for the one check that needs to count bullets as separate items). Only the
-# renderers (here and app.js's renderSections) need to know about the convention, splitting it
-# back into a lead-in line plus real bullet-point paragraphs for display.
-
-
-def _split_bullet_lines(para_text: str) -> tuple[str, list[str]]:
-    """(lead-in text, [bullet item, ...]) if para_text contains "\n- " bullet lines, else
-    (para_text, [])."""
-    lines = para_text.split("\n")
-    lead = []
-    items = []
-    for line in lines:
-        if _BULLET_LINE_RE.match(line):
-            items.append(_BULLET_LINE_RE.sub("", line, count=1))
-        elif items:
-            # a non-bullet line after bullets started: treat the whole thing as plain text
-            # instead, rather than silently dropping a line that didn't fit the pattern.
-            return para_text, []
-        else:
-            lead.append(line)
-    return "\n".join(lead), items
+# segmentation breakdown, the U.S. analysis's factors, a key-players list, ...) is written as ONE
+# paragraph string with the items as "\n- " lines, rather than as separate paragraph objects — this
+# keeps every existing check (word counts, keyword matching, verbatim overlap, citation lookup by
+# exact string) working unchanged, since they all operate on plain text and treat "\n" like any
+# other whitespace (see checks.count_items_in for the one check that needs to count bullets as
+# separate items, and checks.long_paragraph_problems for the one that measures a bulleted
+# paragraph's pieces separately). Only the renderers (here and app.js's renderSections) need to
+# know about the convention, splitting it back into a lead-in line plus real bullet-point
+# paragraphs for display; checks.split_bullet_lines is the shared implementation both this module
+# and checks.py's own readability check call.
 
 
 def write_docx(
@@ -150,7 +135,7 @@ def write_docx(
     """Writes the revamped article as a .docx: each paragraph's text segments (from
     segments_fn, which expands the sponsor/CMI-link placeholders) become real hyperlink
     runs where a URL is present, plain runs otherwise. A paragraph containing "\n- " lines (see
-    _split_bullet_lines) renders as a lead-in paragraph followed by a real bulleted list."""
+    split_bullet_lines) renders as a lead-in paragraph followed by a real bulleted list."""
     document = docx.Document()
     document.add_heading(title, level=1)
 
@@ -162,10 +147,15 @@ def write_docx(
                 p.add_run(seg_text)
 
     for s in sections:
-        if s["heading"]:
+        if s["heading"] and "faq" in (s.get("sop") or []) and s["paragraphs"]:
+            # An FAQ entry's question is a bold line above its answer, NOT a heading: only the one
+            # "Frequently Asked Questions" heading is a heading, so the document's outline still
+            # shows the article's own sections (not seven more question headings).
+            document.add_paragraph().add_run(s["heading"]).bold = True
+        elif s["heading"]:
             document.add_heading(s["heading"], level=2)
         for para_text in s["paragraphs"]:
-            lead, items = _split_bullet_lines(para_text)
+            lead, items = split_bullet_lines(para_text)
             if lead.strip():
                 _add_run_segments(document.add_paragraph(), lead)
             for item in items:

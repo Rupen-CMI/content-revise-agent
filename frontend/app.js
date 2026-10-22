@@ -136,7 +136,7 @@ async function resumeRunIfAny() {
     state.sponsorIdx = sponsorCandidatesFrom(data.article).findIndex((p) => p.index === data.sponsor_index);
     if (state.sponsorIdx < 0) state.sponsorIdx = 0;
 
-    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {} };
+    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [] };
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.report = data.report;
@@ -537,6 +537,8 @@ document.getElementById("step1-confirm-btn").addEventListener("click", async () 
     state.run.report = data.report;
     state.run.hits = data.hits;
     state.run.claimHits = data.claim_hits || {};
+    state.run.timings = data.timings || null;
+    state.run.longtails = data.long_tail_keywords || [];
   } catch (e) {
     showError("Step 2 (fetch market evidence)", e);
     state.run.stage = "orient_done";
@@ -555,6 +557,7 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
     const data = await apiPost("/step3", { run_token: state.run.token });
     state.run.stage = "select_done";
     state.run.selection = data.selection;
+    state.run.questions = data.questions || {};
   } catch (e) {
     showError("Step 3 (fetch report facts)", e);
     state.run.stage = "search_done";
@@ -838,6 +841,11 @@ function renderStep1Panel() {
 }
 
 // ---------------------------------------------------------------- render: step2 panel (fetch market evidence online)
+function formatDuration(totalSeconds) {
+  const s = Math.round(Number(totalSeconds) || 0);
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+}
+
 function renderStep2Panel() {
   const spinner = document.getElementById("step2-spinner");
   const content = document.getElementById("step2-content");
@@ -856,6 +864,15 @@ function renderStep2Panel() {
 
   const hits = state.run.hits || [];
   document.getElementById("step2-hits-count").textContent = hits.length;
+  const timings = state.run.timings;
+  document.getElementById("step2-timing").hidden = !timings;
+  document.getElementById("step2-timing-stages").hidden = !timings;
+  if (timings) {
+    document.getElementById("step2-timing-total").textContent = `Evidence collected in ${formatDuration(timings.total_s)} (stages overlap, so they do not add up to the total).`;
+    document.getElementById("step2-timing-stages").innerHTML = (timings.stages || []).map((s) =>
+      `<li>${escapeHtml(s.name)} — ${formatDuration(s.seconds)} <span class="field-hint">(started at +${formatDuration(s.start_s)})</span></li>`
+    ).join("");
+  }
   document.getElementById("step2-hits").innerHTML = hits.length
     ? hits.map((h) => {
         let host = "web";
@@ -883,6 +900,13 @@ function renderStep2Panel() {
       : `<span class="option-caption">No usable page found for this claim.</span>`;
     return `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}${pageLis}</li>`;
   }).join("");
+
+  const sectionLabel = { report_context: "Market overview", trends: "Market trends", segmentation: "Segmentation", country_us: "U.S. market analysis", key_players: "Key players" };
+  const subheadingQuestions = (state.run.questions && state.run.questions.subheading_questions) || [];
+  document.getElementById("step2-questions-block").hidden = subheadingQuestions.length === 0;
+  document.getElementById("step2-questions").innerHTML = subheadingQuestions.map((q) => `
+    <li><strong>${escapeHtml(sectionLabel[q.section] || q.section)}</strong> section — ${escapeHtml(q.question)}</li>
+  `).join("");
 
   const isSearchDone = state.run.stage === "search_done";
   document.getElementById("step2-confirm-block").hidden = !isSearchDone;
@@ -945,6 +969,42 @@ function renderStep3Panel() {
         }).join("")
       : `<span class="option-caption">No outside backing found. The writer will soften this claim or drop it.</span>`;
     return `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}${body}</li>`;
+  }).join("");
+
+  const subheadingQuestions = (state.run.questions && state.run.questions.subheading_questions) || [];
+  const questionBacking = (state.run.selection && state.run.selection.question_backing) || [];
+  document.getElementById("step3-questions-block").hidden = subheadingQuestions.length === 0;
+  document.getElementById("step3-question-backing").innerHTML = subheadingQuestions.map((q) => {
+    const items = questionBacking.filter((b) => b.question_id === q.id);
+    const body = items.length
+      ? items.map((b) => {
+          const src = b.url
+            ? `<a href="${escapeHtml(b.url)}" target="_blank" rel="noopener">${escapeHtml(b.source || "web")}</a>`
+            : escapeHtml(b.source || "web");
+          return `<span class="option-caption">${escapeHtml(b.fact)} &middot; source: ${src}</span>`;
+        }).join("")
+      : `<span class="option-caption">No outside source found — answered from the CMI report/article content only.</span>`;
+    return `<li><strong>${escapeHtml(q.question)}</strong>${body}</li>`;
+  }).join("");
+
+  // Long-tail keywords: generated at Step 2 (reused from Step 1's orient guess when the confirmed
+  // market matched it, regenerated otherwise), handed to the writer in Step 4. This screen shows
+  // the pool the writer will pick from — intent cluster and reader intent per phrase — so a human
+  // can sanity-check what will be woven into the draft before it is written. Nothing is editable
+  // here by design: an untouched pool is what the writer's caps (at most 3, skip-if-no-fit) are for.
+  const longtails = state.run.longtails || [];
+  const longtailIntentLabel = {
+    commercial_review: "Commercial / review",
+    niche_b2b: "Niche / B2B",
+    research_b2b: "Research / B2B",
+    commercial_pricing: "Commercial / pricing",
+    vendor_comparison: "Vendor comparison",
+  };
+  document.getElementById("step3-longtails-block").hidden = longtails.length === 0;
+  document.getElementById("step3-longtails").innerHTML = longtails.map((t) => {
+    const intent = longtailIntentLabel[t.intent] || t.intent;
+    const why = t.why ? ` &middot; ${escapeHtml(t.why)}` : "";
+    return `<li><strong>${escapeHtml(t.keyword)}</strong> <span class="option-caption">${escapeHtml(intent)}${why}</span></li>`;
   }).join("");
 
   // Exact tally of what the selector kept, so "how many did the LLM find useful" never has to be counted by eye.
@@ -1012,7 +1072,9 @@ function _splitBulletSegments(segments) {
     const parts = seg.text.split("\n");
     parts.forEach((part, i) => {
       if (i > 0) { lines.push(current); current = []; }
-      if (part) current.push({ text: part, url: seg.url });
+      // kw (the backend's keyword-highlight label) must travel with the piece: dropping it here made every
+      // keyword mark inside a bulleted paragraph disappear while the legend still counted it.
+      if (part) current.push({ text: part, url: seg.url, kw: seg.kw });
     });
   }
   lines.push(current);
@@ -1113,8 +1175,8 @@ function _renderHighlightedText(text, matchers) {
 
 // Maps a segment's server-assigned "kw" label (checks.find_keyword_spans ran concept-matching
 // there, not a literal phrase search — see main.py's _apply_keyword_spans) to its highlight class.
-const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary" };
-const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword" };
+const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary", longtail: "hl-longtail" };
+const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword", longtail: "Long-tail keyword" };
 
 function renderSegmentsHighlighted(segments, matchers) {
   return (segments || [])
@@ -1192,13 +1254,29 @@ function renderFinalPanel() {
 
   document.getElementById("final-article").innerHTML = renderSectionsHighlighted(result.sections, result);
 
-  const secondaryCount = (result.secondary_keywords || []).reduce(
-    (sum, kw) => sum + _countOccurrences(result.sections, kw), 0
-  );
-  document.getElementById("legend-count-primary").textContent =
-    `(${_countOccurrences(result.sections, result.primary_keyword)}x)`;
+  const faq = result.faq || [];
+  document.getElementById("final-faq-block").hidden = faq.length === 0;
+  document.getElementById("final-faq").innerHTML = faq.map((qa) => `
+    <div class="faq-item">
+      <p class="faq-question"><strong>${escapeHtml(qa.question)}</strong></p>
+      <p class="faq-answer">${escapeHtml(qa.answer)}</p>
+    </div>
+  `).join("");
+
+  // The legend's numbers come from the backend's own highlighting pass (result.keyword_counts, filled by the
+  // same spans that produce the marks in the text) so they always match what is highlighted. A literal phrase
+  // search here cannot: it misses every secondary keyword the writer reordered or split across a sentence.
+  const counts = result.keyword_counts || {};
+  const secondaryTotal = Object.values(counts.secondary || {}).reduce((sum, n) => sum + n, 0);
+  const secondaryUsed = Object.keys(counts.secondary || {}).length;
+  const longtailTotal = Object.values(counts.longtail || {}).reduce((sum, n) => sum + n, 0);
+  const longtailUsed = Object.keys(counts.longtail || {}).length;
+  document.getElementById("legend-count-primary").textContent = `(${counts.primary || 0}x)`;
   document.getElementById("legend-count-secondary").textContent =
-    `(${secondaryCount}x, ${(result.secondary_keywords || []).filter((kw) => _countOccurrences(result.sections, kw) > 0).length}/${(result.secondary_keywords || []).length} used)`;
+    `(${secondaryTotal}x, ${secondaryUsed}/${(result.secondary_keywords || []).length} used)`;
+  document.getElementById("legend-count-longtail").textContent =
+    `(${longtailTotal}x, ${longtailUsed}/${(result.long_tail_keywords || []).length} used)`;
+  document.getElementById("legend-longtail").hidden = (result.long_tail_keywords || []).length === 0;
   document.getElementById("legend-count-evidence").textContent =
     `(${(result.evidence_citations || []).length})`;
 

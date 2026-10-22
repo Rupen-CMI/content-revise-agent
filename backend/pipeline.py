@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
@@ -11,6 +12,7 @@ import checks
 import config
 import feeds
 import freshness
+import intent
 import llm
 import prompts
 import reports
@@ -18,7 +20,7 @@ import search
 import sources
 from checks import (
     _FIGURE, MAX_LINK_WORD_OFFSET, CMI_OPINIONS_MAX, CMI_OPINIONS_MIN, CheckResult, count_cmi_opinions, _CMI_TITLE_TERMS, _numbers, _stale_event_mentions,
-    _title_subject_stems, _verbatim_overlap, cmi_link_placement, run_checks,
+    _title_subject_stems, _verbatim_overlap, cmi_link_placement, long_paragraph_problems, LONG_PARAGRAPH_CHECK_ENABLED, question_heading_problems, run_checks,
 )
 from docx_io import Paragraph, SourceArticle, output_path_for, write_docx
 from pipeline_log import new_run_logger, section
@@ -80,6 +82,7 @@ class RevampResult:
     hits: list[search.SearchHit]
     checks: list[CheckResult]
     evidence_citations: list[dict] = field(default_factory=list)
+    faq: list[dict] = field(default_factory=list)
     output_path: Path | None = None
 
     def segments(self, paragraph: str) -> list[Segment]:
@@ -178,9 +181,10 @@ def _bare_market_names(names) -> list[str]:
     return out
 
 
-# The originals' claims list is capped here too: more than 8 unbacked claims would turn the
-# publisher block into a fact-checking exercise and the claim-selection pool into noise.
-_MAX_ORIENT_CLAIMS = 8
+# The originals' claims list is capped here too: the publisher block is now a single short
+# section (about 20% of the post, see _INTRO_TOTAL_WORDS and PUBLISHER_USER), so more than 3
+# unbacked claims would have nowhere to go and would only pad the claim-selection pool with noise.
+_MAX_ORIENT_CLAIMS = 3
 
 
 def _normalize_claims(raw, sponsor_text: str, logger: logging.Logger) -> list[dict]:
@@ -247,9 +251,26 @@ def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logge
         sponsor=sponsor.text,
     ), call_name="orient", temperature=0.1, logger=logger)
     orient["candidate_markets"] = _bare_market_names(orient.get("candidate_markets"))
-    orient["claims_to_back"] = _normalize_claims(orient.get("claims_to_back"), sponsor.text, logger)
+    if config.SEARCH_CLAIMS_ENABLED:
+        orient["claims_to_back"] = _normalize_claims(orient.get("claims_to_back"), sponsor.text, logger)
+    else:
+        logger.info("[orient] claim extraction disabled (config.SEARCH_CLAIMS_ENABLED) — ignoring any claims_to_back the model returned")
+        orient["claims_to_back"] = []
+    # Long-tail candidates ride this call (they are generated for the TOP guess's market, so if the
+    # human confirms that same market the run pays no extra call; see resolve_longtails). Stored RAW
+    # here — like claims, they are sanitised later, at Step 2 against the CONFIRMED market, because
+    # the only fact this call misses is which candidate the human actually picks.
+    raw_longtails = orient.get("longtail_candidates")
+    orient["longtail_candidates"] = [
+        t for t in (raw_longtails if isinstance(raw_longtails, list) else [])
+        if isinstance(t, dict) and str(t.get("keyword") or "").strip()
+    ][:12]
     names = [n for n in orient.get("candidate_markets") or [] if isinstance(n, str)]
     keywords = [k for k in orient.get("scope_keywords") or [] if isinstance(k, str)]
+    orient["longtail_market"] = names[0] if names else ""
+    if orient["longtail_candidates"]:
+        logger.info(f"[orient] long-tail candidates for {orient['longtail_market']!r}: "
+                    + "; ".join(f'{t["keyword"]} [{t.get("intent", "?")}]' for t in orient["longtail_candidates"]))
     if not names and not keywords:
         raise PipelineError("Call 1 returned no candidate markets or scope keywords")
     return orient
@@ -491,6 +512,172 @@ def _secondary_keyword_lines(market_name: str, secondary_kw: list[tuple[str, str
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- long-tail keywords (commercial/research intent SEO)
+# A small set of long-tail search phrases (1-3 actually used by the writer out of a generated
+# pool), intended stocks the user asked for: commercial/review, niche/B2B, research/B2B,
+# commercial/pricing and vendor comparison. Unlike the primary/secondary keyword plan above these
+# are NOT derivable from the market name alone ("wealth management for doctors" has no suffix
+# template), so an LLM proposes market-specific candidates from the confirmed report's own
+# segmentation and named companies, and the writer integrates a few where they genuinely fit.
+_LONGTAIL_COUNT = 8          # candidates generated; the writer is capped at 3 (see MARKET_USER)
+_LONGTAIL_MIN_WORDS = 3
+_LONGTAIL_MAX_WORDS = 8
+_LONGTAIL_INTENTS = ("commercial_review", "niche_b2b", "research_b2b", "commercial_pricing", "vendor_comparison")
+
+
+def _normalize_longtails(raw, market_name: str, logger: logging.Logger) -> list[dict]:
+    """Sanitise the long-tail generator's output: real phrases only (3-8 words, no placeholder
+    brackets that would print literally in prose), intents mapped to the five clusters the user
+    asked for, duplicates collapsed, and exact echoes of the market's own name dropped (the
+    primary keyword's job is that phrase verbatim — a candidate that only restates it is wasted
+    pool space). Bad entries are dropped with a log, never fatal: long-tail integration is an
+    enhancement the run must never fail on."""
+    market_low = " ".join(market_name.lower().split())
+    core_low = _market_core(market_name)
+    echoes = {market_low, core_low, f"{core_low} market"}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in raw if isinstance(raw, list) else []:
+        if len(out) >= _LONGTAIL_COUNT:
+            break
+        if not isinstance(item, dict):
+            continue
+        keyword = re.sub(r"\s+", " ", str(item.get("keyword") or "")).strip()
+        if any(ch in keyword for ch in "[]<>{}|"):
+            logger.info(f"[long-tail] dropped (placeholder bracket): {keyword!r}")
+            continue
+        n_words = len(_WORD_RE.findall(keyword))
+        if not _LONGTAIL_MIN_WORDS <= n_words <= _LONGTAIL_MAX_WORDS:
+            logger.info(f"[long-tail] dropped ({n_words} words, need {_LONGTAIL_MIN_WORDS}-{_LONGTAIL_MAX_WORDS}): {keyword!r}")
+            continue
+        intent = str(item.get("intent") or "").strip().lower()
+        if intent not in _LONGTAIL_INTENTS:
+            logger.info(f"[long-tail] dropped (unknown intent {intent!r}): {keyword!r}")
+            continue
+        norm = " ".join(keyword.lower().split())
+        if norm in seen:
+            continue
+        if norm in echoes:
+            logger.info(f"[long-tail] dropped (restates the market name itself): {keyword!r}")
+            continue
+        # The market name plus one generic word ("<market> market size") is the primary/secondary keyword
+        # plan's job, not a long-tail phrase: it names no sub-segment, audience, region or technology.
+        words = set(_WORD_RE.findall(norm))
+        if words & {"market", "industry", "sector"} and len(words - set(_WORD_RE.findall(core_low)) - {"market", "industry", "sector"}) <= 1:
+            logger.info(f"[long-tail] dropped (the market name plus one generic word): {keyword!r}")
+            continue
+        seen.add(norm)
+        out.append({
+            "keyword": keyword, "intent": intent,
+            "why": re.sub(r"\s+", " ", str(item.get("why") or "")).strip(),
+        })
+    if out:
+        logger.info(f"[long-tail] kept {len(out)} candidate(s): " +
+                    "; ".join(f'{t["keyword"]} [{t["intent"]}]' for t in out))
+    else:
+        logger.info("[long-tail] no usable candidates generated")
+    return out
+
+
+def run_longtail_keywords(
+    market_name: str, report: reports.Report, logger: logging.Logger, orient: dict | None = None,
+) -> list[dict]:
+    """A CALL run in Step 2 (after the report is confirmed, alongside the report-claims extraction
+    — see main.py): asks the model for long-tail search phrases across the five commercial-intent
+    clusters, grounded in the report's own segmentation and named companies so the phrases name
+    real sub-segments/audiences of THIS market. Best-effort like every enhancement: a generation
+    failure returns [] and the writer simply works without long-tail keywords."""
+    section(logger, "CALL: LONG-TAIL KEYWORDS")
+    try:
+        result = llm.chat_json(prompts.LONGTAIL_SYSTEM, prompts.LONGTAIL_USER.format(
+            market_name=market_name,
+            topic_summary=str((orient or {}).get("topic_summary") or "(not available)"),
+            segments="\n".join(f"- {t}" for t in list(report.segment_terms)[:18]) or "(none listed)",
+            key_players=", ".join(reports.key_players(report)) or "(none known)",
+            count=_LONGTAIL_COUNT,
+        ), call_name="longtail_keywords", logger=logger)
+    except llm.LLMError:
+        logger.warning("[long-tail] generation failed; the draft will use no long-tail keywords", exc_info=True)
+        return []
+    return _normalize_longtails(result.get("long_tail_keywords"), market_name, logger)
+
+
+def _format_longtail_lines(longtails: list[dict]) -> str:
+    """The long-tail candidates handed to the writer (and to the revise pass): one line per
+    phrase, its intent cluster and the reader intent behind it."""
+    if not longtails:
+        return "(none this run — write the post with the primary/secondary keywords only)"
+    lines = []
+    for t in longtails:
+        line = f'- "{t["keyword"]}" [intent: {t["intent"]}]'
+        if t.get("why"):
+            line += f" — reader intent: {t['why']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _longtail_usage(title: str, sections: list[dict], longtails: list[dict]) -> list[dict]:
+    """{keyword, intent, used} — whether each generated phrase is used in the finished draft's body.
+    The writer may REORDER a phrase's words to fit a sentence (see the WRITE prompt's LONG-TAIL rule), so
+    this is the concept match checks.longtail_spans (every content word present, close together), the same
+    one the UI highlighting and the SOP check use — a literal substring test would miss every reordered use.
+    Used for the finalize log line and the UI result; the 2-3 target is a soft SOP check, never a retry."""
+    body = "\n".join(" ".join(p if isinstance(p, str) else str(p) for p in s.get("paragraphs", [])) for s in sections)
+    return [{**t, "used": bool(checks.longtail_spans(body, t["keyword"]))} for t in longtails]
+
+
+def longtail_candidates_from_orient(orient: dict | None, market_name: str, logger: logging.Logger) -> list[dict]:
+    """The Step 1 long-tail candidates, safe to read from Step 2 — mirrors orient_claims()'s pattern:
+    the raw list stored on orient (generated for THAT call's top-guess market) is sanitised here
+    against the CONFIRMED market and filtered for relevance. A candidate sharing no word with the
+    confirmed market's core names a different market — that happens when the human overrode the
+    model's default pick, which the caller (resolve_longtails) detects and handles by regenerating."""
+    if not isinstance(orient, dict) or not isinstance(orient.get("longtail_candidates"), list):
+        return []
+    out = _normalize_longtails(orient["longtail_candidates"], market_name, logger)
+    core_words = set(_WORD_RE.findall(_market_core(market_name)))
+    frame_words = {"market", "industry", "sector"}
+    kept: list[dict] = []
+    for t in out:
+        words = set(_WORD_RE.findall(t["keyword"].lower()))
+        if words & core_words or words & frame_words:
+            kept.append(t)
+        else:
+            logger.info(f"[long-tail] Step 1 candidate dropped (names a different market): {t['keyword']!r}")
+    if len(kept) != len(out):
+        logger.info(f"[long-tail] kept {len(kept)}/{len(out)} Step 1 candidate(s) relevant to the confirmed market {market_name!r}")
+    return kept
+
+
+def longtail_seeds_match(orient: dict | None, market_name: str) -> bool:
+    """True when the market the orient call seeded its long-tail candidates for is (in bare-core
+    terms) the market the human actually confirmed — i.e. the Step 1 candidates can be reused and
+    Step 2 needs no generation call. An unseeded orient (old runs / generation skipped) is False."""
+    seeded = _market_core(str((orient or {}).get("longtail_market") or ""))
+    return bool(seeded) and seeded == _market_core(market_name)
+
+
+def resolve_longtails(market_name: str, report: reports.Report, orient: dict | None, logger: logging.Logger) -> list[dict]:
+    """THE long-tail entry point both run paths (stepwise /step2 and the monolith) use. The candidates are
+    generated HERE, in Step 2, from the confirmed report's own segments and companies AND the article's subject
+    (run_longtail_keywords): the pool has to sit where the article and the report overlap, or the writer has
+    nothing it can honestly place a phrase against. Step 1's orient call also proposes candidates, for the
+    market alone; that list is kept as the FALLBACK when this generation returns nothing, and is only reused
+    when the human confirmed the market it was seeded for. Best-effort like every enhancement: any failure
+    leaves the run's long-tails empty rather than failing the step."""
+    try:
+        generated = run_longtail_keywords(market_name, report, logger, orient)
+        if generated:
+            return generated
+        if longtail_seeds_match(orient, market_name):
+            logger.info("[long-tail] generation gave nothing — falling back to the Step 1 candidates")
+            return longtail_candidates_from_orient(orient, market_name, logger)
+        return []
+    except Exception:
+        logger.warning("[long-tail] resolution failed; the draft will use no long-tail keywords", exc_info=True)
+        return []
+
+
 def _llm_search_queries(
     market_name: str, key_players: list[str], logger: logging.Logger, segments: list[str] = (),
 ) -> tuple[list[str], list[str], list[str]]:
@@ -523,20 +710,39 @@ def _llm_search_queries(
     return _market_search_queries(market_name), [], []
 
 
+def prepare_search_queries(
+    market_name: str, key_players: list[str], logger: logging.Logger, segments: list[str] = (),
+) -> tuple[list[str], list[str], list[str]]:
+    """The query-generation half of run_search_evidence, callable on its own thread: main.py's
+    Step 2 runs it concurrently with the question harvest and the report-claim extraction (none of
+    the three needs another's output). Returns exactly what run_search_evidence reads when handed
+    it back — (queries, source_groups, topic_terms)."""
+    return _llm_search_queries(market_name, list(key_players), logger, list(segments))
+
+
 def run_search_evidence(
     market_name: str, sponsor: Paragraph, candidates: list[reports.CatalogEntry], logger: logging.Logger,
     progress: Callable[[str], None] = lambda _: None, key_players: list[str] = (),
     orient: dict | None = None, segments: list[str] = (),
+    search_queries: tuple[list[str], list[str], list[str]] | None = None,
 ) -> list[search.SearchHit]:
     """Web search for supporting evidence, run AFTER the human has confirmed the market —
     queries are built from the confirmed market name itself, so this never searches for a
-    market the human ultimately rejected."""
+    market the human ultimately rejected.
+
+    search_queries: pre-generated (queries, groups, topic_terms) from prepare_search_queries, so
+    the stepwise API can overlap that LLM call with the other Step 2 prep. None (CLI / callers that
+    did not parallelize) generates them here as before."""
     section(logger, "WEB SEARCH")
     logger.info(f"[search] key players for {market_name!r}: {list(key_players) or '(none)'}")
     queries, groups, topic_terms = (
-        _llm_search_queries(market_name, list(key_players), logger, list(segments))
-        if orient is not None
-        else (_market_search_queries(market_name), [], [])
+        search_queries
+        if search_queries is not None
+        else (
+            _llm_search_queries(market_name, list(key_players), logger, list(segments))
+            if orient is not None
+            else (_market_search_queries(market_name), [], [])
+        )
     )
     logger.info(f"[search] queries ({len(queries)}): {queries}")
     logger.info(f"[search] source groups chosen: {groups or '(none — general business + funding only)'}")
@@ -630,11 +836,26 @@ def run_claim_evidence(
         # filtered together, so a claim ends with the best of everything found, not the last query's batch.
         raw: list[search.SearchHit] = []
         kept: list[search.SearchHit] = []
-        for q in queries:
+        # Two channels per query, polite and sequential: Bing web search first (no rate-limit trouble at our pace),
+        # DDGS text search only when the claim is still thin. Hits accumulate across queries and channels and are
+        # filtered together, so a claim ends with the best of everything found, not the last query's batch.
+        # DDGS no longer fires after EVERY thin Bing batch, though: one thin batch is usually the
+        # query's scope, not the claim's absence of coverage on the web. The fallback waits for two
+        # consecutive thin queries — or the claim's LAST query, so a single-query claim still gets
+        # exactly one DDGS attempt. At most one DDGS call per claim, and every such call queues
+        # behind all other streams' text-lane calls in search's shared gate, so on claim-heavy runs
+        # this roughly halves the wait those claims take end to end.
+        ddgs_used = False
+        thin_streak = 0
+        for qi, q in enumerate(queries):
             raw += bing_web.search(q)
             kept = search.filter_claim_hits(raw, c["claim"], logger, limit=_CLAIM_BPOOL_KEEP)
             if len(kept) >= _CLAIM_POOL_GOOD:
                 break
+            thin_streak += 1
+            if ddgs_used or not (thin_streak >= 2 or qi == len(queries) - 1):
+                continue
+            ddgs_used = True
             raw += search.run_text_searches([q], logger)
             kept = search.filter_claim_hits(raw, c["claim"], logger, limit=_CLAIM_BPOOL_KEEP)
             if len(kept) >= _CLAIM_POOL_GOOD:
@@ -652,6 +873,273 @@ def run_claim_evidence(
         f"Claim backing search: {total} candidate page(s) across {backed_pool}/{len(claims)} claim(s)"
     )
     logger.info(f"[claim-search] pool: {backed_pool}/{len(claims)} claim(s) have candidates, {total} page(s) total")
+    return pool
+
+
+_SUBHEADING_QUESTION_COUNT = 3  # up to three of the article's sections may be headed by a question
+
+
+def run_harvest_questions(
+    market_name: str, logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
+) -> dict:
+    """Harvest real autocomplete completions for the confirmed market (see intent.harvest_questions),
+    run CONCURRENTLY with run_search_evidence the same way run_claim_evidence is — independent network
+    calls, so overlapping them costs no extra wall-clock. Best-effort: a harvesting failure must never
+    fail the run, since the question pool is an enhancement, not a requirement."""
+    section(logger, "QUESTION HARVEST")
+    try:
+        pool = intent.harvest_questions(market_name, _market_core(market_name), logger)
+    except Exception:
+        logger.warning("[intent] harvesting failed; no subheading questions will be offered", exc_info=True)
+        pool = {"subheading_candidates": []}
+    progress(f"Harvested {len(pool['subheading_candidates'])} subheading question candidate(s)")
+    return pool
+
+
+def _format_question_candidates(candidates: list[str]) -> str:
+    if not candidates:
+        return "(none harvested)"
+    return "\n".join(f"- {q}" for q in candidates)
+
+
+# Sections whose fixed job answers a common market question; subsegment (two per-sub-segment analyses) and
+# conclusion (the closing take) have no such question.
+_QUESTION_ELIGIBLE_SECTIONS = ("report_context", "trends", "segmentation", "country_us", "key_players")
+
+
+def run_select_questions(
+    market_name: str, orient: dict, question_pool: dict | None, logger: logging.Logger,
+) -> dict:
+    """CALL: pick the final subheading questions from the harvested pool, each assigned to ONE of
+    the article's existing market sections (trends, country_us, key_players) whose heading and
+    opening it will replace — never a new section. Returns {"subheading_questions": [...]}, empty
+    when nothing was harvested — the writer still works fine without them (see prompts.MARKET_USER).
+    The FAQ block is unrelated to this pool; it is generated separately at write time (see
+    run_faq), grounded in the finished article and the CMI report."""
+    pool = question_pool or {"subheading_candidates": []}
+    if not pool.get("subheading_candidates"):
+        logger.info("[intent] no harvested candidates — skipping question selection")
+        return {"subheading_questions": []}
+    section(logger, "CALL: SELECT QUESTIONS")
+    try:
+        result = llm.chat_json(prompts.INTENT_SYSTEM, prompts.INTENT_USER.format(
+            market_name=market_name,
+            topic_summary=orient.get("topic_summary", ""),
+            subheading_candidates=_format_question_candidates(pool.get("subheading_candidates") or []),
+            subheading_count=_SUBHEADING_QUESTION_COUNT,
+        ), call_name="select_questions", logger=logger)
+    except llm.LLMError:
+        logger.warning("[intent] question selection call failed; no questions will be offered", exc_info=True)
+        return {"subheading_questions": []}
+    return _normalize_subheading_questions(result, logger)
+
+
+def _normalize_subheading_questions(result: dict, logger: logging.Logger, market_name: str = "") -> dict:
+    """Sanitise the model's subheading_questions (shared by the autocomplete-selection call and the
+    LLM-drafted call): each needs text and a valid section, at most one per section, at most
+    _SUBHEADING_QUESTION_COUNT in all. With market_name given, a drafted question must also be a real
+    question phrased about the MARKET (intent._is_market_question) — a vague or product-level draft
+    is dropped, never kept."""
+    questions: list[dict] = []
+    seen_sections: set[str] = set()
+    for item in result.get("subheading_questions") or []:
+        if not isinstance(item, dict):
+            continue
+        q = re.sub(r"\s+", " ", str(item.get("question") or "")).strip()
+        sec = str(item.get("section") or "").strip().lower()
+        if not q or sec not in _QUESTION_ELIGIBLE_SECTIONS:
+            logger.info(f"[intent] dropped question (missing text or invalid section {sec!r}): {item}")
+            continue
+        if sec in seen_sections:
+            logger.info(f"[intent] dropped question (section {sec!r} already assigned): {item}")
+            continue
+        if market_name and not (
+            4 <= len(q.split()) <= 18 and q.endswith("?") and intent._is_market_question(q, _market_core(market_name))
+        ):
+            logger.info(f"[intent] dropped drafted question (not a market-shaped question): {q!r}")
+            continue
+        seen_sections.add(sec)
+        questions.append({"id": f"Q{len(questions) + 1}", "question": q, "section": sec})
+        if len(questions) >= _SUBHEADING_QUESTION_COUNT:
+            break
+    logger.info(f"[intent] selected {len(questions)} subheading question(s): "
+                + "; ".join(f'{q["id"]}[{q["section"]}]={q["question"][:70]}' for q in questions))
+    return {"subheading_questions": questions}
+
+
+def run_draft_questions(market_name: str, orient: dict, report: reports.Report, logger: logging.Logger) -> dict:
+    """CALL: the model itself drafts the 1-2 most-searched, market-level questions that will head
+    existing sections (trends / country_us / key_players), grounded in the CMI report. This replaces
+    the autocomplete harvest + selection as the question source: autocomplete returned almost nothing
+    market-shaped for B2B markets, and what it did return was vague product-level questions
+    (run_harvest_questions / run_select_questions are kept but no longer connected). Best-effort: a
+    failure leaves the sections with their ordinary headings."""
+    section(logger, "CALL: DRAFT SUBHEADING QUESTIONS")
+    try:
+        result = llm.chat_json(prompts.QUESTION_DRAFT_SYSTEM, prompts.QUESTION_DRAFT_USER.format(
+            market_name=market_name,
+            core=_market_core(market_name),
+            topic_summary=orient.get("topic_summary", ""),
+            report_text=_report_text(report),
+            subheading_count=_SUBHEADING_QUESTION_COUNT,
+        ), call_name="draft_questions", logger=logger)
+    except llm.LLMError:
+        logger.warning("[intent] question drafting call failed; no questions will be offered", exc_info=True)
+        return {"subheading_questions": []}
+    return _normalize_subheading_questions(result, logger, market_name)
+
+
+_QUESTION_BPOOL_KEEP = 6  # pages kept per question for SELECT (which picks at most two)
+_QUESTION_POOL_GOOD = 2   # kept hits at which a question's search no longer needs the DDGS fallback
+
+
+def run_question_evidence(
+    questions: list[dict], logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
+) -> dict[str, list[search.SearchHit]]:
+    """Web search for evidence that directly answers each chosen subheading question — the same
+    machinery (Bing web search, DDGS text-search fallback) and the same best-effort policy as
+    run_claim_evidence, since an explainer/analysis page answering a question is the same shape of
+    source as one backing a claim. Runs CONCURRENTLY with run_search_evidence (see main.py's Step 2,
+    which starts this right after the questions are chosen, before the general market web search):
+    different source profile, different rate-limit budget, both stages are network-bound."""
+    section(logger, "QUESTION BACKING SEARCH")
+    pool: dict[str, list[search.SearchHit]] = {}
+    if not questions:
+        return pool
+    total = 0
+    bing_web = feeds.ClaimWebSearch(logger)
+    for q in questions:
+        qid, qtext = q["id"], q["question"]
+        if q.get("section") == "report_context":
+            # That section answers with the CMI report's own size/growth figures; outside pages for such a
+            # question would carry rival market-sizing numbers (the policy of _drop_market_sizing_facts).
+            logger.info(f"[question-search] {qid} ({qtext[:70]!r}): answered from the CMI report, no outside search")
+            continue
+        query = re.sub(r"[?!.]+\s*$", "", qtext).strip()
+        raw = bing_web.search(query)
+        kept = search.filter_claim_hits(raw, qtext, logger, limit=_QUESTION_BPOOL_KEEP)
+        if len(kept) < _QUESTION_POOL_GOOD:
+            raw += search.run_text_searches([query], logger)
+            kept = search.filter_claim_hits(raw, qtext, logger, limit=_QUESTION_BPOOL_KEEP)
+        if not kept:
+            logger.info(f"[question-search] {qid} ({qtext[:70]!r}): nothing usable found")
+        for h in kept:
+            h.scope, h.claim_id = "question", qid
+        feeds.attach_excerpts(kept, qtext, logger, focus=qtext)
+        pool[qid] = kept
+        total += len(kept)
+    bing_web.close()
+    backed = sum(1 for hits in pool.values() if hits)
+    progress(f"Question backing search: {total} candidate page(s) across {backed}/{len(questions)} question(s)")
+    logger.info(f"[question-search] pool: {backed}/{len(questions)} question(s) have candidates, {total} page(s) total")
+    return pool
+
+
+_REPORT_CLAIM_COUNT = 8  # up to ~3 per area (trends, subsegment, country_us); see REPORT_CLAIMS_USER.
+# Raised from 5 (2 per area): these three areas need the most outside substance, so more extractable
+# claims means more of the report-claim backing search's budget is spent where the writer needs it —
+# the market stream's volume was cut back at the same time (SEARCH_KEEP_HITS/SEARCH_MAX_SELECTED).
+_REPORT_CLAIM_SECTIONS = ("trends", "subsegment", "country_us")
+# Where each report claim's backing folds into run_build_evidence's existing MARKET EVIDENCE groups
+# (see _EVIDENCE_GROUPS): subsegment has no dedicated group of its own, so it joins "context", the
+# same group sub-segment facts already route to ("SEGMENTS, SUB-SEGMENTS, GROWTH DRIVERS...").
+_REPORT_CLAIM_SECTION_TO_GROUP = {"trends": "trends", "country_us": "us", "subsegment": "context"}
+
+
+def run_report_claims(market_name: str, report: reports.Report, logger: logging.Logger) -> list[dict]:
+    """A CALL run right after the report is fetched (Step 2, before the general market web search —
+    see main.py): extracts specific, checkable statements the CMI REPORT ITSELF makes about trends,
+    a sub-segment, or the U.S. market, each a candidate for independent outside corroboration. This
+    is the report's own equivalent of ORIENT's (disconnected) claims_to_back — same shape, same
+    best-effort policy — but it targets the sections that need the most substance (trends,
+    subsegment, country_us), not the publisher block, and it can only run once the report is known,
+    so it happens here rather than in Step 1."""
+    section(logger, "CALL: REPORT CLAIMS")
+    try:
+        result = llm.chat_json(prompts.REPORT_CLAIMS_SYSTEM, prompts.REPORT_CLAIMS_USER.format(
+            market_name=market_name,
+            report_text=_report_text(report),
+            claim_count=_REPORT_CLAIM_COUNT,
+        ), call_name="report_claims", logger=logger)
+    except llm.LLMError:
+        logger.warning("[report-claims] extraction call failed; no report-claim evidence will be gathered", exc_info=True)
+        return []
+    claims: list[dict] = []
+    for item in result.get("report_claims") or []:
+        if not isinstance(item, dict):
+            continue
+        claim = re.sub(r"\s+", " ", str(item.get("claim") or "")).strip()
+        sec = str(item.get("section") or "").strip().lower()
+        if len(claim.split()) < 4 or sec not in _REPORT_CLAIM_SECTIONS:
+            logger.info(f"[report-claims] dropped malformed entry (missing text or invalid section {sec!r}): {item}")
+            continue
+        queries = [re.sub(r"\s+", " ", str(q)).strip() for q in (item.get("queries") or [])]
+        claims.append({
+            "id": f"RC{len(claims) + 1}", "claim": claim, "section": sec,
+            "queries": [q for q in queries if q][:2],
+        })
+        if len(claims) >= _REPORT_CLAIM_COUNT:
+            break
+    if claims:
+        logger.info(f"[report-claims] extracted {len(claims)}: "
+                    + "; ".join(f'{c["id"]}[{c["section"]}]={c["claim"][:60]}' for c in claims))
+    else:
+        logger.info("[report-claims] no specific, checkable report claims extracted")
+    return claims
+
+
+_REPORT_CLAIM_BPOOL_KEEP = 8  # pages kept per report claim for SELECT (which picks at most three)
+_REPORT_CLAIM_POOL_GOOD = 2   # kept hits at which a report claim's search no longer needs the DDGS fallback
+
+
+def run_report_claim_evidence(
+    claims: list[dict], logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
+) -> dict[str, list[search.SearchHit]]:
+    """Web search for independent corroboration of each extracted report claim — the same machinery
+    (Bing web search, DDGS text-search fallback) and the same best-effort policy as
+    run_claim_evidence/run_question_evidence. Runs CONCURRENTLY with run_search_evidence (see
+    main.py's Step 2, which starts this right after the report claims are extracted, before the
+    general market web search): different source profile, both stages are network-bound."""
+    section(logger, "REPORT CLAIM BACKING SEARCH")
+    pool: dict[str, list[search.SearchHit]] = {}
+    if not claims:
+        return pool
+    total = 0
+    bing_web = feeds.ClaimWebSearch(logger)
+    for c in claims:
+        cid, ctext = c["id"], c["claim"]
+        queries = list(c.get("queries") or []) or [ctext]
+        raw: list[search.SearchHit] = []
+        kept: list[search.SearchHit] = []
+        # Same thin-streak DDGS policy as run_claim_evidence (see it there for the rationale): the
+        # fallback fires once per claim at most — after two consecutive thin Bing queries, or the
+        # claim's last query (two-query claims here are common, so both shapes skip one DDGS call).
+        ddgs_used = False
+        thin_streak = 0
+        for qi, q in enumerate(queries):
+            raw += bing_web.search(q)
+            kept = search.filter_claim_hits(raw, ctext, logger, limit=_REPORT_CLAIM_BPOOL_KEEP)
+            if len(kept) >= _REPORT_CLAIM_POOL_GOOD:
+                break
+            thin_streak += 1
+            if ddgs_used or not (thin_streak >= 2 or qi == len(queries) - 1):
+                continue
+            ddgs_used = True
+            raw += search.run_text_searches([q], logger)
+            kept = search.filter_claim_hits(raw, ctext, logger, limit=_REPORT_CLAIM_BPOOL_KEEP)
+            if len(kept) >= _REPORT_CLAIM_POOL_GOOD:
+                break
+        if not kept:
+            logger.info(f"[report-claim-search] {cid} ({ctext[:70]!r}): nothing usable found")
+        for h in kept:
+            h.scope, h.claim_id = "report_claim", cid
+        feeds.attach_excerpts(kept, ctext, logger, focus=ctext)
+        pool[cid] = kept
+        total += len(kept)
+    bing_web.close()
+    backed = sum(1 for hits in pool.values() if hits)
+    progress(f"Report claim backing search: {total} candidate page(s) across {backed}/{len(claims)} claim(s)")
+    logger.info(f"[report-claim-search] pool: {backed}/{len(claims)} claim(s) have candidates, {total} page(s) total")
     return pool
 
 
@@ -696,10 +1184,79 @@ def _format_pool_for_select(pool: list[tuple[str, str, search.SearchHit]], claim
     return "\n".join(lines) or "(no claims were extracted, so there are no claim results)"
 
 
+def _format_questions_for_select(questions: list[dict]) -> str:
+    """The chosen subheading questions handed to SELECT: one line per question, its id, its
+    assigned section and its text — mirrors _format_claims_for_select."""
+    if not questions:
+        return "(none — no subheading questions were chosen for this market)"
+    return "\n".join(f'- {q["id"]} [replaces the {q.get("section", "?")} heading] "{q["question"]}"' for q in questions)
+
+
+def _flatten_question_pool(
+    questions: list[dict], pool: dict[str, list[search.SearchHit]],
+) -> list[tuple[str, str, search.SearchHit]]:
+    """(PQ-number, question id, hit) in deterministic question order — mirrors _flatten_claim_pool,
+    with a "PQ" prefix so these ids never collide with the claim pool's "P" ids in the same prompt."""
+    if not questions:
+        return []
+    out: list[tuple[str, str, search.SearchHit]] = []
+    for q in questions:
+        for h in (pool or {}).get(q["id"]) or []:
+            out.append((f"PQ{len(out) + 1}", q["id"], h))
+    return out
+
+
+def _format_question_pool_for_select(pool: list[tuple[str, str, search.SearchHit]], questions: list[dict]) -> str:
+    if questions and not pool:
+        return "(none — the question searches found nothing usable for any question)"
+    lines = []
+    for pid, qid, h in pool:
+        tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
+        body = h.excerpt or h.snippet[:300]
+        lines.append(f"[{pid}] (for: {qid}) {h.title} | {h.source or h.host} | {tag}\n      {body}")
+    return "\n".join(lines) or "(no subheading questions were chosen, so there are no question results)"
+
+
+def _format_report_claims_for_select(claims: list[dict]) -> str:
+    """The extracted report claims handed to SELECT: one line per claim, its id, its assigned
+    section and its text — mirrors _format_claims_for_select."""
+    if not claims:
+        return "(none — no specific, checkable report claims were extracted for this market)"
+    return "\n".join(f'- {c["id"]} [{c["section"]}] "{c["claim"]}"' for c in claims)
+
+
+def _flatten_report_claim_pool(
+    claims: list[dict], pool: dict[str, list[search.SearchHit]],
+) -> list[tuple[str, str, search.SearchHit]]:
+    """(PR-number, claim id, hit) in deterministic claim order — mirrors _flatten_question_pool,
+    with a "PR" prefix so these ids never collide with the claim pool's "P" or the question pool's
+    "PQ" ids in the same prompt."""
+    if not claims:
+        return []
+    out: list[tuple[str, str, search.SearchHit]] = []
+    for c in claims:
+        for h in (pool or {}).get(c["id"]) or []:
+            out.append((f"PR{len(out) + 1}", c["id"], h))
+    return out
+
+
+def _format_report_claim_pool_for_select(pool: list[tuple[str, str, search.SearchHit]], claims: list[dict]) -> str:
+    if claims and not pool:
+        return "(none — the report-claim searches found nothing usable for any claim)"
+    lines = []
+    for pid, cid, h in pool:
+        tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
+        body = h.excerpt or h.snippet[:300]
+        lines.append(f"[{pid}] (for: {cid}) {h.title} | {h.source or h.host} | {tag}\n      {body}")
+    return "\n".join(lines) or "(no report claims were extracted, so there are no report-claim results)"
+
+
 def run_select(
     article: SourceArticle, orient: dict, sponsor: Paragraph,
     report: reports.Report, hits: list[search.SearchHit],
     logger: logging.Logger, claim_hits: dict[str, list[search.SearchHit]] | None = None,
+    questions: list[dict] = (), question_hits: dict[str, list[search.SearchHit]] | None = None,
+    report_claims: list[dict] = (), report_claim_hits: dict[str, list[search.SearchHit]] | None = None,
 ) -> dict:
     """CALL 2: select evidence for the human-confirmed report. Returns the parsed JSON.
     Report choice is no longer this call's job — the human picked the market/report in Step 1
@@ -708,10 +1265,24 @@ def run_select(
     Claim backing (when Step 1 extracted claims and the caller searched for them, claim_hits maps
     claim id -> candidate pages): SELECT additionally picks at most 2 pages per claim and tags each
     supports/qualifies/contradicts; without a pool the claims still reach SELECT and the writer so
-    unbacked ones get softened, not asserted bare."""
+    unbacked ones get softened, not asserted bare.
+
+    Question backing (when Step 2 chose subheading questions and searched for them, question_hits
+    maps question id -> candidate pages, the same way claim_hits does): SELECT additionally picks at
+    most 2 pages per question — no stance, since a question isn't a claim being judged true or false,
+    just a fact worth citing in its direct answer.
+
+    Report claim backing (when Step 2 extracted report claims and searched for them, report_claim_hits
+    maps claim id -> candidate pages): SELECT additionally picks at most 3 pages per claim that
+    independently corroborate it — same no-stance shape as question backing, since this is about
+    reinforcing what the CMI report already states, never judging or contradicting it."""
     section(logger, "CALL 2: SELECT EVIDENCE")
     claims = orient_claims(orient)
     claim_flat = _flatten_claim_pool(claims, claim_hits or {})
+    questions = list(questions or [])
+    question_flat = _flatten_question_pool(questions, question_hits or {})
+    report_claims = list(report_claims or [])
+    report_claim_flat = _flatten_report_claim_pool(report_claims, report_claim_hits or {})
     selection = llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
         title=article.title,
         topic_summary=orient.get("topic_summary", ""),
@@ -721,6 +1292,10 @@ def run_select(
         hits=_format_hits(hits),
         claims_block=_format_claims_for_select(claims),
         claim_pool=_format_pool_for_select(claim_flat, claims),
+        questions_block=_format_questions_for_select(questions),
+        question_pool=_format_question_pool_for_select(question_flat, questions),
+        report_claims_block=_format_report_claims_for_select(report_claims),
+        report_claim_pool=_format_report_claim_pool_for_select(report_claim_flat, report_claims),
         max_selected=config.SEARCH_MAX_SELECTED,
     ), call_name="select", logger=logger, max_tokens=8000)
     _normalize_selection_tags(selection, hits, logger)
@@ -728,6 +1303,8 @@ def run_select(
     _drop_market_sizing_facts(selection, logger)
     _verify_selection_figures(selection, hits, logger)
     _normalize_claim_backing(selection, claims, claim_flat, logger)
+    _normalize_question_backing(selection, questions, question_flat, logger)
+    _normalize_report_claim_backing(selection, report_claims, report_claim_flat, logger)
     return selection
 
 
@@ -856,6 +1433,126 @@ def _normalize_claim_backing(
         )
 
 
+def _normalize_question_backing(
+    selection: dict, questions: list[dict], pool: list[tuple[str, str, search.SearchHit]], logger: logging.Logger,
+) -> None:
+    """Sanitise SELECT's question_backing — mirrors _normalize_claim_backing exactly, minus the
+    stance field (a question isn't a claim being judged true/false, just a fact worth citing in its
+    direct answer). Writes the cleaned list back to selection["question_backing"] with
+    source/excerpt strings attached for run_build_evidence."""
+    question_ids = {q["id"] for q in questions}
+    pool_by_pid = {pid: (qid, h) for pid, qid, h in pool}
+    per_question: dict[str, int] = {}
+    kept: list[dict] = []
+    for e in selection.get("question_backing") or []:
+        if not isinstance(e, dict):
+            continue
+        pid = str(e.get("id") or "").strip().upper()
+        if pid not in pool_by_pid:
+            logger.info(f"[select] dropped question backing entry (unknown pool id {pid!r}): {e}")
+            continue
+        pid_qid, hit = pool_by_pid[pid]
+        # trust the pool tag over whichever question id SELECT typed
+        qid = pid_qid if pid_qid in question_ids else (str(e.get("question_id") or "").strip().upper() or pid_qid)
+        if qid not in question_ids:
+            logger.info(f"[select] dropped question backing entry (unresolvable question id) [pid {pid}]: {e}")
+            continue
+        fact = re.sub(r"\s+", " ", str(e.get("fact") or "")).strip()
+        if not fact:
+            fact = " ".join((hit.snippet or "").split())[:220]
+            logger.info(f"[select] question backing {pid} had no fact, substituted first words of the snippet")
+        source = f"{hit.title} {hit.snippet} {hit.excerpt}".replace(",", "")
+        bad = sorted(n for n in _figures(fact) if n not in source)
+        if bad:
+            logger.warning(f"[select] dropped question backing {pid}: its fact states {bad}, which is not in the source text")
+            continue
+        stale = [
+            m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(fact)
+            if (d := freshness.event_date(m)) is not None and freshness.is_stale(d)
+        ]
+        if stale:
+            logger.info(f"[select] dropped question backing {pid}: its fact states a stale date {stale}")
+            continue
+        per_question[qid] = per_question.get(qid, 0) + 1
+        if per_question[qid] > 2:
+            logger.info(f"[select] {qid} already has 2 backing entries — dropped {pid}")
+            continue
+        kept.append({
+            "question_id": qid, "id": pid, "fact": fact,
+            "source": hit.source or hit.host, "url": hit.url,
+            "detail": _fresh_detail(" ".join((hit.excerpt or "").split())[:320], pid, logger),
+        })
+    selection["question_backing"] = kept
+    if questions:
+        logger.info(
+            f"[select] question backing: {len(kept)} entry(ies) across {len(per_question)} of {len(question_ids)} question(s) "
+            f"({', '.join(sorted(per_question)) or 'none backed'})"
+        )
+
+
+def _normalize_report_claim_backing(
+    selection: dict, claims: list[dict], pool: list[tuple[str, str, search.SearchHit]], logger: logging.Logger,
+) -> None:
+    """Sanitise SELECT's report_claim_backing — mirrors _normalize_question_backing (no stance: this
+    corroborates the report's own statement, it never judges or contradicts it), plus one extra
+    rule market/question backing don't need: a fact that is really market sizing/forecast (a rival
+    figure that could contradict the report's own) is rejected, the same policy
+    _drop_market_sizing_facts applies to ordinary market evidence. Writes the cleaned list back to
+    selection["report_claim_backing"], each entry carrying its claim's own "section" (trends,
+    subsegment or country_us) so run_build_evidence can route it into the matching evidence group."""
+    claims_by_id = {c["id"]: c for c in claims}
+    pool_by_pid = {pid: (cid, h) for pid, cid, h in pool}
+    per_claim: dict[str, int] = {}
+    kept: list[dict] = []
+    for e in selection.get("report_claim_backing") or []:
+        if not isinstance(e, dict):
+            continue
+        pid = str(e.get("id") or "").strip().upper()
+        if pid not in pool_by_pid:
+            logger.info(f"[select] dropped report claim backing entry (unknown pool id {pid!r}): {e}")
+            continue
+        pid_cid, hit = pool_by_pid[pid]
+        cid = pid_cid if pid_cid in claims_by_id else (str(e.get("claim_id") or "").strip().upper() or pid_cid)
+        if cid not in claims_by_id:
+            logger.info(f"[select] dropped report claim backing entry (unresolvable claim id) [pid {pid}]: {e}")
+            continue
+        fact = re.sub(r"\s+", " ", str(e.get("fact") or "")).strip()
+        if not fact:
+            fact = " ".join((hit.snippet or "").split())[:220]
+            logger.info(f"[select] report claim backing {pid} had no fact, substituted first words of the snippet")
+        if _is_market_sizing(fact):
+            logger.info(f"[select] dropped report claim backing {pid}: it states market sizing/forecast ({fact[:80]!r})")
+            continue
+        source = f"{hit.title} {hit.snippet} {hit.excerpt}".replace(",", "")
+        bad = sorted(n for n in _figures(fact) if n not in source)
+        if bad:
+            logger.warning(f"[select] dropped report claim backing {pid}: its fact states {bad}, which is not in the source text")
+            continue
+        stale = [
+            m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(fact)
+            if (d := freshness.event_date(m)) is not None and freshness.is_stale(d)
+        ]
+        if stale:
+            logger.info(f"[select] dropped report claim backing {pid}: its fact states a stale date {stale}")
+            continue
+        per_claim[cid] = per_claim.get(cid, 0) + 1
+        if per_claim[cid] > 3:  # report claims get 3 (up from the 2 article claims/questions get): these
+            # entries ARE the substance for the report's trends/subsegment/country_us sections
+            logger.info(f"[select] {cid} already has 3 backing entries — dropped {pid}")
+            continue
+        kept.append({
+            "claim_id": cid, "id": pid, "section": claims_by_id[cid]["section"], "fact": fact,
+            "source": hit.source or hit.host, "url": hit.url,
+            "detail": _fresh_detail(" ".join((hit.excerpt or "").split())[:320], pid, logger),
+        })
+    selection["report_claim_backing"] = kept
+    if claims:
+        logger.info(
+            f"[select] report claim backing: {len(kept)} entry(ies) across {len(per_claim)} of {len(claims_by_id)} claim(s) "
+            f"({', '.join(sorted(per_claim)) or 'none backed'})"
+        )
+
+
 def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
     """Remove any selected fact that itself states an event date older than the freshness window.
     A fact can come from a recent hit yet carry an old aside inside its own sentence (seen: a May
@@ -963,12 +1660,18 @@ _EVIDENCE_GROUPS = (
 
 def run_build_evidence(
     selection: dict, hits: list[search.SearchHit], logger: logging.Logger, orient: dict | None = None,
+    questions: list[dict] = (),
 ) -> str:
-    """Build the evidence block passed to the writer from Call 2 output + search hits. Two groups:
+    """Build the evidence block passed to the writer from Call 2 output + search hits. Groups:
     ARTICLE EVIDENCE (backing for claims extracted from the original article, one entry per claim id)
-    followed by that claims list with each claim's status, then the MARKET EVIDENCE groups."""
+    followed by that claims list with each claim's status; SUBHEADING QUESTIONS (the chosen questions
+    themselves, each with whatever QUESTION EVIDENCE backs its direct answer); then the MARKET
+    EVIDENCE groups. Questions reach here ready for a future write-call to turn into sections (see
+    pipeline.run_select_questions/run_question_evidence) — this function only assembles the text."""
     backing = [b for b in selection.get("claim_backing") or [] if isinstance(b, dict)]
     claims = orient_claims(orient)
+    questions = list(questions or [])
+    question_backing = [b for b in selection.get("question_backing") or [] if isinstance(b, dict)]
     parts: list[str] = []
     if backing or claims:
         backed_ids = {b["claim_id"] for b in backing}
@@ -987,7 +1690,37 @@ def run_build_evidence(
                 else:
                     line += " — NO OUTSIDE BACKING FOUND: apply CLAIMS rule 4 (hedged and attributed if it is a general statement; dropped if it is a superlative or a verdict about a named product); never state it as fact"
                 parts.append(line)
+    if questions:
+        parts.append(
+            "### SUBHEADING QUESTIONS (real, commonly-searched questions about this market — each REPLACES the "
+            "heading and opening 1-3 lines of one of the sections named below, it does not add a new section; "
+            "ground the answer in the QUESTION EVIDENCE below where one exists, otherwise in the CMI report and "
+            "this article's own content)"
+        )
+        backed_q_ids = {b["question_id"] for b in question_backing}
+        for q in questions:
+            line = f'* {q["id"]} [replaces the {q.get("section", "?")} heading] "{q["question"]}"'
+            if q["id"] not in backed_q_ids:
+                line += " — no outside evidence found for this one; answer from the CMI report/article content only"
+            parts.append(line)
+        if question_backing:
+            parts.append("### QUESTION EVIDENCE (grounds a subheading question's direct answer with a real outside fact)")
+            for b in question_backing:
+                parts.append(f"- ({b['question_id']}) {b['fact']} (source: {b.get('source') or 'web'})")
+                if str(b.get("detail") or "").strip():
+                    parts.append(f"    DETAIL: {str(b['detail']).strip()}")
     grouped: dict[str, list[str]] = {key: [] for key, _ in _EVIDENCE_GROUPS}
+    # Report-claim backing (independent corroboration of a specific statement the CMI REPORT ITSELF
+    # makes — see run_report_claims/run_report_claim_evidence) folds directly into the SAME market
+    # evidence groups the writer already reads, routed by the claim's own section, so these items are
+    # simply more MARKET EVIDENCE to the writer — just evidence specifically aimed at reinforcing the
+    # report's own trends/sub-segment/U.S. claims, which is where the user asked for more substance.
+    for b in [b for b in selection.get("report_claim_backing") or [] if isinstance(b, dict)]:
+        group = _REPORT_CLAIM_SECTION_TO_GROUP.get(b.get("section"), "context")
+        line = f"- ({b['claim_id']}) [{group}] {b['fact']} (source: {b.get('source') or 'web'})"
+        if str(b.get("detail") or "").strip():
+            line += f"\n    DETAIL: {str(b['detail']).strip()}"
+        grouped[group].append(line)
     for e in selection.get("evidence") or []:
         m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
         if not m or not 1 <= int(m.group(1)) <= len(hits):
@@ -1036,6 +1769,19 @@ def _parse_evidence(evidence: str) -> list[dict]:
         elif items and line.strip().startswith("DETAIL:"):
             items[-1]["detail"] = line.strip()[len("DETAIL:"):].strip()
     return items
+
+
+_QUESTION_ASSIGNMENT_RE = re.compile(r'^\* (Q\d+) \[replaces the (\w+) heading\] "(.+?)"', re.MULTILINE)
+
+
+def _parse_question_assignments(evidence: str) -> list[dict]:
+    """Inverse of run_build_evidence's SUBHEADING QUESTIONS lines: [{id, section, question}] — lets
+    _write_problems run checks.question_heading_problems without threading the structured questions
+    list through run_write's own signature, the same string-interface choice _parse_evidence makes."""
+    return [
+        {"id": m.group(1), "section": m.group(2), "question": m.group(3)}
+        for m in _QUESTION_ASSIGNMENT_RE.finditer(evidence or "")
+    ]
 
 
 def _min_evidence_total(n_items: int) -> int:
@@ -1322,29 +2068,30 @@ def _force_sponsor_placeholder(sections: list[dict]) -> list[dict]:
     return sections
 
 
-_INTRO_TOTAL_WORDS = 210  # intro target INCLUDING the retained paragraph's real words
+_INTRO_TOTAL_WORDS = 150  # intro target INCLUDING the retained paragraph's real words — shrunk from 210 along with
+# the rest of the publisher block when its share of the post dropped to ~20% (see PUBLISHER_USER's WORD TARGETS)
 
 
 def _intro_budget(mode: str, sponsor_words: int) -> str:
     """Per-paragraph intro word targets computed from the retained text's real length, so the intro always adds up
     to _INTRO_TOTAL_WORDS: a static "45-60 words each" was wrong for a 4-word phrase (intro came out ~105 words
     against a ~170 budget) and for a long prose paragraph alike."""
-    own = max(100, _INTRO_TOTAL_WORDS - sponsor_words)
+    own = max(80, _INTRO_TOTAL_WORDS - sponsor_words)
     if mode == "phrase":
-        p2 = min(110, max(70, own - 110))
-        total = 55 + p2 + 55 + sponsor_words
+        p2 = min(90, max(50, own - 90))
+        total = 45 + p2 + 45 + sponsor_words
         return (
-            f"Paragraph 1 (lead-in): 3 sentences, about 55 words. Paragraph 2 (your own paragraph that holds the retained "
-            f"phrase inside one of its sentences): 5 sentences, about {p2} words of your own. Paragraph 3 (pivot): 3 "
-            f"sentences, about 55 words. The intro comes to about {total} words once the retained phrase's own "
+            f"Paragraph 1 (lead-in): 2-3 sentences, about 45 words. Paragraph 2 (your own paragraph that holds the retained "
+            f"phrase inside one of its sentences): 3-4 sentences, about {p2} words of your own. Paragraph 3 (pivot): 2-3 "
+            f"sentences, about 45 words. The intro comes to about {total} words once the retained phrase's own "
             f"{sponsor_words} words are counted."
         )
-    each = min(70, max(40, round(own / 2)))
+    each = min(55, max(30, round(own / 2)))
     total = 2 * each + sponsor_words
     return (
-        f"Paragraph 1 (lead-in): 3 sentences, about {each} words. Paragraph 2: the retained paragraph's slot "
+        f"Paragraph 1 (lead-in): 2-3 sentences, about {each} words. Paragraph 2: the retained paragraph's slot "
         f"({sponsor_words} real words, which are not counted as yours; if you embed it inside a paragraph of your own, that "
-        f"paragraph's own words add to the intro). Paragraph 3 (pivot): 3 sentences, about {each} words. The intro comes to "
+        f"paragraph's own words add to the intro). Paragraph 3 (pivot): 2-3 sentences, about {each} words. The intro comes to "
         f"about {total} words once the retained paragraph is counted."
     )
 
@@ -1450,10 +2197,12 @@ def _layout_share(sections: list[dict], sponsor_text: str = "") -> tuple[int, in
 
 def _layout_problems(sections: list[dict], sponsor_text: str = "") -> list[str]:
     """Deterministic backstop for the layout the WRITE prompt asks for: the unheaded intro, then the
-    publisher's own sections as one consecutive block, then ONE transition (report_context, as the
-    bridge) into the market block, with the conclusion last. The prompt-only version of this rule
-    produced badly interleaved drafts (about five subject changes, publisher content at ~40%), so the
-    hard parts are enforced here and fed back as retry instructions."""
+    publisher's ONE section, then ONE transition (report_context, as the bridge) into the market
+    block, with the conclusion last. The prompt-only version of this rule produced badly interleaved
+    drafts (about five subject changes), so the hard parts are enforced here and fed back as log-only
+    feedback (no retry is run). Publisher share target (~20%) and market block size (~900-1,100 words)
+    match PUBLISHER_USER / MARKET_USER's WORD TARGETS and checks.run_checks's soft layout checks —
+    keep all three in step if the budget changes again."""
     if not sections:
         return []
     classes = [_section_class(s) for s in sections]
@@ -1465,15 +2214,14 @@ def _layout_problems(sections: list[dict], sponsor_text: str = "") -> list[str]:
     if switches > 2:
         problems.append(
             f"the article changes subject {switches} times in this order: {order} — it must change subject only once, "
-            "from ONE publisher block into ONE market block. Keep the intro's publisher sections consecutive (no "
-            "market section between them), then put every market section, starting with report_context, after the last "
-            "publisher section"
+            "from ONE publisher block into ONE market block. Keep the intro and the publisher's one section consecutive "
+            "(no market section between them), then put every market section, starting with report_context, after it"
         )
     publisher_sections = [s for s, c in zip(sections, classes) if c == "P" and (s.get("heading") or "").strip()]
-    if len(publisher_sections) != 3:
+    if len(publisher_sections) != 1:
         problems.append(
-            f"the publisher block has {len(publisher_sections)} headed section(s) but must have exactly 3, one for each "
-            "main point of the original article (merge small points; never drop a main point)"
+            f"the publisher block has {len(publisher_sections)} headed section(s) but must have exactly 1, covering the "
+            "article's 2-3 most important points"
         )
     first_market = next((s for s in sections if s.get("sop")), None)
     if first_market is not None and "report_context" not in first_market["sop"]:
@@ -1486,27 +2234,24 @@ def _layout_problems(sections: list[dict], sponsor_text: str = "") -> list[str]:
     market = total - publisher
     if total:
         share = publisher / total * 100
-        if share < 50:
-            add = max(0, round(total * 0.55) - publisher)
+        if share < 10:
+            add = max(0, round(total * 0.20) - publisher)
             problems.append(
-                f"publisher content is only {share:.0f}% of the article ({publisher} of {total} words) but it must be "
-                f"the clear majority: at least 50%, with a soft target of 55-65%. Add about {add} words across the "
-                "three publisher sections (2 paragraphs of about 125-130 words each, roughly 250-260 words per "
-                "section), expanding the publisher's own points with its steps and examples rather than padding"
+                f"publisher content is only {share:.0f}% of the article ({publisher} of {total} words) but the soft "
+                f"target is about 20% (240-300 words including the retained paragraph). Add about {add} words to the "
+                "intro and the one publisher section, developing their own points rather than padding"
             )
-        if market > 720:
-            cut = market - 650
-            add = max(0, 950 - publisher)
-            grow = (
-                f"add about {add} words across the three publisher sections so the publisher block reaches roughly "
-                f"950 words (it is {publisher} now)"
-                if add >= 20
-                else f"keep the publisher block at roughly 900-1,000 words (it is {publisher} now)"
-            )
+        elif share > 30:
+            cut = max(0, publisher - round(total * 0.20))
             problems.append(
-                f"the market block is {market} words but the whole market block must stay around 600-700 words "
-                f"(never above 720) — cut about {cut} words, mostly whole sentences from the longest market "
-                f"paragraphs, and {grow}"
+                f"publisher content is {share:.0f}% of the article ({publisher} of {total} words) but the soft target "
+                f"is about 20% — cut about {cut} words from the intro and the one publisher section, mostly restatement"
+            )
+        if market > 1150:
+            cut = market - 1000
+            problems.append(
+                f"the market block is {market} words but the soft target is about 900-1,100 (never above 1,150) — cut "
+                f"about {cut} words, mostly whole sentences from the longest market paragraphs"
             )
     return problems
 
@@ -1514,12 +2259,16 @@ def _layout_problems(sections: list[dict], sponsor_text: str = "") -> list[str]:
 def _write_problems(
     sections: list[dict], report: reports.Report, original_body: str, report_text: str, sponsor_text: str = "",
     secondary_kw: list[tuple[str, str]] = (), evidence_items: list[dict] = (), min_evidence: int = 0,
+    questions: list[dict] = (),
 ) -> list[str]:
     """Hard-requirement violations in a CALL 3 draft, phrased as instructions for a retry."""
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
     problems = []
     problems.extend(_layout_problems(sections, sponsor_text))
+    if LONG_PARAGRAPH_CHECK_ENABLED:
+        problems.extend(long_paragraph_problems(sections))
+    problems.extend(question_heading_problems(sections, questions))
     repeated_shape_problem = _repeated_keyword_shape_problem(full, secondary_kw)
     if repeated_shape_problem:
         problems.append(repeated_shape_problem)
@@ -1559,16 +2308,17 @@ def _write_problems(
             "describe the point without presenting an old event as recent"
         )
     words = sum(_word_count(p) for p in paragraphs)
-    # Soft target is 1,400-1,700; only a clear miss is worth a retry (the floor sits just under the target because
-    # the evidence-backing rule needs room: a draft of ~1,200 words had the evidence but no space to develop it).
-    if words > 1950 or words < 1300:
+    # Soft target is 1,200-1,500; only a clear miss is logged (no retry is run). The floor sits a little under the
+    # target for the same reason the old 1,400-1,700 band did: the evidence-backing rule needs room to develop what
+    # it cites, so a draft right at the floor with no space for that is already a real problem worth flagging.
+    if words > 1700 or words < 1100:
         longest = sorted(sections, key=lambda s: -sum(len(p.split()) for p in s["paragraphs"]))[:4]
         problems.append(
-            f"the length is {words} words but the target is 1,400-1,700"
+            f"the length is {words} words but the target is 1,200-1,500"
             + (
                 " — tighten every paragraph that is over its stated range, especially in: "
                 + "; ".join(f'"{s["heading"] or "intro"}" ({sum(len(p.split()) for p in s["paragraphs"])} words)' for s in longest)
-                if words > 1950 else " — add the missing substance to the paragraphs that are under their stated ranges"
+                if words > 1700 else " — add the missing substance to the paragraphs that are under their stated ranges"
             )
         )
     problems.extend(_evidence_problems(sections, list(evidence_items), min_evidence))
@@ -1673,12 +2423,15 @@ def _clean_sections(raw_sections, force_untagged: bool = False) -> list[dict]:
 def run_write(
     article: SourceArticle, orient: dict, sponsor: Paragraph,
     report: reports.Report, evidence: str, logger: logging.Logger,
+    longtails: list[dict] = (),
 ) -> tuple[dict, str, list[dict], list[dict]]:
     """CALL 3: write the article in two LLM calls, each with one job. 3A edits the publisher's own article into an
     intro plus three sections (claims backed from ARTICLE EVIDENCE) and is told it is Part 1, so it does not conclude.
     3B reads that finished text and writes the market block, the bridge from it and the title. A single call that
     had to do both sometimes stopped after the publisher block (about 1 draft in 5 in testing); with one job per call
-    that cannot happen. There is no quality retry: problems the deterministic checks find are logged, not re-asked.
+    that cannot happen. `longtails` (from run_longtail_keywords, empty when generation failed) is a small pool of
+    commercial-intent search phrases 3B may integrate up to three of. There is no quality retry: problems the
+    deterministic checks find are logged, not re-asked.
     Returns (raw_json, title, sections, evidence_citations)."""
     section(logger, "CALL 3: WRITE")
     report_text = _report_text(report)
@@ -1691,14 +2444,19 @@ def run_write(
     logger.info(f"[seo] primary keyword: {primary_kw!r}")
     logger.info(f"[seo] secondary keywords ({len(secondary_kw)}): {secondary_kw}")
     secondary_kw_lines = _secondary_keyword_lines(report.name, secondary_kw, "use in")
+    longtail_lines = _format_longtail_lines(list(longtails))
+    logger.info(f"[seo] long-tail candidates: {list(longtails) or '(none)'}")
     sponsor_words = len(re.findall(r"\b\w[\w'-]*\b", sponsor.text))
     mode = sponsor_mode(sponsor.text)
     logger.info(f"[write] sponsor mode: {mode} ({sponsor_words} word(s): {sponsor.text[:80]!r})")
     evidence_items = _parse_evidence(evidence)
+    question_assignments = _parse_question_assignments(evidence)
     article_ids = {it["id"] for it in evidence_items if it.get("group") == "article"}
     market_count = sum(1 for it in evidence_items if it.get("group") != "article")
     min_evidence = _min_evidence_total(market_count)
-    article_min = min(3, len(article_ids)) if article_ids else 0
+    # Capped at 2, not 3: the publisher block is now a single ~110-140 word section (see
+    # PUBLISHER_USER), which has room for at most a couple of backed claims alongside its own points.
+    article_min = min(2, len(article_ids)) if article_ids else 0
     logger.info(
         f"[write] evidence: {market_count} market item(s), at least {min_evidence} must be used; "
         f"{len(article_ids)} claim(s) with backing, publisher block must use at least {article_min} of them"
@@ -1749,12 +2507,17 @@ def run_write(
         cmi_keywords=", ".join(prompts.CMI_KEYWORDS),
         primary_keyword=primary_kw,
         secondary_keywords=secondary_kw_lines,
+        longtail_keywords=longtail_lines,
         evidence=market_evidence,
         min_evidence=min_evidence,
     )
     written_b = llm.chat_json(
         prompts.MARKET_SYSTEM, market_prompt, temperature=0.3, call_name="write-market", logger=logger, max_tokens=6000,
     )
+    plan = [e for e in written_b.get("long_tail_plan") or [] if isinstance(e, dict)]
+    logger.info("[long-tail] the writer's plan: " + (
+        "; ".join(f'{e.get("phrase")!r} -> {e.get("section")} (evidence {e.get("evidence")}) stub: {e.get("stub")!r}' for e in plan) or "(none)"
+    ))
     market_sections = _drop_repeated_tags(_clean_sections(written_b.get("sections")), logger)
     if not market_sections:
         raise PipelineError("Call 3B returned no market sections")
@@ -1765,6 +2528,7 @@ def run_write(
 
     problems = _write_problems(
         sections, report, article.body, report_text, sponsor.text, secondary_kw, evidence_items, min_evidence,
+        questions=question_assignments,
     )
     if problems:
         logger.warning(f"[write] draft problems found by the deterministic checks (no retry is run): {'; '.join(problems)}")
@@ -1794,6 +2558,159 @@ def run_write(
             logger.info(f"[write] dropped unverifiable evidence citation: {c}")
 
     return written, title, sections, evidence_citations
+
+
+_PUBLISHER_FAQ_COUNT = 2  # one or two questions about the guest article's own subject, after the market ones
+_FAQ_COUNT = 5  # market questions (CMI's own site publishes 7 in all for the house-style example this prompt was built from);
+# fewer can come back when a category (e.g. CAGR, a single dominant region) has no grounded figure —
+# see FAQ_USER's "drop rather than invent" rule.
+
+
+def _publisher_text(sections: list[dict], sponsor_text: str) -> str:
+    """The publisher's own content as it stands in the finished article: every UNTAGGED section (the intro and the
+    publisher sections carry no sop tag; the market sections all do), with the retained sponsor paragraph put back in
+    place of its placeholder and the CMI-link placeholders reduced to their anchor words."""
+    chunks = []
+    for s in sections:
+        if s.get("sop"):
+            continue
+        paras = [
+            re.sub(r"\[\[CMI_LINK:(.*?)\]\]", r"\1", str(p).replace(prompts.SPONSOR_TOKEN, sponsor_text))
+            for p in s.get("paragraphs", [])
+        ]
+        body = "\n".join(p for p in paras if p.strip())
+        if body:
+            chunks.append(f"{s.get('heading') or '(intro)'}\n{body}")
+    return "\n\n".join(chunks)
+
+
+def run_faq(
+    market_name: str, report: reports.Report, title: str, sections: list[dict], logger: logging.Logger,
+    sponsor_text: str = "",
+) -> list[dict]:
+    """A CALL run AFTER the article itself is written (not parallelized with WRITE): house-style FAQs
+    (growth estimate, key players, restraints, drivers, CAGR, dominant region, segments —
+    the same categories CMI's own site already publishes for other markets) are each answered ONLY
+    from the CMI report text and the article's own finished content, so nothing in the FAQ can
+    contradict or outrun what the article itself says. Best-effort: a generation failure just means
+    no FAQ block, logged, never fatal — the FAQ is an addition to the article, not a requirement."""
+    section(logger, "CALL: FAQ")
+    report_text = _report_text(report)
+    article_text = _render_draft_for_revise(title, sections)
+    try:
+        result = llm.chat_json(prompts.FAQ_SYSTEM, prompts.FAQ_USER.format(
+            market_name=market_name,
+            report_text=report_text,
+            article_text=article_text[:_BODY_CHARS],
+            faq_count=_FAQ_COUNT,
+            publisher_faq_count=_PUBLISHER_FAQ_COUNT,
+            publisher_text=_publisher_text(sections, sponsor_text)[:_BODY_CHARS] or "(none)",
+            used_questions="\n".join(f"- {s['heading']}" for s in sections if str(s.get("heading") or "").strip().endswith("?"))
+            or "(none — no section heading is a question)",
+            page_faq="\n".join(f"- {qa['question']} -> {qa['answer']}" for qa in report.page_faq)
+            or "(none — the report page has no FAQ)",
+        ), call_name="faq", logger=logger)
+    except llm.LLMError:
+        logger.warning("[faq] generation call failed; the draft will carry no FAQ block", exc_info=True)
+        return []
+    market_faq = _drop_page_faq_repeats(_normalize_faq(result.get("faq")), report.page_faq, market_name, logger)
+    # Publisher FAQ: questions about the guest article's own subject, answered from its content. A definition or a
+    # how-to is fine here (they are the point), and the report page's FAQ cannot overlap them, so neither market-only
+    # filter applies. They follow the market entries.
+    publisher_faq = _normalize_faq(result.get("publisher_faq"), limit=_PUBLISHER_FAQ_COUNT, allow_definitions=True)
+    logger.info(f"[faq] generated {len(market_faq)} market + {len(publisher_faq)} publisher FAQ entries")
+    return market_faq + publisher_faq
+
+
+_FAQ_REPEAT_STOPWORDS = frozenset({
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "which", "what", "who", "how", "does",
+    "will", "its", "their", "global", "market", "across", "world", "during", "into", "has", "have", "been", "being",
+})
+
+
+def _faq_tokens(text: str, market_name: str) -> set[str]:
+    skip = set(re.findall(r"[a-z0-9]+", market_name.lower())) | _FAQ_REPEAT_STOPWORDS
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in skip}
+
+
+def _drop_page_faq_repeats(faq: list[dict], page_faq: list[dict], market_name: str, logger: logging.Logger) -> list[dict]:
+    """Deterministic backstop for FAQ_USER's DIFFER FROM THE REPORT PAGE rule: drops an entry whose question, or whose
+    answer, is essentially one the report page's own FAQ already carries (overlap coefficient of content words >= 0.7
+    for a question, >= 0.6 for an answer). The prompt does the semantic work; this only catches near-verbatim
+    repeats, such as the same restraints sentence or the same company list."""
+    if not page_faq:
+        return faq
+    kept = []
+    for qa in faq:
+        q_tok, a_tok = _faq_tokens(qa["question"], market_name), _faq_tokens(qa["answer"], market_name)
+        repeat = None
+        for page in page_faq:
+            pq, pa = _faq_tokens(page["question"], market_name), _faq_tokens(page["answer"], market_name)
+            if q_tok and pq and len(q_tok & pq) / min(len(q_tok), len(pq)) >= 0.7:
+                repeat = page["question"]
+            elif a_tok and pa and len(a_tok & pa) / min(len(a_tok), len(pa)) >= 0.6:
+                repeat = page["question"]
+            if repeat:
+                break
+        if repeat:
+            logger.info(f"[faq] dropped {qa['question']!r}: it repeats the report page's FAQ entry {repeat!r}")
+            continue
+        kept.append(qa)
+    return kept
+
+
+_FAQ_MARKET_ANGLE_WORDS = frozenset({
+    "growth", "growing", "driving", "drivers", "hampering", "restraining", "restraints", "cagr", "size", "share",
+    "factors", "trends", "players", "forecast", "estimate", "estimates", "expected", "projected", "rate", "value",
+    "valued", "segment", "segments", "region", "regions", "challenges", "opportunities", "leading", "dominating",
+})
+
+
+def _is_definition_question(question: str) -> bool:
+    """A short "What is/are/does <the market or its subject>?" question with no market angle in it
+    (growth, drivers, share, ...) — a definition, which the FAQ must not carry (FAQ_USER rule 4)."""
+    words = re.findall(r"[a-z0-9']+", question.lower())
+    return (
+        len(words) <= 9 and words[:2] in (["what", "is"], ["what", "are"], ["what", "does"])
+        and not any(w in _FAQ_MARKET_ANGLE_WORDS for w in words)
+    )
+
+
+def _normalize_faq(raw: list | None, limit: int | None = None, allow_definitions: bool = False) -> list[dict]:
+    """Sanitise the FAQ call's raw output: dicts only, both fields non-empty, duplicate questions
+    (by normalised text) collapsed to the first occurrence, capped at _FAQ_COUNT. Pulled out of
+    run_faq so the sanitisation logic is testable without an LLM call."""
+    faq: list[dict] = []
+    seen: set[str] = set()
+    for qa in raw or []:
+        if not isinstance(qa, dict):
+            continue
+        q = re.sub(r"\s+", " ", str(qa.get("question") or "")).strip()
+        a = re.sub(r"\s+", " ", str(qa.get("answer") or "")).strip()
+        if not q or not a:
+            continue
+        if not allow_definitions and _is_definition_question(q):
+            continue
+        key = re.sub(r"[^a-z0-9 ]", "", q.lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        faq.append({"question": q, "answer": a})
+    return faq[:limit if limit is not None else _FAQ_COUNT]
+
+
+def faq_sections(faq: list[dict]) -> list[dict]:
+    """FAQ Q&A pairs rendered as extra docx/display sections, tagged sop=["faq"] — kept OUT of the
+    `sections` list every length/word-count/SOP check runs against, so the FAQ block sits outside
+    the article's word limit entirely, by construction, not by a special case inside those checks."""
+    if not faq:
+        return []
+    out = [{"heading": "Frequently Asked Questions", "sop": ["faq"], "paragraphs": []}]
+    for qa in faq:
+        q, a = str(qa.get("question") or "").strip(), str(qa.get("answer") or "").strip()
+        if q and a:
+            out.append({"heading": q, "sop": ["faq"], "paragraphs": [a]})
+    return out
 
 
 def _render_draft_for_revise(title: str, sections: list[dict]) -> str:
@@ -2064,6 +2981,7 @@ _DISABLE_CALL_4 = True
 def run_revise(
     title: str, sections: list[dict], evidence_citations: list[dict],
     report: reports.Report, logger: logging.Logger, evidence: str = "", sponsor_text: str = "",
+    longtails: list[dict] = (),
 ) -> tuple[str, list[dict], list[dict]]:
     """CALL 4 (see _revise_pass), always followed by the deterministic report-link enforcement so
     the link placement holds whichever way the revise pass ended (accepted, rejected, or failed)."""
@@ -2071,7 +2989,7 @@ def run_revise(
         logger.warning("[revise] CALL 4 disabled (_DISABLE_CALL_4) — shipping the unrevised CALL 3 draft")
         return title, sections, evidence_citations
     title, sections, evidence_citations = _revise_pass(
-        title, sections, evidence_citations, report, logger, evidence, sponsor_text
+        title, sections, evidence_citations, report, logger, evidence, sponsor_text, longtails
     )
     return enforce_report_link(title, sections, evidence_citations, report, sponsor_text, logger)
 
@@ -2079,6 +2997,7 @@ def run_revise(
 def _revise_pass(
     title: str, sections: list[dict], evidence_citations: list[dict],
     report: reports.Report, logger: logging.Logger, evidence: str = "", sponsor_text: str = "",
+    longtails: list[dict] = (),
 ) -> tuple[str, list[dict], list[dict]]:
     """CALL 4: dedicated SEO-destuffing + readability editing pass over the already-approved
     draft from CALL 3. Facts/structure are frozen; only prose quality changes. Falls back to the
@@ -2108,6 +3027,7 @@ def _revise_pass(
         sop=prompts.SOP,
         primary_keyword=primary_kw,
         secondary_keywords=secondary_kw_lines,
+        longtail_keywords=_format_longtail_lines(list(longtails)),
         stuffing_report=_stuffing_report(before.stuffed),
         coverage_report=_coverage_report(title, sections, before, primary_kw, secondary_kw, unsupported_before),
         sponsor_token=prompts.SPONSOR_TOKEN,
@@ -2289,8 +3209,13 @@ def run_finalize(
     title: str, sections: list[dict], evidence: str,
     original_filename: str, logger: logging.Logger,
     evidence_citations: list[dict] = (),
+    faq: list[dict] = (),
+    longtails: list[dict] = (),
 ) -> RevampResult:
-    """SOP checks + write .docx. Returns the finished RevampResult."""
+    """SOP checks + write .docx. Returns the finished RevampResult. `faq` (from run_faq) is never
+    passed to run_checks — it sits outside the article's word limit entirely, by construction, so it
+    must never influence a length/word-count/SOP check — but it is appended to the .docx output
+    after the article's own sections (see faq_sections)."""
     section(logger, "SOP CHECKS")
     report_text = _report_text(report)
     primary_kw, secondary_kw = _seo_keyword_plan(report.name)
@@ -2298,17 +3223,18 @@ def run_finalize(
         title, sections, f"{report_text}\n{evidence}\n{sponsor.text}", _brand_terms(sponsor),
         sponsor.text, article.body, report.name, selection, hits, report_text=report_text,
         primary_keyword=primary_kw, secondary_keywords=[kw for kw, _ in secondary_kw],
-        original_title=article.title,
+        original_title=article.title, questions=_parse_question_assignments(evidence),
+        longtails=[t["keyword"] for t in longtails],
     )
     for c in checks:
         logger.info(("PASS " if c.passed else "FAIL ") + c.name + (f" - {c.detail}" if c.detail else ""))
 
     result = RevampResult(
         title, sections, sponsor, report, candidates, orient, selection, hits, checks,
-        evidence_citations=list(evidence_citations),
+        evidence_citations=list(evidence_citations), faq=list(faq),
     )
     output_path = output_path_for(original_filename)
-    write_docx(output_path, title, sections, result.segments)
+    write_docx(output_path, title, sections + faq_sections(result.faq), result.segments)
     result.output_path = output_path
     logger.info(f"OUTPUT FILE: {output_path}")
     return result
@@ -2352,43 +3278,71 @@ def _revamp_inner(
     progress("Fetching the CMI report")
     report = run_fetch_confirmed_report(candidates[0], logger)
 
+    # Subheading questions are harvested AND picked now, right after the market is confirmed (same
+    # timing as the stepwise API's Step 2) — fixed before the evidence search below starts, so the
+    # question-evidence search for them can run concurrently with it instead of only after.
+    evidence_t0 = time.perf_counter()
+    progress("Drafting subheading questions for this market")
+    questions = run_draft_questions(report.name, orient, report, logger).get("subheading_questions") or []
+
+    # Long-tail commercial-keyword candidates: resolved at the same point as the stepwise API's
+    # Step 2 (the monolith always confirms the top candidate, so this nearly always reuses the
+    # orient candidates with no generation call). Best-effort, like them.
+    progress("Resolving long-tail keyword candidates")
+    longtails = resolve_longtails(report.name, report, orient, logger)
+
+    # Report claims are extracted now (the report is known) and their evidence search is started
+    # before the market search below — the same ordering as the stepwise API's Step 2.
+    progress("Extracting the report's own claims to back")
+    report_claims = run_report_claims(report.name, report, logger)
+
     progress("Searching the web for supporting evidence")
     claims = orient_claims(orient)
-    if claims:
-        # Claim backing runs in its own thread, concurrently with the market stage: different
-        # sources (general web explainers vs news feeds), and both stages are network-bound, so
-        # the run waits once for whichever finishes last, not for their sum.
-        with ThreadPoolExecutor(1) as claim_ex:
-            claim_future = claim_ex.submit(run_claim_evidence, claims, logger, progress)
-            hits = run_search_evidence(
-                candidates[0].keyword, sponsor, candidates, logger, progress,
-                key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
-            )
-            claim_pool = claim_future.result()
-    else:
+    with ThreadPoolExecutor(3) as pool:
+        # Claim backing, question backing and report-claim backing each run in their own thread,
+        # concurrently with the market stage: different sources (general web explainers vs news
+        # feeds), all four stages are network-bound, so the run waits once for whichever finishes
+        # last, not for their sum.
+        claim_future = pool.submit(run_claim_evidence, claims, logger, progress) if claims else None
+        question_future = pool.submit(run_question_evidence, questions, logger, progress)
+        report_claim_future = (
+            pool.submit(run_report_claim_evidence, report_claims, logger, progress) if report_claims else None
+        )
         hits = run_search_evidence(
             candidates[0].keyword, sponsor, candidates, logger, progress,
             key_players=reports.key_players(report), orient=orient, segments=report.segment_terms,
         )
-        claim_pool = {}
+        claim_pool = claim_future.result() if claim_future is not None else {}
+        question_evidence = question_future.result()
+        report_claim_evidence = report_claim_future.result() if report_claim_future is not None else {}
 
+    logger.info(f"[timing] evidence collection (CLI path) TOTAL: {time.perf_counter() - evidence_t0:.1f}s")
     progress("Step 2: selecting evidence")
-    selection = run_select(article, orient, sponsor, report, hits, logger, claim_hits=claim_pool)
-    evidence = run_build_evidence(selection, hits, logger, orient=orient)
+    selection = run_select(
+        article, orient, sponsor, report, hits, logger,
+        claim_hits=claim_pool, questions=questions, question_hits=question_evidence,
+        report_claims=report_claims, report_claim_hits=report_claim_evidence,
+    )
+    evidence = run_build_evidence(selection, hits, logger, orient=orient, questions=questions)
 
     progress("Step 3: writing the article")
-    written, title, sections, evidence_citations = run_write(article, orient, sponsor, report, evidence, logger)
+    written, title, sections, evidence_citations = run_write(
+        article, orient, sponsor, report, evidence, logger, longtails=longtails
+    )
 
     progress("Step 4: SEO + readability revision pass")
     title, sections, evidence_citations = run_revise(
-        title, sections, evidence_citations, report, logger, evidence, sponsor.text
+        title, sections, evidence_citations, report, logger, evidence, sponsor.text, longtails=longtails
     )
+
+    progress("Writing the FAQ block")
+    faq = run_faq(report.name, report, title, sections, logger, sponsor_text=sponsor.text)
 
     progress("Checking the draft against the SOP")
     result = run_finalize(
         article, sponsor, report, candidates, orient, selection, hits,
         title, sections, evidence, original_filename, logger,
-        evidence_citations=evidence_citations,
+        evidence_citations=evidence_citations, faq=faq, longtails=longtails,
     )
 
     progress("Writing the revised article to output/")

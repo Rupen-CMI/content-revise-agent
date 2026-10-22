@@ -198,6 +198,49 @@ def find_keyword_spans(text: str, phrase: str, window: int | None = None) -> lis
     return spans
 
 
+_LONGTAIL_GLUE_WORDS = frozenset({
+    "a", "an", "the", "in", "for", "of", "to", "with", "on", "at", "by", "from", "and", "vs", "versus", "or",
+    "that", "is", "are", "its", "their", "s",
+})
+
+
+def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Each use of a long-tail phrase in `text`, as (start_char, end_char). A long-tail phrase is a concept like a
+    secondary keyword: the writer may REORDER its words to fit a sentence (and inflect them), but every content
+    word of it must be there, close together — so the same concept matcher is used, not a literal substring search
+    (the one place highlighting, the used/not-used verdict and the SOP check all agree)."""
+    target = {_stem(w) for w in _keyword_content_words(phrase)}
+    out: list[tuple[int, int]] = []
+    # Tighter than a secondary keyword's window: a long-tail phrase is a specific multi-word search phrase, and its
+    # words scattered across a clause ("the <market name>, the software layer that banks ...") are not a use of it.
+    window = len(target) + 3
+    for start, end in find_keyword_spans(text, phrase, window=window):
+        # find_keyword_spans starts a match at the FIRST target word it meets, which can be an earlier,
+        # unrelated use of one of the phrase's words; tighten to the shortest stretch that holds all of them
+        # (each word's last occurrence inside the match), so the highlight covers just the phrase's own words.
+        tokens = [m for m in re.finditer(r"[a-z0-9']+", text[start:end].lower())]
+        last = {}
+        for m in tokens:
+            if _stem(m.group(0)) in target:
+                last[_stem(m.group(0))] = m
+        if len(last) == len(target):
+            start, end = start + min(m.start() for m in last.values()), start + max(m.end() for m in last.values())
+        # a use lives in ONE sentence: words scattered across a sentence end or a line break are not the phrase
+        # (or a comma/colon/dash: a phrase's own words are not split by a clause boundary)
+        if re.search(r"[.!?;:,]\s|\n|\s[-—–]\s", text[start:end]):
+            continue
+        # and between the phrase's own words only light grammatical glue may sit (an article, a preposition, "vs"):
+        # "an AI-driven wealth management platform" is a different thing from "AI in wealth management platforms"
+        between = [m.group(0) for m in re.finditer(r"[a-z0-9']+", text[start:end].lower()) if _stem(m.group(0)) not in target]
+        if any(w not in _LONGTAIL_GLUE_WORDS for w in between):
+            continue
+        out.append((start, end))
+    return out
+
+
+LONGTAIL_MIN_USED, LONGTAIL_MAX_USED = 2, 3  # how many long-tail phrases a finished post should use
+
+
 # A paragraph can hold a short lead-in sentence followed by parallel items (3 trends, a
 # segmentation breakdown) as "\n- " lines within the SAME paragraph string, instead of as separate
 # paragraph objects — this is a presentation convention (docx_io/app.js render it as a real
@@ -208,15 +251,90 @@ def find_keyword_spans(text: str, phrase: str, window: int | None = None) -> lis
 _BULLET_LINE_RE = re.compile(r"^-\s+")
 
 
+def split_bullet_lines(para_text: str) -> tuple[str, list[str]]:
+    """(lead-in text, [bullet item, ...]) if para_text contains "\n- " bullet lines, else
+    (para_text, []). The one place that owns this convention — docx_io and app.js both render it,
+    and long_paragraph_problems below measures a bulleted paragraph's pieces, not its whole length."""
+    lines = para_text.split("\n")
+    lead = []
+    items = []
+    for line in lines:
+        if _BULLET_LINE_RE.match(line):
+            items.append(_BULLET_LINE_RE.sub("", line, count=1))
+        elif items:
+            # a non-bullet line after bullets started: treat the whole thing as plain text
+            # instead, rather than silently dropping a line that didn't fit the pattern.
+            return para_text, []
+        else:
+            lead.append(line)
+    return "\n".join(lead), items
+
+
 def count_items_in(paragraphs: list[str]) -> int:
     """How many 'items' a list of paragraph strings contains, counting a paragraph with bullet
-    lines as one item per bullet rather than one item for the whole paragraph. Mirrors
-    docx_io._split_bullet_lines's convention without importing the presentation module."""
+    lines as one item per bullet rather than one item for the whole paragraph."""
     total = 0
     for p in paragraphs:
-        bullets = sum(1 for line in p.split("\n") if _BULLET_LINE_RE.match(line))
-        total += bullets if bullets else 1
+        _, items = split_bullet_lines(p)
+        total += len(items) if items else 1
     return total
+
+
+_MAX_PARAGRAPH_WORDS = 100  # readability ceiling for a single flowing chunk of prose
+# DISCONNECTED (False): the "no paragraph over 100 words" SOP no longer runs — neither in run_checks nor in the
+# write-time problem log (pipeline._write_problems). long_paragraph_problems below is kept intact; set True to
+# turn the check back on, nothing else needs to change.
+LONG_PARAGRAPH_CHECK_ENABLED = False
+
+
+def long_paragraph_problems(sections: list[dict]) -> list[str]:
+    """Flags any paragraph whose own prose runs past _MAX_PARAGRAPH_WORDS. A bulleted paragraph's
+    lead-in and each bullet are measured separately, never the whole concatenated string, since a
+    real bulleted list is already broken into short, readable pieces by the time it renders."""
+    problems = []
+    for s in sections:
+        for p in s.get("paragraphs") or []:
+            lead, items = split_bullet_lines(str(p))
+            pieces = ([lead] if lead.strip() else []) + items
+            for piece in pieces:
+                n = _words(piece)
+                if n > _MAX_PARAGRAPH_WORDS:
+                    problems.append(
+                        f'"{(s.get("heading") or "intro").strip() or "intro"}" has a paragraph of {n} words (over '
+                        f"{_MAX_PARAGRAPH_WORDS}) — split it into shorter paragraphs, or turn parallel items into a "
+                        "bulleted list"
+                    )
+    return problems
+
+
+def question_heading_problems(sections: list[dict], questions: list[dict]) -> list[str]:
+    """For each chosen subheading question with a section assignment (see pipeline.run_select_questions),
+    flags the assigned section (found by its sop tag) if its heading doesn't read as that question —
+    doesn't end in "?", or shares too little vocabulary with the question to plausibly be it. A loose,
+    soft check: the model may legitimately smooth grammar, so this does not require an exact match."""
+    problems = []
+    by_tag = {tag: s for s in sections for tag in (s.get("sop") or [])}
+    for q in questions or []:
+        sec_tag = q.get("section")
+        s = by_tag.get(sec_tag)
+        if not s:
+            continue
+        heading = (s.get("heading") or "").strip()
+        if not heading.endswith("?"):
+            problems.append(
+                f'the {sec_tag} section was assigned the question "{q["question"]}" but its heading '
+                f'("{heading}") does not end in "?" — the heading must be that question (or a lightly '
+                "grammar-smoothed version of it), not an ordinary descriptive heading"
+            )
+            continue
+        q_tokens = _market_tokens(q["question"])
+        overlap = q_tokens & _market_tokens(heading)
+        if q_tokens and len(overlap) < max(1, len(q_tokens) // 2):
+            problems.append(
+                f'the {sec_tag} section\'s heading ("{heading}") shares too little wording with its assigned '
+                f'question ("{q["question"]}") to plausibly be it'
+            )
+    return problems
 
 # Mirrors search.py's gate-token approach: strip words too generic to identify a specific
 # market, so "market"/"services" matching everywhere doesn't make every section look on-topic.
@@ -496,6 +614,7 @@ def run_checks(
     sponsor_text: str = "", original_body: str = "", report_name: str = "",
     selection: dict | None = None, hits: list | None = None, report_text: str = "",
     primary_keyword: str = "", secondary_keywords: list[str] = (), original_title: str = "",
+    questions: list[dict] = (), longtails: list[str] = (),
 ) -> list[CheckResult]:
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
@@ -688,21 +807,46 @@ def run_checks(
         ))
 
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
-    results.append(CheckResult("Length is 1,400-1,700 words (soft)", 1400 <= total <= 1700, f"{total} words"))
+    results.append(CheckResult("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words"))
 
     order, switches, publisher_words, layout_total = _layout_stats(sections, sponsor_text)
     publisher_pct = (publisher_words / layout_total * 100) if layout_total else 0.0
     results.append(CheckResult(
-        "Publisher content is the majority (~60%, soft)",
-        publisher_pct >= 50,
+        "Publisher content is about a fifth of the post (soft)",
+        15 <= publisher_pct <= 25,
         f"{publisher_pct:.0f}% publisher / {100 - publisher_pct:.0f}% market "
-        f"({publisher_words} of {layout_total} words; soft target 55-65% publisher)",
+        f"({publisher_words} of {layout_total} words; soft target 15-25% publisher)",
     ))
     results.append(CheckResult(
         "Topics are grouped: publisher block, then market block",
         switches <= 2,
         f"{switches} topic switch(es) — order: {order}",
     ))
+
+    if LONG_PARAGRAPH_CHECK_ENABLED:
+        long_paras = long_paragraph_problems(sections)
+        results.append(CheckResult(
+            f"No paragraph over {_MAX_PARAGRAPH_WORDS} words (soft)",
+            not long_paras,
+            "; ".join(long_paras) if long_paras else "",
+        ))
+
+    if longtails:
+        body = "\n".join(" ".join(s["paragraphs"]) for s in sections)
+        used_longtails = [kw for kw in longtails if longtail_spans(body, kw)]
+        results.append(CheckResult(
+            f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
+            LONGTAIL_MIN_USED <= len(used_longtails) <= LONGTAIL_MAX_USED,
+            f"{len(used_longtails)} of {len(longtails)} used: " + (", ".join(used_longtails) or "none"),
+        ))
+
+    if questions:
+        question_problems = question_heading_problems(sections, questions)
+        results.append(CheckResult(
+            "Question-headed sections ask and answer their assigned question (soft)",
+            not question_problems,
+            "; ".join(question_problems) if question_problems else "",
+        ))
 
     # Soft check: flags prose dense enough that a reader could lose the thread, without demanding
     # dumbed-down writing — this is still meant to read as a professional analyst brief, not a

@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config  # noqa: E402
 import pipeline  # noqa: E402
 import prompts  # noqa: E402
 import search  # noqa: E402
@@ -38,8 +39,8 @@ def hit(title: str, url: str, snippet: str = "", date=None) -> search.SearchHit:
 raw = [{"claim": f"Zzz Widget claim number {i} states something checkable", "queries": ["q1", "q2", "q3"], "kind": "comparison"}
        for i in range(12)]
 out = pipeline._normalize_claims(raw, "", LOG)
-check("normalize: capped at 8 claims", len(out) == 8, str(len(out)))
-check("normalize: ids renumbered C1..C8", [c["id"] for c in out] == [f"C{i}" for i in range(1, 9)])
+check("normalize: capped at 3 claims", len(out) == 3, str(len(out)))
+check("normalize: ids renumbered C1..C3", [c["id"] for c in out] == [f"C{i}" for i in range(1, 4)])
 check("normalize: at most 2 queries each", all(len(c["queries"]) <= 2 for c in out))
 mixed = [{"claim": "too short"}, "not a dict", {"claim": "Zzz Widget is the simplest option for every beginner"}]
 out = pipeline._normalize_claims(mixed, "", LOG)
@@ -49,6 +50,19 @@ out = pipeline._normalize_claims(mixed, sponsor, LOG)
 check("normalize: a claim inside the retained paragraph is dropped", out == [], str(out))
 check("normalize: non-list input gives []", pipeline._normalize_claims(None, "", LOG) == [] and pipeline._normalize_claims("x", "", LOG) == [])
 check("orient_claims: missing key / None give []", pipeline.orient_claims({}) == [] and pipeline.orient_claims(None) == [])
+
+# Claim backing ships disabled by default (config.SEARCH_CLAIMS_ENABLED = False — see config.py):
+# the publisher block's evidence was scaled back to just the guest article and the retained
+# paragraph. Verified here BEFORE the rest of this file forces it back on: the machinery below is
+# still fully here, not deleted, just unused while this flag is off.
+check("config: claim backing is disabled by default", config.SEARCH_CLAIMS_ENABLED is False)
+check("orient_claims: disabled -> [] even with real claims_to_back present",
+      pipeline.orient_claims({"claims_to_back": [{"id": "C1", "claim": "a b c d e"}]}) == [])
+
+# The rest of this file exercises the claim-backing machinery itself (ORIENT normalisation, SELECT's
+# claim_backing, the ARTICLE EVIDENCE block, the writer checks) — forcing the flag back on here only
+# affects this process, and confirms the dormant path still works for whoever re-enables it.
+config.SEARCH_CLAIMS_ENABLED = True
 check("orient_claims: returns the stored claims", len(pipeline.orient_claims({"claims_to_back": [{"id": "C1", "claim": "a b c d e"}]})) == 1)
 
 # ------------------------------------------------------------------ SearchHit defaults

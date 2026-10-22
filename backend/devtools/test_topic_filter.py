@@ -144,6 +144,29 @@ check("opinion count: each attribution form counts once, plain CMI statements an
 check("opinion count: the check allows 1 or 2 across the article",
       checks.count_cmi_opinions(ops[:1]) == 1 and checks.count_cmi_opinions(ops[:3]) == 3)
 
+# split_bullet_lines (moved from docx_io into checks.py so checks.long_paragraph_problems and
+# checks.count_items_in can share it; docx_io now imports it back)
+lead, items = checks.split_bullet_lines("Three factors matter here.\n- First factor explained.\n- Second factor explained.")
+check("split_bullet_lines: lead-in and bullet items split apart",
+      (lead, items) == ("Three factors matter here.", ["First factor explained.", "Second factor explained."]), str((lead, items)))
+check("split_bullet_lines: plain text with no bullet lines returns it whole, no items",
+      checks.split_bullet_lines("Just a plain paragraph.") == ("Just a plain paragraph.", []))
+
+# long_paragraph_problems: a single flowing paragraph over the cap is flagged; a bulleted paragraph whose lead-in
+# and each item are individually short is NOT flagged even though its concatenated text is long; a bullet ITEM
+# that is itself over the cap still is.
+long_plain = " ".join(f"w{i}" for i in range(120))
+short_bulleted = "A short lead-in.\n" + "\n".join(f"- Bullet {i} stays under the word cap easily." for i in range(4))
+long_bullet_item = "A short lead-in.\n- " + " ".join(f"w{i}" for i in range(110))
+long_problems = checks.long_paragraph_problems([{"heading": "Trends", "sop": ["trends"], "paragraphs": [long_plain]}])
+bulleted_problems = checks.long_paragraph_problems([{"heading": "Country us", "sop": ["country_us"], "paragraphs": [short_bulleted]}])
+item_problems = checks.long_paragraph_problems([{"heading": "Players", "sop": ["key_players"], "paragraphs": [long_bullet_item]}])
+check("long_paragraph_problems: a 120-word flowing paragraph is flagged", len(long_problems) == 1, str(long_problems))
+check("long_paragraph_problems: a bulleted paragraph with short pieces is not flagged even though it's long overall",
+      bulleted_problems == [], str(bulleted_problems))
+check("long_paragraph_problems: one over-long bullet item inside an otherwise fine bulleted paragraph is still flagged",
+      len(item_problems) == 1, str(item_problems))
+
 import logging as _lg2
 dup = [{"heading": h, "sop": [t], "paragraphs": ["x"]} for h, t in
        [("A", "report_context"), ("B", "trends"), ("C", "conclusion"), ("A2", "report_context"), ("B2", "trends"), ("Extra", "conclusion")]]

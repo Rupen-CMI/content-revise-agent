@@ -164,12 +164,23 @@ class _Bing:
 
     def _get(self, query: str, web: bool = False) -> list[search.SearchHit] | None:
         url = "https://www.bing.com/search" if web else "https://www.bing.com/news/search"
+        kind = "bing_web" if web else "bing_news"
+        # Dev-only disk cache (config.SEARCH_CACHE): a hit short-circuits BEFORE the politeness gate
+        # and the retry/breaker machinery — a repeated dev run makes no live Bing call for a query
+        # it already made within the TTL. Only successes are stored (below), so a cached entry can
+        # never represent a throttled/failed request, and the breaker logic stays live-path-only.
+        cached = search.cache_lookup(kind, query)
+        if cached is not None:
+            self._logger.info(f"[cache] {kind} {query!r}: {len(cached)} cached result(s)")
+            return cached
         for attempt in range(_BING_RETRIES + 1):
             try:
                 with _bing_turn():
                     r = self._client.get(url, params={"q": query, "format": "rss", **_BING_MARKET})
                 if r.status_code == 200:
-                    return [h for e in _parse_feed(r.content).entries if (h := _entry_hit(e))]
+                    hits = [h for e in _parse_feed(r.content).entries if (h := _entry_hit(e))]
+                    search.cache_store(kind, query, hits)
+                    return hits
                 self._logger.warning(f"[bing] {query!r}: HTTP {r.status_code} (attempt {attempt + 1})")
             except httpx.HTTPError as e:
                 self._logger.warning(f"[bing] {query!r}: {type(e).__name__} (attempt {attempt + 1})")

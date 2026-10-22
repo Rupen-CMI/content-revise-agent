@@ -42,6 +42,7 @@ import secrets
 import signal
 import threading
 import time
+from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -223,17 +224,75 @@ class RunState:
     # The claim-backing search starts in Step 1, right after the claims are extracted: it depends only on the article, not
     # on the market the human picks, so it runs while the human reads and confirms. Step 2 collects the result.
     claim_future: "Future | None" = None
+    # Subheading questions ({"subheading_questions": [{"id": "Q1", "question": "..."}, ...]}) — harvested
+    # AND picked synchronously at the very start of Step 2, right after the market is confirmed (it needs
+    # the CONFIRMED market name, unlike claim search), so the evidence search for them (question_evidence,
+    # below) can start before/alongside run_search_evidence rather than after the questions are already fixed.
+    questions: dict | None = None
+    # Evidence pool for those questions ({question id: candidate pages}) — SELECT consumes it in Step 3,
+    # the same way claim_pool does for claims.
+    question_evidence: dict[str, list[search.SearchHit]] | None = None
+    # Report claims ([{"id": "RC1", "claim": "...", "section": "trends"|"subsegment"|"country_us"}, ...]) —
+    # extracted synchronously right after the report is fetched in Step 2 (it needs the report's own text,
+    # so — like questions — it can only happen here, not in Step 1), so the evidence search for them
+    # (report_claim_evidence, below) can start before/alongside run_search_evidence.
+    report_claims: list[dict] = field(default_factory=list)
+    # Evidence pool for those report claims ({claim id: candidate pages}) — SELECT consumes it in Step 3,
+    # the same way claim_pool/question_evidence do.
+    report_claim_evidence: dict[str, list[search.SearchHit]] | None = None
+    # Long-tail commercial keywords ([{"keyword", "intent", "why"}, ...]) — generated in Step 2 from the
+    # confirmed report's own segmentation/companies (an LLM call, no web search); the writer (Step 4)
+    # integrates at most 3 of them. Empty when generation failed — an enhancement, never a requirement.
+    longtails: list[dict] = field(default_factory=list)
+    # Step 2's wall-clock timing ({"total_s", "stages": [{"name", "start_s", "seconds"}, ...]}, see StageTimer);
+    # shown on the Step 2 card and written to the run log.
+    timings: dict | None = None
     selection: dict | None = None
     evidence: str | None = None
     title: str = ""
     sections: list[dict] = field(default_factory=list)
     evidence_citations: list[dict] = field(default_factory=list)
+    faq: list[dict] = field(default_factory=list)
 
 
 _RUNS: dict[str, RunState] = {}
 
 # Background work that must outlive the request that started it (the claim-backing search runs while the human chooses a market).
-_BACKGROUND = ThreadPoolExecutor(2, thread_name_prefix="background")
+# 3 workers: claim search, question-evidence search and report-claim-evidence search can all be in flight at once in Step 2.
+_BACKGROUND = ThreadPoolExecutor(3, thread_name_prefix="background")
+
+
+class StageTimer:
+    """Wall-clock timer for one pipeline step's stages (Step 2's evidence collection). Stages overlap —
+    several run on their own threads at once — so each is timed from its own start to its own end,
+    with its start offset from the step's start; the step's total is real elapsed time, NOT the sum.
+    Every finished stage is logged as it ends, so the run log shows where the time went live."""
+
+    def __init__(self, logger: logging.Logger, label: str) -> None:
+        self._logger, self._label = logger, label
+        self._t0 = time.perf_counter()
+        self._lock = threading.Lock()
+        self._stages: list[dict] = []
+
+    @contextmanager
+    def stage(self, name: str):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            seconds = time.perf_counter() - start
+            with self._lock:
+                self._stages.append({"name": name, "start_s": round(start - self._t0, 1), "seconds": round(seconds, 1)})
+            self._logger.info(f"[timing] {self._label} / {name}: {seconds:.1f}s (started at +{start - self._t0:.1f}s)")
+
+    def summary(self) -> dict:
+        total = round(time.perf_counter() - self._t0, 1)
+        with self._lock:
+            stages = sorted(self._stages, key=lambda s: s["start_s"])
+        self._logger.info(
+            f"[timing] {self._label} TOTAL: {total:.1f}s — " + "; ".join(f'{s["name"]} {s["seconds"]}s' for s in stages)
+        )
+        return {"total_s": total, "stages": stages}
 
 
 def _start_claim_search(orient: dict, logger: logging.Logger) -> "Future | None":
@@ -249,6 +308,65 @@ def _start_claim_search(orient: dict, logger: logging.Logger) -> "Future | None"
             return {}
 
     return _BACKGROUND.submit(work)
+
+
+def _harvest_and_select_questions(market_name: str, orient: dict, report: reports.Report, logger: logging.Logger) -> dict:
+    """Draft the final subheading questions (the model writes them from the report; the autocomplete
+    harvest they used to be picked from is disconnected — see pipeline.run_draft_questions), right after the market is
+    confirmed and before the market web search starts — so the questions are already fixed by the
+    time _start_question_evidence_search below runs, and that evidence search can overlap the
+    general market search instead of running after it. Best-effort: a failure here must never fail
+    the run, since the question pool is an enhancement, not a requirement."""
+    try:
+        return pipeline.run_draft_questions(market_name, orient, report, logger)
+    except Exception:
+        logger.warning("[intent] question harvest/selection failed; no subheading questions will be offered", exc_info=True)
+        return {"subheading_questions": []}
+
+
+def _start_question_evidence_search(questions: list[dict], logger: logging.Logger, timer: "StageTimer | None" = None) -> "Future":
+    def work() -> dict:
+        try:
+            with (timer.stage("Question evidence search") if timer else nullcontext()):
+                return pipeline.run_question_evidence(questions, logger)
+        except Exception:  # best-effort, like claim search: a failure here must never fail the run
+            logger.warning("[question-search] failed; chosen questions will be answered with no outside evidence", exc_info=True)
+            return {}
+
+    return _BACKGROUND.submit(work)
+
+
+def _extract_report_claims(market_name: str, report: reports.Report, logger: logging.Logger) -> list[dict]:
+    """Extract the report's own trends/subsegment/country_us claims SYNCHRONOUSLY, right after the
+    report is fetched and before the market web search starts — so the claims are already fixed by
+    the time _start_report_claim_evidence_search below runs, and that evidence search can overlap
+    the general market search instead of running after it. Best-effort: a failure here must never
+    fail the run, since this evidence is an enhancement, not a requirement."""
+    try:
+        return pipeline.run_report_claims(market_name, report, logger)
+    except Exception:
+        logger.warning("[report-claims] extraction failed; no report-claim evidence will be gathered", exc_info=True)
+        return []
+
+
+def _start_report_claim_evidence_search(claims: list[dict], logger: logging.Logger, timer: "StageTimer | None" = None) -> "Future":
+    def work() -> dict:
+        try:
+            with (timer.stage("Report-claim evidence search") if timer else nullcontext()):
+                return pipeline.run_report_claim_evidence(claims, logger)
+        except Exception:  # best-effort, like claim search: a failure here must never fail the run
+            logger.warning("[report-claim-search] failed; report claims will be used with no outside corroboration", exc_info=True)
+            return {}
+
+    return _BACKGROUND.submit(work)
+
+
+def _extract_longtails(market_name: str, report: reports.Report, orient: dict, logger: logging.Logger) -> list[dict]:
+    """Resolve the long-tail keyword candidates for the CONFIRMED market (see
+    pipeline.resolve_longtails): reuse the Step 1 orient candidates when the human confirmed the
+    model's default pick, regenerate (one small call) when they picked a different report.
+    Best-effort: a failure here just means no long-tail keywords this run."""
+    return pipeline.resolve_longtails(market_name, report, orient, logger)
 
 
 def _prune_runs() -> None:
@@ -374,7 +492,11 @@ def _segment_dicts(text: str, sponsor: Paragraph, report_url: str | None) -> lis
 def _display_sections(
     sections: list[dict], sponsor: Paragraph, report_url: str | None,
     primary_kw: str | None = None, secondary_plan: list[tuple[str, str]] = (),
+    longtails: list[str] = (), counts: dict | None = None,
 ) -> list[dict]:
+    """`counts`, when given, is filled with the keyword use counts that the highlighting itself found
+    ({"primary": n, "secondary": {kw: n}, "longtail": {phrase: n}}) — the SAME spans the reader sees
+    highlighted, so the legend at the top of the page can never disagree with the marks in the text."""
     out = []
     for s in sections:
         # Only the secondary keywords TAGGED FOR this section are eligible to highlight in it — a
@@ -387,7 +509,7 @@ def _display_sections(
         for p in s.get("paragraphs", []):
             segs = _segment_dicts(p, sponsor, report_url)
             if primary_kw:
-                segs = _apply_keyword_spans(segs, primary_kw, section_secondary)
+                segs = _apply_keyword_spans(segs, primary_kw, section_secondary, longtails, counts)
             paragraphs.append(segs)
         out.append({"heading": s.get("heading", ""), "paragraphs": paragraphs})
     return out
@@ -397,6 +519,7 @@ def _display_sections(
 
 def _apply_keyword_spans(
     segments: list[dict], primary_kw: str, section_secondary: list[tuple[str, str]],
+    longtails: list[str] = (), counts: dict | None = None,
 ) -> list[dict]:
     """Highlights the primary keyword's exact text, plus each SECTION-SCOPED secondary keyword's
     suffix word (only the keywords actually tagged for the section this paragraph belongs to —
@@ -414,6 +537,10 @@ def _apply_keyword_spans(
     # always win, since the primary keyword is never reworded and its exact text is the one thing
     # every CMI_LINK anchor and every full market-name mention actually is.
     taken: list[str | None] = [None] * len(plain)
+    if counts is not None:
+        counts.setdefault("primary", 0)
+        counts.setdefault("secondary", {})
+        counts.setdefault("longtail", {})
     if primary_kw:
         low_plain, low_phrase = plain.lower(), primary_kw.lower()
         pos = 0
@@ -421,12 +548,31 @@ def _apply_keyword_spans(
             for k in range(i, i + len(low_phrase)):
                 taken[k] = "primary"
             pos = i + len(low_phrase)
+            if counts is not None:
+                counts["primary"] += 1
+
+    # Pass 1b: long-tail phrases, literal, in every section. Staked out BEFORE the secondary keywords
+    # so a phrase that happens to contain a secondary keyword's suffix word stays one long-tail mark
+    # (the secondary pass trims around it); the primary keyword's own text still wins on any overlap.
+    for phrase in longtails:
+        for start, end in checks.longtail_spans(plain, phrase):
+            free = [k for k in range(start, end) if taken[k] is None]
+            if not free:
+                continue  # entirely inside the primary keyword's text — not a separate use
+            for k in free:
+                taken[k] = "longtail"
+            if counts is not None:
+                counts["longtail"][phrase] = counts["longtail"].get(phrase, 0) + 1
 
     # Pass 2: each section-scoped secondary keyword's suffix word fills in whatever's left, but
     # TRIM at any cell the primary pass already claimed instead of discarding the whole match — a
     # secondary keyword's suffix can legitimately sit right next to the primary keyword's own text.
     for kw, suffix in section_secondary:
         for start, end in checks.secondary_keyword_spans_in_paragraph(plain, primary_kw, suffix):
+            if all(taken[k] is not None for k in range(start, end)):
+                continue  # wholly covered by the primary/long-tail marks — nothing of it is shown, so it is not counted
+            if counts is not None:
+                counts["secondary"][kw] = counts["secondary"].get(kw, 0) + 1
             i = start
             while i < end:
                 if taken[i] is not None:
@@ -628,24 +774,77 @@ def step2(req: Step2Request) -> dict:
     chosen = next((c for c in run.candidates if c.news_id == req.report_id), None)
     if chosen is None:
         raise HTTPException(400, f"Report {req.report_id} is not one of the matched reports for this run.")
+    timer = StageTimer(run.logger, "Step 2")
     try:
-        report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
+        with timer.stage("Fetch CMI report"):
+            report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
         # The claim-backing search has been running since Step 1 (see RunState.claim_future); start it now only if it
         # never started (a run restored without it).
         if run.claim_future is None:
             run.claim_future = _start_claim_search(run.orient, run.logger)
-        hits = pipeline.run_search_evidence(
-            report.name, run.sponsor, run.candidates, run.logger,
-            key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
-        )
+        # The three prep steps below used to run strictly one after another, starting each one's
+        # evidence search as it finished — which serialized three LLM calls (~30-50s of wall time).
+        # None of them needs another's output, so they now run in parallel; each evidence search
+        # still starts only once its own prep has produced the thing it searches for, and the web
+        # search consumes the pre-generated queries (search_queries=), so the whole chain keeps its
+        # original data dependencies. DeepSeek handles concurrent calls; no shared rate gate exists
+        # in llm.py, so the parallel calls genuinely overlap.
+        prep = ThreadPoolExecutor(max_workers=4, thread_name_prefix="step2-prep")
+        try:
+            def timed(name: str, fn, *args):
+                with timer.stage(name):
+                    return fn(*args)
+
+            questions_f = prep.submit(timed, "Draft subheading questions", _harvest_and_select_questions, report.name, run.orient, report, run.logger)
+            report_claims_f = prep.submit(timed, "Extract report claims", _extract_report_claims, report.name, report, run.logger)
+            search_queries_f = prep.submit(
+                timed, "Plan market search queries", pipeline.prepare_search_queries, report.name,
+                list(reports.key_players(report)), run.logger, list(report.segment_terms),
+            )
+            # Long-tail keyword candidates are generated on their own thread in this same parallel prep, from the
+            # confirmed report's segments/companies and the article's subject (pipeline.resolve_longtails); nothing
+            # below waits on them until the writer, so they cost no extra wall time.
+            longtails_f = prep.submit(
+                timed, "Generate long-tail keywords", _extract_longtails, report.name, report, run.orient, run.logger,
+            )
+            # Subheading questions are harvested AND picked before the evidence search below starts, so the
+            # evidence search for them can run concurrently with it rather than only after the questions are known.
+            run.longtails = longtails_f.result()
+            run.questions = questions_f.result()
+            question_future = _start_question_evidence_search(run.questions.get("subheading_questions") or [], run.logger, timer)
+            # Report claims are extracted the same way and at the same point as subheading questions — the
+            # report's own text is only available now, and fixing the claims before the market search starts
+            # lets their evidence search run concurrently with it instead of only after.
+            run.report_claims = report_claims_f.result()
+            report_claim_future = _start_report_claim_evidence_search(run.report_claims, run.logger, timer)
+            prepared_queries = search_queries_f.result()
+        finally:
+            prep.shutdown(wait=False)
+        with timer.stage("Market web search"):
+            hits = pipeline.run_search_evidence(
+                report.name, run.sponsor, run.candidates, run.logger,
+                key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
+                search_queries=prepared_queries,
+            )
         run.claim_pool = run.claim_future.result() if run.claim_future is not None else {}
+        run.question_evidence = question_future.result()
+        run.report_claim_evidence = report_claim_future.result()
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)
     run.report, run.hits = report, hits
-    run.logger.info(f"STEP 2 DONE — report {report.news_id} {report.name}, {len(hits)} hits")
+    run.timings = timer.summary()
+    run.logger.info(
+        f"STEP 2 DONE in {run.timings['total_s']}s — report {report.news_id} {report.name}, {len(hits)} hits, "
+        f"{len(run.questions.get('subheading_questions') or [])} subheading question(s) chosen, "
+        f"{len(run.report_claims)} report claim(s) extracted"
+    )
     return {
         "report": _report_dict(report), "hits": [_hit_dict(h) for h in hits],
         "claim_hits": _claim_hits_dict(run.claim_pool),
+        "questions": run.questions,
+        "report_claims": run.report_claims,
+        "long_tail_keywords": run.longtails,
+        "timings": run.timings,
     }
 
 
@@ -656,14 +855,24 @@ def step3(req: Step3Request) -> dict:
     run = _get_run(req.run_token)
     if run.report is None or run.hits is None:
         raise HTTPException(400, "No confirmed report/evidence yet — finish Step 2 first.")
+    # The subheading questions and report claims were already chosen/extracted in Step 2 (see
+    # run.questions, run.report_claims); SELECT here only judges which of the evidence gathered for
+    # them (run.question_evidence, run.report_claim_evidence) is usable.
+    subheading_questions = (run.questions or {}).get("subheading_questions") or []
     try:
-        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger, claim_hits=run.claim_pool)
-        evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
+        selection = pipeline.run_select(
+            run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
+            claim_hits=run.claim_pool, questions=subheading_questions, question_hits=run.question_evidence,
+            report_claims=run.report_claims, report_claim_hits=run.report_claim_evidence,
+        )
+        evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient, questions=subheading_questions)
     except (PipelineError, LLMError, LookupError) as e:
         raise _pipeline_failure(run.logger, "Step 3", e)
     run.selection, run.evidence = selection, evidence
-    run.logger.info(f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s) selected")
-    return {"selection": selection, "evidence": evidence}
+    run.logger.info(f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s) selected, "
+                     f"{len(selection.get('question_backing') or [])} question backing item(s), "
+                     f"{len(selection.get('report_claim_backing') or [])} report claim backing item(s)")
+    return {"selection": selection, "evidence": evidence, "questions": run.questions}
 
 
 @app.post("/step4")
@@ -674,16 +883,18 @@ def step4(req: Step4Request) -> dict:
         raise HTTPException(400, "No confirmed report/evidence yet — finish Step 3 first.")
     try:
         _, title, sections, evidence_citations = pipeline.run_write(
-            run.article, run.orient, run.sponsor, run.report, run.evidence, run.logger
+            run.article, run.orient, run.sponsor, run.report, run.evidence, run.logger, longtails=run.longtails
         )
         title, sections, evidence_citations = pipeline.run_revise(
-            title, sections, evidence_citations, run.report, run.logger, run.evidence, run.sponsor.text
+            title, sections, evidence_citations, run.report, run.logger, run.evidence, run.sponsor.text,
+            longtails=run.longtails,
         )
+        faq = pipeline.run_faq(run.report.name, run.report, title, sections, run.logger, sponsor_text=run.sponsor.text)
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "Step 4", e)
-    run.title, run.sections, run.evidence_citations = title, sections, evidence_citations
-    run.logger.info(f"STEP 4 DONE — draft '{title}' ({len(sections)} sections, {len(evidence_citations)} evidence citations)")
-    return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url)}
+    run.title, run.sections, run.evidence_citations, run.faq = title, sections, evidence_citations, faq
+    run.logger.info(f"STEP 4 DONE — draft '{title}' ({len(sections)} sections, {len(evidence_citations)} evidence citations, {len(faq)} FAQ entries)")
+    return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url), "faq": faq}
 
 
 @app.get("/run/{run_token}")
@@ -706,11 +917,15 @@ def get_run(run_token: str) -> dict:
         "claim_hits": _claim_hits_dict(run.claim_pool),
         "report": _report_dict(run.report) if run.report else None,
         "selection": run.selection,
+        "questions": run.questions,
+        "long_tail_keywords": run.longtails,
+        "timings": run.timings,
         "title": run.title,
         "sections": (
             _display_sections(run.sections, run.sponsor, run.report.url if run.report else None)
             if run.sections else []
         ),
+        "faq": run.faq,
     }
 
 
@@ -727,6 +942,7 @@ def finalize(req: FinalizeRequest) -> dict:
             run.title, run.sections, run.evidence,
             run.filename, run.logger,
             evidence_citations=run.evidence_citations,
+            faq=run.faq, longtails=run.longtails,
         )
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "finalize", e)
@@ -751,17 +967,37 @@ def finalize(req: FinalizeRequest) -> dict:
     ]
     primary_kw, secondary_plan = pipeline._seo_keyword_plan(result.report.name)
     secondary_kws = [kw for kw, _ in secondary_plan]
+    # Whether each generated long-tail phrase survived into the finished draft — a literal,
+    # whitespace-normalised match, since WRITE freezes a phrase's word order. Reported to the UI
+    # and logged; an unused candidate is fine by design (the writer was told to use at most 3 and
+    # only where they genuinely fit), so this is visibility, never a failure gate.
+    longtail_usage = pipeline._longtail_usage(result.title, result.sections, run.longtails)
+    used = [t for t in longtail_usage if t["used"]]
+    run.logger.info(
+        f"[long-tail] the final draft uses {len(used)}/{len(longtail_usage)} candidate phrase(s): "
+        + (", ".join(t["keyword"] for t in used) or "(none)")
+    )
     # Keyword spans are found server-side (checks.secondary_keyword_spans_in_paragraph — same
     # paragraph-scoped, section-scoped matching the pipeline's own coverage check uses) rather
     # than left to the frontend to re-search for the literal phrase, which finds nothing once a
     # keyword has been naturally reworded (e.g. "the size of the market" for "market size") or
     # when the market's name isn't repeated in every sentence that touches one of its keywords.
+    keyword_counts: dict = {}
+    display_sections = _display_sections(
+        result.sections, result.sponsor, result.report.url, primary_kw, secondary_plan,
+        longtails=[t["keyword"] for t in longtail_usage], counts=keyword_counts,
+    )
+    run.logger.info(
+        f"[keywords] highlighted uses — primary x{keyword_counts.get('primary', 0)}, "
+        f"secondary {sum(keyword_counts.get('secondary', {}).values())}x "
+        f"({len(keyword_counts.get('secondary', {}))}/{len(secondary_kws)} keywords), "
+        f"long-tail {sum(keyword_counts.get('longtail', {}).values())}x "
+        f"({len(keyword_counts.get('longtail', {}))}/{len(longtail_usage)} phrases)"
+    )
     return {
         "result": {
             "title": result.title,
-            "sections": _display_sections(
-                result.sections, result.sponsor, result.report.url, primary_kw, secondary_plan,
-            ),
+            "sections": display_sections,
             "report": _report_dict(result.report),
             "checks": [
                 {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
@@ -769,7 +1005,13 @@ def finalize(req: FinalizeRequest) -> dict:
             "evidence_citations": citations_out,
             "primary_keyword": primary_kw,
             "secondary_keywords": secondary_kws,
+            "keyword_counts": keyword_counts,
+            "long_tail_keywords": [
+                {"keyword": t["keyword"], "intent": t["intent"], "used": t["used"]}
+                for t in longtail_usage
+            ],
             "output_filename": result.output_path.name if result.output_path else None,
+            "faq": result.faq,
         }
     }
 

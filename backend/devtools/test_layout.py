@@ -3,11 +3,11 @@
 Run from backend/: python devtools/test_layout.py
 
 Covers:
-  * the interleaved 12-section draft the old prompt produced (fails on topic switches)
-  * the intended layout: intro, 3 publisher sections, then report_context first in the market
+  * the interleaved section shapes earlier prompts produced (fails on topic switches)
+  * the intended layout: intro, ONE publisher section, then report_context first in the market
     block, trends, segmentation, subsegment, country_us, key_players, conclusion
   * report_context not coming first in the market block
-  * the publisher-share floor (40% fails, 60% passes)
+  * the publisher-share band (10% fails low, 20% passes, 35% fails high)
   * the sponsor placeholder's real words counting as publisher words
   * the two new soft checks in checks.run_checks
 """
@@ -59,12 +59,11 @@ def interleaved() -> list[dict]:
 
 
 def good() -> list[dict]:
-    """Intro, 3 publisher sections, then one market block with report_context as the bridge."""
+    """Intro, ONE publisher section, then one market block with report_context as the bridge. Publisher share
+    (190 of 884 words, ~21.5%) sits in both the pipeline backstop's 10-30% band and checks.py's soft 15-25% band."""
     return [
-        {"heading": "", "sop": [], "paragraphs": [words(50), TOKEN, words(50)]},
-        section("Publisher one", [], [120, 120]),
-        section("Publisher two", [], [120, 120]),
-        section("Publisher three", [], [120, 120]),
+        {"heading": "", "sop": [], "paragraphs": [words(40), TOKEN, words(40)]},
+        section("Publisher one", [], [30, 30]),
         section("Report context", ["report_context"], [80]),
         section("Trends", ["trends"], [145]),
         section("Segmentation", ["segmentation"], [80]),
@@ -108,13 +107,13 @@ order, switches, pub_words, total_words = checks._layout_stats(good_sections, SP
 check("good draft: exactly one topic switch", switches == 1, f"{switches} — {order}")
 pub, total, pct = share(good_sections, SPONSOR_TEXT)
 check(
-    "good draft: publisher share is in the soft 55-65% band",
-    55 <= pct <= 65,
+    "good draft: publisher share is in the soft 15-25% band",
+    15 <= pct <= 25,
     f"{pct:.1f}% ({pub} of {total})",
 )
 check(
     "good draft: section order is P...P then M...M",
-    order.startswith("intro P | Publisher one P | Publisher two P | Publisher three P | Report context M"),
+    order.startswith("intro P | Publisher one P | Report context M"),
     order,
 )
 
@@ -135,59 +134,76 @@ check(
     repr(late_problems),
 )
 
-# ---------------------------------------------------------------- 4. publisher share floor
-# 400 publisher words / 1,000 total = 40%
-forty = [
-    section("", [], [100]),
-    section("Publisher one", [], [200, 100]),
-    section("Report context", ["report_context"], [90]),
-    section("Trends", ["trends"], [90]),
-    section("Segmentation", ["segmentation"], [90]),
-    section("Sub-segments", ["subsegment"], [45, 45]),
-    section("U.S. analysis", ["country_us"], [90]),
-    section("Players", ["key_players"], [45, 45]),
-    section("Conclusion", ["conclusion"], [60]),
+# ---------------------------------------------------------------- 4. publisher share band (10-30%)
+# 50 publisher words / 1,050 total = 4.8% — too low
+low = [
+    section("", [], [50]),
+    section("Report context", ["report_context"], [100]),
+    section("Trends", ["trends"], [200]),
+    section("Segmentation", ["segmentation"], [150]),
+    section("Sub-segments", ["subsegment"], [150, 150]),
+    section("U.S. analysis", ["country_us"], [100]),
+    section("Players", ["key_players"], [50, 50]),
+    section("Conclusion", ["conclusion"], [50]),
 ]
-forty_problems = pipeline._layout_problems(forty)
-_, _, forty_pct = share(forty)
-check("40% publisher draft: share check fails", any("publisher content is only" in p for p in forty_problems), repr(forty_problems))
-check("40% publisher draft: measured share is 40%", round(forty_pct) == 40, f"{forty_pct:.1f}%")
+low_problems = pipeline._layout_problems(low)
+_, _, low_pct = share(low)
+check("5% publisher draft: share check fails low", any("publisher content is only" in p for p in low_problems), repr(low_problems))
+check("5% publisher draft: measured share is under 5%", low_pct < 5, f"{low_pct:.1f}%")
 
-sixty = [
-    section("", [], [150]),
-    section("Publisher one", [], [400, 200, 150]),
-    section("Report context", ["report_context"], [90]),
-    section("Trends", ["trends"], [90]),
-    section("Segmentation", ["segmentation"], [90]),
-    section("Sub-segments", ["subsegment"], [45, 45]),
-    section("U.S. analysis", ["country_us"], [90]),
-    section("Players", ["key_players"], [45, 45]),
-    section("Conclusion", ["conclusion"], [60]),
+# 250 publisher words / 1,250 total = 20% — inside the band
+mid = [
+    section("", [], [100]),
+    section("Publisher one", [], [75, 75]),
+    section("Report context", ["report_context"], [100]),
+    section("Trends", ["trends"], [200]),
+    section("Segmentation", ["segmentation"], [150]),
+    section("Sub-segments", ["subsegment"], [150, 150]),
+    section("U.S. analysis", ["country_us"], [100]),
+    section("Players", ["key_players"], [50, 50]),
+    section("Conclusion", ["conclusion"], [50]),
 ]
-sixty_problems = pipeline._layout_problems(sixty)
-_, _, sixty_pct = share(sixty)
-check("60% publisher draft: share check passes", not any("only" in p and "publisher content" in p for p in sixty_problems), repr(sixty_problems))
-check("60% publisher draft: measured share is 60%", round(sixty_pct) == 60, f"{sixty_pct:.1f}%")
+mid_problems = pipeline._layout_problems(mid)
+_, _, mid_pct = share(mid)
+check("20% publisher draft: share check passes", not any("publisher content is" in p for p in mid_problems), repr(mid_problems))
+check("20% publisher draft: measured share is 20%", round(mid_pct) == 20, f"{mid_pct:.1f}%")
+
+# 450 publisher words / 1,450 total = 31% — too high
+high = [
+    section("", [], [100]),
+    section("Publisher one", [], [175, 175]),
+    section("Report context", ["report_context"], [100]),
+    section("Trends", ["trends"], [200]),
+    section("Segmentation", ["segmentation"], [150]),
+    section("Sub-segments", ["subsegment"], [150, 150]),
+    section("U.S. analysis", ["country_us"], [100]),
+    section("Players", ["key_players"], [50, 50]),
+    section("Conclusion", ["conclusion"], [50]),
+]
+high_problems = pipeline._layout_problems(high)
+_, _, high_pct = share(high)
+check("31% publisher draft: share check fails high", any("publisher content is" in p and "cut about" in p for p in high_problems), repr(high_problems))
+check("31% publisher draft: measured share is over 30%", high_pct > 30, f"{high_pct:.1f}%")
 
 # ---------------------------------------------------------------- 5. sponsor real words count as publisher
 sponsor_case = [
-    {"heading": "", "sop": [], "paragraphs": [words(40), TOKEN, words(40)]},
-    section("Report context", ["report_context"], [60]),
-    section("Market trends", ["trends"], [60]),
+    {"heading": "", "sop": [], "paragraphs": [words(5), TOKEN, words(5)]},
+    section("Report context", ["report_context"], [150]),
+    section("Market trends", ["trends"], [150]),
     section("Conclusion", ["conclusion"], [0]),
 ]
 pub_without, total_without, pct_without = share(sponsor_case)
 pub_with, total_with, pct_with = share(sponsor_case, SPONSOR_TEXT)
 check(
-    "sponsor words excluded: publisher share is 40% and the share check fails",
-    (pub_without, total_without) == (80, 200) and round(pct_without) == 40
+    "sponsor words excluded: publisher share is under 10% and the share check fails",
+    (pub_without, total_without) == (10, 310) and round(pct_without) == 3
     and any("publisher content is only" in p for p in pipeline._layout_problems(sponsor_case)),
     f"{pub_without}/{total_without} = {pct_without:.1f}%",
 )
 check(
-    "sponsor words included: the same draft clears the 50% floor and the share check passes",
-    (pub_with, total_with) == (130, 250) and round(pct_with) == 52
-    and not any("publisher content is only" in p for p in pipeline._layout_problems(sponsor_case, SPONSOR_TEXT)),
+    "sponsor words included: the same draft lands inside the 10-30% band and the share check passes",
+    (pub_with, total_with) == (60, 360) and round(pct_with) == 17
+    and not any("publisher content is" in p for p in pipeline._layout_problems(sponsor_case, SPONSOR_TEXT)),
     f"{pub_with}/{total_with} = {pct_with:.1f}%",
 )
 
@@ -201,9 +217,9 @@ def run_layout_checks(sections: list[dict], sponsor_text: str) -> dict[str, chec
 
 good_results = run_layout_checks(good_sections, SPONSOR_TEXT)
 check(
-    "run_checks: publisher-majority soft check passes on the good draft",
-    good_results["Publisher content is the majority (~60%, soft)"].passed,
-    good_results["Publisher content is the majority (~60%, soft)"].detail,
+    "run_checks: publisher-share soft check passes on the good draft",
+    good_results["Publisher content is about a fifth of the post (soft)"].passed,
+    good_results["Publisher content is about a fifth of the post (soft)"].detail,
 )
 check(
     "run_checks: grouped-topics soft check passes on the good draft",

@@ -55,16 +55,17 @@ def main() -> None:
     orient = fixture["orient"]
     selection = fixture["selection"]
     evidence = fixture["evidence"]
+    longtails = fixture.get("longtails") or []  # captured by capture_fixture.py (absent from the old fixture.json)
 
     logger, log_path = new_run_logger()
     print(f"logging to {log_path}")
     print(f"replaying against report={report.name!r}, {len(hits)} hits, fixture={fixture_path.name}")
 
     print("Step 4: write (real LLM call)...")
-    written, title, sections, evidence_citations = pipeline.run_write(article, orient, sponsor, report, evidence, logger)
+    written, title, sections, evidence_citations = pipeline.run_write(article, orient, sponsor, report, evidence, logger, longtails=longtails)
 
     print("Step 4b: revise for SEO/readability (real LLM call)...")
-    title, sections, evidence_citations = pipeline.run_revise(title, sections, evidence_citations, report, logger, evidence, sponsor.text)
+    title, sections, evidence_citations = pipeline.run_revise(title, sections, evidence_citations, report, logger, evidence, sponsor.text, longtails=longtails)
 
     print(f"\nTITLE: {title}\n")
     for s in sections:
@@ -83,7 +84,7 @@ def main() -> None:
     result = pipeline.run_finalize(
         article, sponsor, report, candidates, orient, selection, hits,
         title, sections, evidence, fixture["original_filename"], logger,
-        evidence_citations=evidence_citations,
+        evidence_citations=evidence_citations, longtails=longtails,
     )
     passed = sum(c.passed for c in result.checks)
     print(f"\nSOP checks: {passed}/{len(result.checks)} passed")
