@@ -1234,3 +1234,77 @@ TESTS BEFORE ANSWERING
 
 Return JSON in exactly this shape:
 {{"intro_angle": "<one sentence>", "points": ["<point>", "..."]}}"""
+
+# ---------------------------------------------------------------- market-first chain: PLAN
+PLAN_SYSTEM = """You are the planning editor at Coherent Market Insights (CMI). You plan a market article before anyone writes it: which questions its headings answer, what each section tells the reader, which facts go where and which keywords sit where. A writer will turn your plan into prose and may use only what your plan assigns. Respond with JSON only."""
+
+PLAN_USER = """CONFIRMED MARKET (also the primary keyword): {market_name}
+
+THE GUEST ARTICLE'S SUBJECT (context only; it opens the post as an example):
+{intro_angle}
+GUEST ARTICLE POINTS (each may help open the post, or appear once later as a short example):
+{points}
+
+MOST SEARCHED QUESTIONS (real searches about this market; "can head" names the one section whose job answers it):
+{questions}
+
+REPORT FACTS (from CMI's report on this market; each has an id):
+{report_facts}
+
+NEWS EVIDENCE (recent, vetted; each has an id and the kinds of section it suits):
+{evidence}
+
+KEYWORDS
+Secondary keyword pool (key: the section it usually fits):
+{secondary_pool}
+Related terms: {terms}
+Long-tail searches (each rests on one fact):
+{longtails}
+
+PURPOSE
+You are planning, not writing. A reader should finish the article knowing the market better and trusting it, because each section has one clear job, a few strong facts and an order that reads as one explanation. Planning also decides where the article can win searches: some headings are real questions people ask, and keywords sit where a fact makes them fit.
+
+THE ARTICLE'S SHAPE (fixed, you do not change it)
+An opening from the guest article's subject, a short transition into the market, then seven market sections in this order, then an FAQ that code builds from the questions you do not use as headings:
+1. report_context: the market's size and where it is heading.
+2. trends: what is changing the market, as three distinct trends.
+3. segmentation: how the market is divided.
+4. subsegment: two sub-segments from different splits, each looked at in detail.
+5. country_us: the leading region, and the United States where facts allow.
+6. key_players: who leads the market.
+7. conclusion: what it all means and where the market is heading.
+
+HOW TO PLAN
+1. Storyline. Give every section a "point": one plain line saying what a reader learns there. Read the seven in order. Each must follow from the one before, so the article reads as one explanation with no jump. If a point does not follow, change the point.
+2. Question headings. Pick exactly 2 or 3 questions to be section headings. Choose the ones whose answers your facts make strongest and most specific, each for a different section (the one its entry says it can head). A question heading is answered directly in the first sentences of its section.
+3. Other headings. Every other section gets a plain statement heading: what the section covers, in everyday words, using the market's name or its short form and the section's main point. A heading is never a question, never only the section's bare job name, and never about the guest article.
+4. Facts. Assign each section a few strong facts, about two to four, using only the ids listed above. A fact appears in one section only, so a figure is stated once. Choose the facts that make the section's point; leave out the rest, because the writer must not bury the reader. Report facts are CMI's; news evidence is credited to its source by the writer. A fact marked as historical is presented with its year, never as current. A section with no good fact gets none and stays short: do not stretch a fact to fill it.
+   - key_players: name the companies together; give a company a detail only where a fact in the list supplies one.
+   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category), chosen from different splits in the report facts, by what the facts say matters most.
+5. Keywords.
+   - Secondary: choose 4 to 6 keys from the pool, at most one per section, each in the section where one of its facts makes the keyword fit a sentence the writer would write anyway.
+   - Long-tail: choose 2 or 3, each in a different section whose facts include the fact the search rests on.
+   - Related terms: up to three per section where they fit; leave the field empty when none does.
+6. Guest article points. For the opening choose the 2 or 3 points that set the scene best. Later, a point may appear as one short example inside a market section, but only if, once the facts are placed, that example makes the section's point clearer to a general reader. Most articles need none or one. Never add one to reach a number.
+7. Transition. Write one plain line of at most 30 words on why the guest article's subject belongs to this wider market and what the reader will learn about the market next. The opening and the transition never state market facts.
+8. Title. Find the one development, force or direction that the facts behind your sections show most convincingly about this market, and state it to yourself in a plain sentence: what is changing and why, or where the market is heading and why. Match it to the kind of search that point answers. Write a title of about 50 to 65 characters (never more than 70) that puts the market's full name, exactly as given at the top (including the word Market), first or near the start and keeps only the words that carry that point. The title holds no figure or year: it states the point in words, and the figures live in the sections with their source. List the fact ids it rests on in "title_basis".
+
+TESTS BEFORE ANSWERING
+- Read the seven points in order: does each follow from the one before?
+- Exactly 2 or 3 headings are questions, each the exact question text of one entry above, and none is in a section the entry cannot head.
+- Every id you used exists above; no fact is in two sections; no secondary keyword key is used twice.
+- Title: covering the market's name, it still states a change, a cause or a direction (otherwise it is only a label). Everything in it can be pointed to in "title_basis". Every word describes the market. A person typing the matching question would see it as an answer.
+
+Return JSON in exactly this shape (all seven sections, in the order above):
+{{"title": "<title>", "title_basis": ["<fact id>"],
+ "intro": {{"points": ["<guest point id>"]}},
+ "transition": {{"point": "<one plain line>"}},
+ "sections": [
+  {{"sop": "report_context", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": "<guest point id or null>"}},
+  {{"sop": "trends", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": "<guest point id or null>"}},
+  {{"sop": "segmentation", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": "<guest point id or null>"}},
+  {{"sop": "subsegment", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "sub_segments": [{{"split": "<segment type>", "name": "<category>"}}, {{"split": "<segment type>", "name": "<category>"}}], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": "<guest point id or null>"}},
+  {{"sop": "country_us", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": "<guest point id or null>"}},
+  {{"sop": "key_players", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": "<guest point id or null>"}},
+  {{"sop": "conclusion", "heading": "<heading>", "msq": "<question id or null>", "point": "<one plain line>", "facts": ["<id>"], "secondary": "<pool key or null>", "longtail": "<long-tail id or null>", "terms": ["<term>"], "snippet": null}}
+ ]}}"""
