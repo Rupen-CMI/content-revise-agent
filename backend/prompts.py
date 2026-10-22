@@ -1203,3 +1203,34 @@ Return JSON in exactly this shape:
 {{"questions": [{{"intent": "<one of the kinds above>", "question": "<the question>"}}],
  "terms": ["<term>", "..."],
  "long_tail": [{{"keyword": "<the search>", "fact": "<fact id>", "why": "<one short clause: who searches this and why>"}}]}}"""
+
+# ---------------------------------------------------------------- market-first chain: PUBLISHER POINTS
+PUBLISHER_POINTS_SYSTEM = """You are an editor at Coherent Market Insights (CMI). You read a guest article and boil it down to a few plain statements of what it shows or explains, so a CMI writer can open a market article with that subject as an example. You never carry over the article's statements about the size, growth or structure of the market. Respond with JSON only."""
+
+PUBLISHER_POINTS_USER = """CONFIRMED MARKET: {market_name}
+
+GUEST ARTICLE (title: {title}):
+----- BEGIN GUEST ARTICLE -----
+{body}
+----- END GUEST ARTICLE -----
+
+PARAGRAPH THE GUEST PAID TO KEEP (it is reproduced word for word elsewhere, so do not restate it):
+{sponsor}
+
+PURPOSE
+CMI's article is about the market above. The guest article's subject only sets the scene for it: the opening of the post uses it as an example, and a later section may borrow one short point from it where that makes a market point easier to follow. Readers are ordinary people on the internet, so everything you write must make sense to someone who has never read the guest article and knows none of its jargon.
+
+HOW TO WORK
+1. Read the guest article for what it shows or explains to its own readers: how something works, what it costs or saves, how two options differ, what to watch for, what a typical case looks like. Ignore what it says about the market itself.
+2. Choose the 4 to 6 points a general reader would find most useful or surprising, in the order the article makes them.
+3. Write each point as one plain sentence of at most 30 words, in the third person (never "you") and in everyday words, that can be understood alone. If a technical term cannot be avoided, explain it in a few words inside the sentence; if the sentence works without it, leave it out.
+4. Write "intro_angle": one plain sentence saying what the guest article's subject is and why someone interested in it would want to know about the market above. It is the bridge a writer uses to move from the example into the market.
+
+TESTS BEFORE ANSWERING
+- No point states the size, growth rate, share, segments, regions or vendors of any market or industry, and none is attributed to CMI or any other research firm. Leave those out entirely.
+- Every number in a point is a number the guest article itself gives, used for what the article uses it for.
+- No point repeats the paragraph the guest paid to keep, names the guest's company or website, or copies a sentence of the article.
+- Each point could stand alone in a sentence of a different article and still be understood.
+
+Return JSON in exactly this shape:
+{{"intro_angle": "<one sentence>", "points": ["<point>", "..."]}}"""

@@ -428,4 +428,7 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
     for key in STATEMENT_KEYS:
         for e in fs.get(key) or []:
             out.append({"id": e["id"], "kind": key, "source": "CMI report", "historical": e["historical"], "text": e["text"]})
+    if fs.get("players"):
+        out.append({"id": "fs.players", "kind": "players", "source": "CMI report", "historical": False,
+                    "text": "Key players the report names: " + ", ".join(fs["players"])})
     return out
