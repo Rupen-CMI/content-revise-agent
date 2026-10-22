@@ -408,7 +408,7 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
 _PLAYER_SUFFIXES = frozenset({
     "inc", "ltd", "limited", "llc", "plc", "sa", "s.a", "s.a.", "ag", "nv",
     "n.v", "n.v.", "gmbh", "co", "corp", "corporation", "company",
-    "holdings", "group", "headquarters",
+    "holdings", "group", "headquarters", "b.v", "bv", "llp", "pvt", "pty", "oy",
 })
 
 _KEY_PLAYERS_HEADINGS = ("key players insights", "key players")

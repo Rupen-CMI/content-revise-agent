@@ -196,8 +196,23 @@ def validate_fact_sheet(raw: dict, report_text: str, market_name: str, logger: l
     fs["regions"] = {which: _region_entry(regions.get(which), which, source_norm, today, logger) for which in ("leader", "fastest")}
     for key in STATEMENT_KEYS:
         fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger)
+    fs["players"] = _players(raw.get("players"), source_norm, logger)
     fs["gaps"] = headline_gaps(fs)
     return fs
+
+
+def _players(raw, source_norm: str, logger: logging.Logger) -> list[str]:
+    """Company names the model read off the page: each must appear in the page text (legal suffixes dropped), unique."""
+    out: list[str] = []
+    for name in raw if isinstance(raw, list) else []:
+        clean = reports._clean_player_final(str(name or "").split(",")[0])  # a name holds no comma; "X B.V., Netherlands" is name + country
+        if len(clean) < 3 or clean.lower() in (o.lower() for o in out):
+            continue
+        if _norm(clean) not in source_norm:
+            logger.info(f"[facts] player {clean!r} dropped: not in the report text")
+            continue
+        out.append(clean)
+    return out
 
 
 def _headline_stale(when: str, today: date) -> bool:
@@ -224,7 +239,9 @@ def run_fact_sheet(market_name: str, report: reports.Report, logger: logging.Log
         logger.warning("[facts] the fact sheet call failed; every headline figure is treated as a gap", exc_info=True)
         raw = {}
     fs = validate_fact_sheet(raw, text, market_name, logger, today)
-    fs["players"] = list(reports.key_players(report))
+    # The parser knows two page layouts; the model's names (verified against the page above) cover the rest.
+    known = list(reports.key_players(report))
+    fs["players"] = known + [n for n in fs["players"] if n.lower() not in (k.lower() for k in known)]
     logger.info(
         "[facts] fact sheet: "
         + ", ".join(f"{k}={'yes' if fs.get(k) else 'GAP'}" for k in HEADLINE_KEYS)

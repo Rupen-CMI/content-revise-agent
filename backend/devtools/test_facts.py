@@ -37,7 +37,8 @@ PAGE = (
     "North America held a major share in the market in 2018 owing to many players. "
     "In the United States, regulators opened a new review of widget exports. "
     "The Indian IT industry generated revenue of US$ 177 billion in 2019 and is expected to reach US$ 350 billion by 2025 with CAGR 6.1%. "
-    "On the basis of type, the market is segmented into: Browser Extension, Installable Software, Cloud Based."
+    "On the basis of type, the market is segmented into: Browser Extension, Installable Software, Cloud Based. "
+    "Key players operating in the market include Acme Corp, Beta Ltd, and Gamma Inc."
 )
 
 
@@ -63,6 +64,7 @@ def good_raw() -> dict:
         "restraints": [{"text": "Piracy hampers growth; 37% of software was pirated in 2018.", "quote":
                         "the increasing threat of piracy is expected to hamper the growth of the market, with 37% of software pirated in 2018"}],
         "opportunities": [],
+        "players": ["Acme Corp", "Beta Ltd, Freedonia", "Made Up Co", "acme corp"],
     }
 
 
@@ -76,6 +78,11 @@ check("good: regional leader kept with a historical flag (2018 is old)", fs["reg
 check("good: statement ids are positional", fs["drivers"][0]["id"] == "fs.drivers.0" and fs["us"][0]["id"] == "fs.us.0")
 check("good: a 2018 restraint is flagged historical", fs["restraints"][0]["historical"])
 check("good: a statement without a year is not historical", not fs["drivers"][0]["historical"])
+
+check("players: only names that are in the page survive, legal suffixes dropped, duplicates collapsed",
+      fs["players"] == ["Acme", "Beta"], str(fs["players"]))
+check("players: a missing or odd players field is survived",
+      facts.validate_fact_sheet({"players": "x"}, PAGE, MARKET, LOG, TODAY)["players"] == [])
 
 # ------------------------------------------------------------------ the figure rules
 raw = good_raw()

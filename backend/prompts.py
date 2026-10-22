@@ -1101,6 +1101,7 @@ FIELDS
 - drivers: what the page says pushes the market's growth, one entry per distinct driver.
 - restraints: what the page says holds the market back, one entry per distinct restraint.
 - opportunities: what the page presents as openings for the market, one entry per distinct opportunity.
+- players: the companies the page names as key or leading players in the market, each written as the page writes the name but without a legal suffix such as Inc., Ltd or LLC.
 For us, drivers, restraints and opportunities each entry has "text" (one plain sentence in your own words, carrying only what the quote says) and "quote".
 
 TESTS BEFORE ANSWERING
@@ -1119,7 +1120,8 @@ Return JSON in exactly this shape:
  "us": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "drivers": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "restraints": [{{"text": "<statement>", "quote": "<sentence>"}}],
- "opportunities": [{{"text": "<statement>", "quote": "<sentence>"}}]}}"""
+ "opportunities": [{{"text": "<statement>", "quote": "<sentence>"}}],
+ "players": ["<company>", "..."]}}"""
 
 
 # ---------------------------------------------------------------- market-first chain: FIGURE BACKING
