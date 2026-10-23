@@ -61,12 +61,19 @@ def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
     lines = []
     core = _market_core(inp.market_name)
     if s["secondary"]:
-        lines.append(f'  - REQUIRED secondary keyword: one sentence of this section must contain all three words "{s["secondary"]}", "{core}" and "market" (reorder them as the sentence needs). A synonym does not count: an "opening" is not "opportunities", "how big" is not "size", and a sentence that says "the main drivers" without naming the market does not carry the keyword. Put that sentence in one paragraph only.')
+        lines.append(f'  - REQUIRED secondary keyword: the section must cover this keyword — every content word of '
+                     f'"{s["secondary"]}", together with the words of "{core}" and the word market, appears in ONE '
+                     'sentence, in whatever order and grammatical form that sentence needs; rephrase the keyword freely, '
+                     'put its words in different parts of the sentence, and never string them together in the listed '
+                     'order unless that reads naturally. No synonyms and no dropped words, and the sentence still names '
+                     'the market. Put that sentence in one paragraph only.')
     if s["longtail"]:
         lt = next(x for x in inp.longtails if x["id"] == s["longtail"])
-        lines.append(f'  - REQUIRED long-tail search: one sentence of this section must contain every content word of '
-                     f'"{lt["keyword"]}" (reorder the words freely; only a, the, of, in, for, and may sit between them; '
-                     f'never swap a word for a synonym). (rests on {lt["fact"]}).')
+        lines.append(f'  - REQUIRED long-tail search: the section must cover this keyword — every content word of '
+                     f'"{lt["keyword"]}" appears in ONE sentence, in whatever order and grammatical form that sentence '
+                     'needs; rephrase the phrase freely, put its words in different parts of the sentence, and never '
+                     'string them together in the listed order unless that reads naturally; no synonyms, no dropped '
+                     f'words. (rests on {lt["fact"]}).')
     if s["terms"]:
         lines.append("  - Related terms (optional): " + ", ".join(s["terms"]) + ".")
     return "\n".join(lines) or "  - No keyword is assigned to this section beyond the primary keyword."

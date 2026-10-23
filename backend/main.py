@@ -575,15 +575,32 @@ def _apply_keyword_spans(
     # Pass 1b: long-tail phrases, literal, in every section. Staked out BEFORE the secondary keywords
     # so a phrase that happens to contain a secondary keyword's suffix word stays one long-tail mark
     # (the secondary pass trims around it); the primary keyword's own text still wins on any overlap.
+    # When no tight light-glued stretch exists in the paragraph, the loose per-word matcher is the
+    # fallback: a phrase is a topic to cover, so each content word's own span is marked (label
+    # unchanged) and the phrase counts as one use, not one per word.
     for phrase in longtails:
-        for start, end in checks.longtail_spans(plain, phrase):
+        marks = checks.longtail_spans(plain, phrase)
+        if marks:
+            for start, end in marks:
+                free = [k for k in range(start, end) if taken[k] is None]
+                if not free:
+                    continue  # entirely inside the primary keyword's text — not a separate use
+                for k in free:
+                    taken[k] = "longtail"
+                if counts is not None:
+                    counts["longtail"][phrase] = counts["longtail"].get(phrase, 0) + 1
+            continue
+        loose = checks.keyword_words_in_sentence(plain, phrase)
+        counted = False
+        for start, end in loose or []:
             free = [k for k in range(start, end) if taken[k] is None]
             if not free:
-                continue  # entirely inside the primary keyword's text — not a separate use
+                continue
             for k in free:
                 taken[k] = "longtail"
-            if counts is not None:
+            if counts is not None and not counted:
                 counts["longtail"][phrase] = counts["longtail"].get(phrase, 0) + 1
+            counted = True
 
     # Pass 1c: the market-first chain's tertiary (related) search terms, marked as a plain
     # case-insensitive word-group fill — a tertiary term is a loosely related phrase the writer
@@ -605,12 +622,22 @@ def _apply_keyword_spans(
     # Pass 2: each section-scoped secondary keyword's suffix word fills in whatever's left, but
     # TRIM at any cell the primary pass already claimed instead of discarding the whole match — a
     # secondary keyword's suffix can legitimately sit right next to the primary keyword's own text.
+    # When the strict one-stretch match finds nothing, the loose per-word matcher is the fallback
+    # (checks.secondary_keyword_loose_spans, same market-anchor gate): each content word's own span
+    # is marked with the same label, and the keyword counts as one use, not one per word.
     for kw, suffix in section_secondary:
-        for start, end in checks.secondary_keyword_spans_in_paragraph(plain, primary_kw, suffix):
+        spans = checks.secondary_keyword_spans_in_paragraph(plain, primary_kw, suffix)
+        loose = False
+        if not spans:
+            spans = checks.secondary_keyword_loose_spans(plain, primary_kw, suffix)
+            loose = bool(spans)
+        counted = False
+        for start, end in spans:
             if all(taken[k] is not None for k in range(start, end)):
                 continue  # wholly covered by the primary/long-tail marks — nothing of it is shown, so it is not counted
-            if counts is not None:
+            if counts is not None and not (loose and counted):
                 counts["secondary"][kw] = counts["secondary"].get(kw, 0) + 1
+            counted = True
             i = start
             while i < end:
                 if taken[i] is not None:

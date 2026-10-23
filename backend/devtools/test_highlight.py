@@ -88,6 +88,53 @@ check("tertiary: the long-tail phrase in the same paragraph is still labelled 'l
 check("tertiary: counted per phrase, long-tail counted per phrase, same pass",
       counts3["tertiary"] == {"widget upgrades": 1} and counts3["longtail"] == {"edge widget pricing models": 1}, str(counts3))
 
+# A loosely matched long-tail — its content words spread across one sentence, reordered and with
+# ordinary words between them, so no light-glued stretch exists — highlights EACH content word's own
+# span, still labelled 'longtail', and counts as ONE use of the phrase (the same loose use
+# run_checks_v2's used checks credit).
+counts4: dict = {}
+loose_out = main._display_sections(
+    [{"heading": "H", "sop": ["trends"], "paragraphs": [
+        "Widget makers debate pricing models at the edge of the shelf."]}],
+    sponsor, None, MARKET, secondary_plan,
+    longtails=["edge widget pricing models"], counts=counts4,
+)
+loose_marks = []
+for s in loose_out:
+    for p in s["paragraphs"]:
+        for seg in p:
+            if seg.get("kw") == "longtail":
+                loose_marks.append(seg["text"])
+check("long-tail loose: a spread, reordered use highlights each content word's own span",
+      loose_marks == ["Widget", "pricing", "models", "edge"], str(loose_marks))
+check("long-tail loose: the spread use counts once, not once per word",
+      counts4["longtail"] == {"edge widget pricing models": 1}, str(counts4))
+
+# Same fallback for a section-scoped secondary keyword: no one-stretch match exists (the suffix's
+# words sit more than the strict window apart) but the loose matcher finds all of its content words
+# in one sentence, so each word's own span is marked with the same label and counted once.
+counts5: dict = {}
+SEC_KW = f"{MARKET} competitive landscape"
+# The suffix's two words sit more than the strict one-stretch window apart in their sentence (9 tokens
+# over a window of 8), so only the loose matcher can certify the use.
+sec_loose_out = main._display_sections(
+    [{"heading": "H", "sop": ["key_players"], "paragraphs": [
+        "The Zzz Widget Market is contested. Rivals keep the competitive edge through daily "
+        "price edits while the landscape of vendors widens."]}],
+    sponsor, None, MARKET, [(SEC_KW, "key_players")],
+    longtails=[], counts=counts5,
+)
+sec_marks = []
+for s in sec_loose_out:
+    for p in s["paragraphs"]:
+        for seg in p:
+            if seg.get("kw") == "secondary":
+                sec_marks.append(seg["text"])
+check("secondary loose: a spread keyword highlights each content word's own span",
+      sec_marks == ["competitive", "landscape"], str(sec_marks))
+check("secondary loose: the spread use counts once, not once per word",
+      counts5["secondary"] == {SEC_KW: 1}, str(counts5))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

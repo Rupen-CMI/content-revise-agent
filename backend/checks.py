@@ -129,8 +129,15 @@ def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix
         return False
     text_stems = {_stem(w) for w in re.findall(r"[a-z0-9']+", low)}
     market_ok = all(_stem(w) in text_stems for w in market_words)
-    suffix_ok = all(_stem(w) in text_stems for w in suffix_words)
-    return market_ok and suffix_ok
+    if not market_ok:
+        return False
+    # The suffix's non-market words: the paragraph-anywhere presence test stays (its strictness is the
+    # anchor rule's own standard and must not change), and keyword_words_in_sentence's loose verdict is
+    # accepted on top of it — a keyword whose content words all sit in one sentence, in any order and any
+    # natural inflection with ordinary words between them, is a use however the sentence was reworded.
+    if keyword_words_in_sentence(paragraph_text, suffix) is not None:
+        return True
+    return all(_stem(w) in text_stems for w in suffix_words)
 
 
 def secondary_keyword_spans_in_paragraph(paragraph_text: str, market_name: str, suffix: str) -> list[tuple[int, int]]:
@@ -154,6 +161,19 @@ def secondary_keyword_spans_in_paragraph(paragraph_text: str, market_name: str, 
         return []
     window = _KEYWORD_MATCH_WINDOW + 2 * max(0, len(target) - 2)
     return find_keyword_spans(paragraph_text, suffix, window=window)
+
+
+def secondary_keyword_loose_spans(paragraph_text: str, market_name: str, suffix: str) -> list[tuple[int, int]]:
+    """UI-highlight fallback when the strict span match above finds nothing: same gate as
+    secondary_keyword_in_paragraph (the market's own words must be present somewhere in the paragraph —
+    the anchor rule is unchanged), then instead of find_keyword_spans' one-stretch window the loose
+    matcher keyword_words_in_sentence supplies EACH content word's own span in the one sentence where the
+    suffix's words all appear, in any order and any inflection, so the highlight shows the same loose use
+    the coverage check credits. Returns [] when the strict match still holds elsewhere (the caller runs it
+    only after the strict finder came up empty) or when the paragraph doesn't clear the gate."""
+    if not secondary_keyword_in_paragraph(paragraph_text, market_name, suffix):
+        return []
+    return keyword_words_in_sentence(paragraph_text, suffix) or []
 
 
 def phrase_partially_named(text: str, phrase: str, min_fraction: float = 0.5) -> bool:
@@ -246,17 +266,76 @@ def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
     return out
 
 
+# The existing sentence splitter (every other place in this file splits inline); lifted here so the
+# loose matcher below and its callers agree on where a sentence ends.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] | None:
+    """The loose per-word match the REORDER rule asks the checks to accept: `phrase` is a TOPIC to cover, and
+    its content words count as covered when EVERY one of them appears somewhere in ONE sentence of `text`, in
+    any order and in any natural grammatical form (the same _stem folding the tight matcher applies), with
+    ordinary words of the sentence sitting between them — never across a sentence boundary (the text is split
+    with the paragraph's own sentence splitter first). The window between the first and last of the phrase's
+    words is max(len(content words) + 8, 12) tokens; synonyms and dropped content words still do not count.
+    Returns the character span of ONE occurrence of each content word (its last occurrence inside the matched
+    window), or None when the sentence covers none of the phrase in that loose sense. The tight match still
+    wins: where longtail_spans already finds the phrase's words as one light-glued stretch, that occurrence's
+    own per-word spans come back."""
+    target = {_stem(w) for w in _keyword_content_words(phrase)}
+    if not target:
+        return None
+    offsets = [0] + [m.end() for m in _SENT_SPLIT_RE.finditer(text)]
+    for si, sentence in enumerate(_SENT_SPLIT_RE.split(text)):
+        found = _keyword_words_in_one_sentence(sentence, phrase, target)
+        if found is not None:
+            base = offsets[si] if si < len(offsets) else 0
+            return [(start + base, end + base) for start, end in found]
+    return None
+
+
+def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str]) -> list[tuple[int, int]] | None:
+    """One sentence's verdict for keyword_words_in_sentence: the tight longtail_spans match first (each of its
+    content words' own span inside the tight stretch), else the loose token window."""
+    for start, end in longtail_spans(sentence, phrase):
+        last: dict[str, tuple[int, int]] = {}
+        for m in re.finditer(r"[a-z0-9']+", sentence[start:end].lower()):
+            st = _stem(m.group(0))
+            if st in target:
+                last[st] = (start + m.start(), start + m.end())
+        if len(last) == len(target):
+            return list(last.values())
+    tokens = list(re.finditer(r"[a-z0-9']+", sentence.lower()))
+    stems = [_stem(m.group(0)) for m in tokens]
+    n = len(stems)
+    window = max(len(target) + 8, 12)
+    i = 0
+    while i < n:
+        seen: dict[str, int] = {}
+        for j in range(i, min(i + window, n)):
+            if stems[j] in target:
+                seen[stems[j]] = j
+                if len(seen) == len(target):
+                    return [(tokens[pos].start(), tokens[pos].end()) for pos in sorted(seen.values())]
+        i += 1
+    return None
+
+
 LONGTAIL_MIN_USED, LONGTAIL_MAX_USED = 2, 3  # how many long-tail phrases a finished post should use
 
 
 def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: str = "") -> list[str]:
-    """Soft notes for a long-tail phrase pasted at the head of a sentence as a pile of nouns: for each span of a
+    """Soft notes for a long-tail phrase pasted in as a pile of nouns: for each span of a
     phrase that longtail_spans finds inside one body sentence, flag the sentence when the span STARTS it and the
     span itself holds five or more content words with fewer than two joining words inside — the listed order pasted
-    in as the sentence's subject. Log-only (soft): without grammatical data the flag is a signal to read, never a
+    in as the sentence's subject. Also flag a sentence where five or more CONSECUTIVE non-function words all
+    belong to one phrase's content words, wherever in the sentence the run sits — the phrase pushed into the
+    sentence as one unbroken noun pile without the REORDER rule applying. Each sentence is flagged at most once.
+    Log-only (soft): without grammatical data the flag is a signal to read, never a
     strip, so a note carries the offending sentence (truncated) and nothing is removed from the draft."""
     out: list[str] = []
     for kw in phrases:
+        target = {_stem(w) for w in _keyword_content_words(kw)}
         for s in sections:
             label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
             for p in s.get("paragraphs") or []:
@@ -265,6 +344,7 @@ def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: 
                     if not sentence:
                         continue
                     lead = re.match(r"[a-z0-9']+", sentence.lower())
+                    flagged = False
                     for start, end in longtail_spans(sentence, kw):
                         if lead is None or start != lead.start():
                             continue
@@ -273,6 +353,22 @@ def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: 
                         glue = [w for w in span_words if w in _LONGTAIL_GLUE_WORDS]
                         if len(content) >= 5 and len(glue) < 2:
                             out.append(f"{label}: the long-tail phrase is pasted as a pile of nouns at the head of "
+                                       f'"{sentence[:90]}"')
+                            flagged = True
+                    if not flagged:
+                        # Extended pile condition: a run of >= 5 consecutive non-function tokens whose stems all
+                        # belong to this phrase, anywhere in the sentence — same pasted-noun-pile shape, just not
+                        # opening the sentence.
+                        run = best = 0
+                        for m in re.finditer(r"[a-z0-9']+", sentence.lower()):
+                            tok = m.group(0)
+                            if tok in _LONGTAIL_GLUE_WORDS or _stem(tok) not in target:
+                                run = 0
+                            else:
+                                run += 1
+                                best = max(best, run)
+                        if best >= 5:
+                            out.append(f"{label}: a keyword's own words run together as a pile of nouns inside "
                                        f'"{sentence[:90]}"')
     return out
 
@@ -1674,7 +1770,10 @@ def run_checks_v2(
         assigned_phrases = [lt_by_id[lid] for lid in assigned_ids if lid in lt_by_id]
         pool = assigned_phrases or longtail_phrases
         body = full.replace(SPONSOR_TOKEN, " ")
-        used_lt = [kw for kw in pool if longtail_spans(body, kw)]
+        # A phrase counts as used when either the tight longtail_spans match or the loose per-word matcher
+        # finds it: a keyword is a topic to cover, so its content words spread across one sentence (any
+        # order, any inflection, ordinary words between) is a real use, same as the REORDER rule asks.
+        used_lt = [kw for kw in pool if longtail_spans(body, kw) or keyword_words_in_sentence(body, kw)]
         if assigned_phrases:
             detail = (f"{len(used_lt)} of {len(assigned_phrases)} assigned used ({len(longtail_phrases)} in pool): "
                       + (", ".join(used_lt) or "none"))
@@ -1694,7 +1793,8 @@ def run_checks_v2(
             kw = lt_by_id.get(assigned_by_sop.get(tag, ""))
             if kw is None:
                 continue
-            if not longtail_spans("\n".join(s["paragraphs"]), kw):
+            section_text = "\n".join(s["paragraphs"])
+            if not (longtail_spans(section_text, kw) or keyword_words_in_sentence(section_text, kw)):
                 missing_in_section.append(kw)
         results.append(CheckResult(
             "Every assigned long-tail is used in its own section (soft)",

@@ -293,7 +293,7 @@ check("prompt: carries the final title and every section's exact heading", plan[
 _lt_lines = sum(1 for s in plan["sections"] if s["longtail"])
 check("prompt: the long-tail line carries the REQUIRED framing like the secondary keyword's",
       _lt_lines > 0
-      and text.count("REQUIRED long-tail search: one sentence of this section must contain every content word of ") == _lt_lines
+      and text.count("REQUIRED long-tail search: the section must cover this keyword") == _lt_lines
       and "REQUIRED secondary keyword" in text,
       str([l for l in text.splitlines() if "long-tail search:" in l]))
 check("prompt: a question heading is flagged to be answered directly", text.count("Answer it directly in the first one or two sentences") == 3)

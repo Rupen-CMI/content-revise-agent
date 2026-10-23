@@ -598,6 +598,83 @@ notes = checks.longtail_pile_notes([{"heading": "", "sop": ["trends"], "paragrap
     ["custom cloud based widget services marketplace pricing"])
 check("pile: the helper alone passes a normal sentence", notes == [], str(notes))
 
+# ------------------------------------------------------------------ loose keyword matcher (checks.keyword_words_in_sentence)
+
+PHRASE = "zorb widget pricing models"       # content stems: zorb, widget, pric(ing), model(s)
+SPREAD_SENT = "Pricing models for the widget range were set by the zorb desk."
+spans = checks.keyword_words_in_sentence(SPREAD_SENT, PHRASE)
+check("loose: reordered content words spread across one sentence are found, one span each",
+      spans is not None and sorted(SPREAD_SENT[s:e].lower() for s, e in spans) ==
+      ["models", "pricing", "widget", "zorb"], str(spans))
+check("loose: a sentence missing one content word returns None",
+      checks.keyword_words_in_sentence("Pricing models for the widget range were set by the desk.", PHRASE) is None)
+check("loose: words sitting in two different sentences return None",
+      checks.keyword_words_in_sentence("Pricing models for the widget range sank. The zorb desk took over.", PHRASE) is None)
+check("loose: stem folding matches the singular for the phrase's plural",
+      checks.keyword_words_in_sentence("One zorb widget pricing model stands out.", PHRASE) is not None)
+check("loose: a synonym still does not count",
+      checks.keyword_words_in_sentence("Gizmo widget pricing models lead the list.", PHRASE) is None)
+TIGHT_SENT = "zorb widget pricing models lead the list."
+tight_spans = checks.keyword_words_in_sentence(TIGHT_SENT, PHRASE)
+check("loose: a tight light-glued stretch still wins and is returned as per-word spans",
+      tight_spans is not None and sorted(TIGHT_SENT[s:e].lower() for s, e in tight_spans) ==
+      ["models", "pricing", "widget", "zorb"], str(tight_spans))
+
+# ------------------------------------------------------------------ secondary keyword: loose verdict keeps the anchor rule
+
+check("secondary loose: a spread use inside one sentence passes while the market name anchors the paragraph",
+      checks.secondary_keyword_in_paragraph(
+          "The Zzz Widget Services Market keeps changing. "
+          "Vendors price zorb widgets so many services keep pricing parts apart.",
+          MARKET, "zorb widget services pricing") is True)
+check("secondary loose: with the market anchor absent from the paragraph the keyword still fails",
+      checks.secondary_keyword_in_paragraph(
+          "Vendors price zorb widgets so many services keep pricing parts apart.",
+          MARKET, "zorb widget services pricing") is False)
+
+# ------------------------------------------------------------------ loose long-tail matching in run_checks_v2
+
+# A plan whose sub-segment section carries a phrase whose content words are written spread, reordered
+# and inflected across one sentence — no light-glued stretch anywhere, so only the loose matcher can
+# credit it. The plan keeps three assigned long-tails (validate_plan drops the fourth).
+LT_SPREAD_SENT = "Vendors price zorb widgets so many services keep pricing parts apart."
+check("long-tail loose: the tight matcher finds no use in the spread sentence (the old behaviour)",
+      checks.longtail_spans(LT_SPREAD_SENT, "zorb widget services pricing") == [])
+inp5 = test_planning.make_inputs()
+inp5.longtails = inp5.longtails + [
+    {"id": "L5", "keyword": "zorb widget services pricing", "fact": "fs.segments.0", "why": "x"}]
+raw5 = test_planning.good_plan()
+raw5["sections"][3]["facts"] = ["W2", "fs.segments.0", "fs.segments.1"]   # L5 rests on fs.segments.0
+raw5["sections"][3]["longtail"] = "L5"      # the sub-segment section, where its fact sits
+plan5 = planning.validate_plan(raw5, inp5, test_planning.LOG)
+d = good_draft()
+d[5]["paragraphs"][0] = pad(75, [LT_SPREAD_SENT])
+run = run_v2(TITLE, d, plan=plan5, inp=inp5)
+r = by_name(run, "Every assigned long-tail")
+check("long-tail loose: the spread, reordered use counts for its own section",
+      r.passed and "zorb" not in r.detail, r.detail)
+r = by_name(run, "Uses 2-3 long-tail")
+check("long-tail loose: the spread use is counted in the used tally",
+      r.passed and "zorb widget services pricing" in r.detail, r.detail)
+d = good_draft()
+run = run_v2(TITLE, d, plan=plan5, inp=inp5)
+r = by_name(run, "Every assigned long-tail")
+check("long-tail loose: with the phrase's words absent the own-section check still fails",
+      not r.passed and "zorb widget services pricing" in r.detail, r.detail)
+
+# ------------------------------------------------------------------ noun pile: runs of a keyword's own words (soft)
+
+notes = checks.longtail_pile_notes([{"heading": "", "sop": ["subsegment"], "paragraphs": [
+    "Acme runs custom cloud based widget services marketplace pricing setups for buyers."]}],
+    ["custom cloud based widget services marketplace pricing"])
+check("pile extended: five-plus consecutive keyword words mid-sentence are flagged as a pile run",
+      len(notes) == 1 and "pile of nouns" in notes[0] and "run together" in notes[0] and "Acme runs" in notes[0],
+      str(notes))
+notes = checks.longtail_pile_notes([{"heading": "", "sop": ["subsegment"], "paragraphs": [
+    "Vendors charge custom prices so cloud widgets spread marketplace pricing costs apart."]}],
+    ["custom cloud based widget services marketplace pricing"])
+check("pile extended: the same words spread across the clause raise no pile note", notes == [], str(notes))
+
 # ------------------------------------------------------------------ summary
 
 print()
