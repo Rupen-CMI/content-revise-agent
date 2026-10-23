@@ -249,6 +249,34 @@ def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
 LONGTAIL_MIN_USED, LONGTAIL_MAX_USED = 2, 3  # how many long-tail phrases a finished post should use
 
 
+def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: str = "") -> list[str]:
+    """Soft notes for a long-tail phrase pasted at the head of a sentence as a pile of nouns: for each span of a
+    phrase that longtail_spans finds inside one body sentence, flag the sentence when the span STARTS it and the
+    span itself holds five or more content words with fewer than two joining words inside — the listed order pasted
+    in as the sentence's subject. Log-only (soft): without grammatical data the flag is a signal to read, never a
+    strip, so a note carries the offending sentence (truncated) and nothing is removed from the draft."""
+    out: list[str] = []
+    for kw in phrases:
+        for s in sections:
+            label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
+            for p in s.get("paragraphs") or []:
+                for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+                    sentence = sentence.strip()
+                    if not sentence:
+                        continue
+                    lead = re.match(r"[a-z0-9']+", sentence.lower())
+                    for start, end in longtail_spans(sentence, kw):
+                        if lead is None or start != lead.start():
+                            continue
+                        span_words = [m.group(0) for m in re.finditer(r"[a-z0-9']+", sentence[start:end].lower())]
+                        content = [w for w in span_words if w not in _LONGTAIL_GLUE_WORDS]
+                        glue = [w for w in span_words if w in _LONGTAIL_GLUE_WORDS]
+                        if len(content) >= 5 and len(glue) < 2:
+                            out.append(f"{label}: the long-tail phrase is pasted as a pile of nouns at the head of "
+                                       f'"{sentence[:90]}"')
+    return out
+
+
 # A paragraph can hold a short lead-in sentence followed by parallel items (3 trends, a
 # segmentation breakdown) as "\n- " lines within the SAME paragraph string, instead of as separate
 # paragraph objects — this is a presentation convention (docx_io/app.js render it as a real
@@ -1672,6 +1700,12 @@ def run_checks_v2(
             "Every assigned long-tail is used in its own section (soft)",
             not missing_in_section,
             ", ".join(missing_in_section),
+        ))
+        pile_notes = longtail_pile_notes(sections, pool, sponsor_text)
+        results.append(CheckResult(
+            "No long-tail phrase is pasted as a noun pile (soft)",
+            not pile_notes,
+            "; ".join(pile_notes) if pile_notes else "",
         ))
 
     # ---- soft (§3.9): no sentence over the word ceiling

@@ -1257,6 +1257,7 @@ def run_select(
     logger: logging.Logger, claim_hits: dict[str, list[search.SearchHit]] | None = None,
     questions: list[dict] = (), question_hits: dict[str, list[search.SearchHit]] | None = None,
     report_claims: list[dict] = (), report_claim_hits: dict[str, list[search.SearchHit]] | None = None,
+    headline_figures: dict | None = None,
 ) -> dict:
     """CALL 2: select evidence for the human-confirmed report. Returns the parsed JSON.
     Report choice is no longer this call's job — the human picked the market/report in Step 1
@@ -1275,7 +1276,12 @@ def run_select(
     Report claim backing (when Step 2 extracted report claims and searched for them, report_claim_hits
     maps claim id -> candidate pages): SELECT additionally picks at most 3 pages per claim that
     independently corroborate it — same no-stance shape as question backing, since this is about
-    reinforcing what the CMI report already states, never judging or contradicting it."""
+    reinforcing what the CMI report already states, never judging or contradicting it.
+
+    headline_figures (optional; pipeline._headline_figures(run.fact_sheet)): the fact sheet's own
+    size/forecast/CAGR values. When given, the post-SELECT backstop _drop_market_sizing_facts also
+    drops an item whose fact names a market and carries nothing but restatements of those figures,
+    so a second source for the headline numbers cannot reach the draft even in words the regexes miss."""
     section(logger, "CALL 2: SELECT EVIDENCE")
     claims = orient_claims(orient)
     claim_flat = _flatten_claim_pool(claims, claim_hits or {})
@@ -1299,8 +1305,9 @@ def run_select(
         max_selected=config.SEARCH_MAX_SELECTED,
     ), call_name="select", logger=logger, max_tokens=8000)
     _normalize_selection_tags(selection, hits, logger)
+    _strip_players_tag(selection, logger)
     _drop_stale_facts(selection, logger)
-    _drop_market_sizing_facts(selection, logger)
+    _drop_market_sizing_facts(selection, logger, headline_figures)
     _verify_selection_figures(selection, hits, logger)
     _normalize_claim_backing(selection, claims, claim_flat, logger)
     _normalize_question_backing(selection, questions, question_flat, logger)
@@ -1580,7 +1587,10 @@ def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
 
 # Market sizing belongs to the CMI report alone. SELECT is told to reject it (prompts.SELECT_USER, test 3); this is the
 # backstop for a model that keeps one anyway: a fact that gives the size/forecast/growth of a market or industry, or that
-# attributes anything to a rival market-research firm, would put a second, contradicting figure in the draft.
+# attributes anything to a rival market-research firm, would put a second, contradicting figure in the draft. The last
+# two alternatives catch the sentence reading the other way round: first a sizing verb (estimates, values, puts,
+# forecasts, projects, pegs, sizes) and only then the market name and the currency amount, plus a bare market noun
+# followed straight by at and an amount with no sizing verb at all.
 _RIVAL_RESEARCH_RE = re.compile(
     r"\b(mordor intelligence|marketsandmarkets|markets and markets|grand view research|research and markets|technavio|"
     r"fortune business insights|precedence research|allied market research|imarc|verified market research|"
@@ -1589,7 +1599,12 @@ _RIVAL_RESEARCH_RE = re.compile(
 _MARKET_SIZING_RE = re.compile(
     r"\bcagr\b|\bcompound annual growth\b|\b(market|industry) size\b"
     r"|\b(market|industry|sector|segment)\b[^.;]{0,90}\b(valued|worth|sized|projected|forecast(ed)?|"
-    r"expected to (reach|grow|hit|double)|will (reach|grow|add|double|hit)|estimated (at|to)|to reach|to grow)\b",
+    r"expected to (reach|grow|hit|double)|will (reach|grow|add|double|hit)|estimated (at|to)|to reach|to grow)\b"
+    r"|\b(estimates?|estimated|values?|valued|puts|sized?|sizes|forecasts?|projects?|projected|pegs?)\b[^.;]{0,60}"
+    r"\b(market|industry|sector|segment)\s+(?:at|for|near|to|reaching)\s+"
+    r"(?:(?:US)?\$|£|€|usd|eur|gbp|dollars?)?\s*\d"
+    r"|\b(market|industry|sector)\s+(?:approximately\s+|about\s+|around\s+|roughly\s+)?at\s+"
+    r"(?:(?:US)?\$|£|€|usd|eur|gbp|dollars?)?\s*\d",
     re.IGNORECASE)
 
 
@@ -1597,17 +1612,107 @@ def _is_market_sizing(text: str) -> bool:
     return bool(_RIVAL_RESEARCH_RE.search(text) or _MARKET_SIZING_RE.search(text))
 
 
-def _drop_market_sizing_facts(selection: dict, logger: logging.Logger) -> None:
+def _drop_market_sizing_facts(
+    selection: dict, logger: logging.Logger, headline_figures: dict | None = None,
+) -> None:
     """Remove selected market facts that state a market's size/forecast/growth or cite a rival research firm; blank a
-    kept item's `detail` when it does. Claim backing is exempt: it backs the article's own claims, not market sizing."""
+    kept item's `detail` when it does. When `headline_figures` is given (the fact sheet's own size/forecast/CAGR values,
+    see _headline_figures), a fact that names a market and carries nothing but restatements of those very figures is
+    dropped too: whoever says it, a second figure for the same market is banned. Claim backing is exempt: it backs the
+    article's own claims, not market sizing."""
     kept = []
     for e in selection.get("evidence") or []:
-        if _is_market_sizing(str(e.get("fact", ""))):
-            logger.info(f"[select] dropped {e.get('id')}: market sizing/forecast or a rival research firm ({str(e.get('fact', ''))[:80]!r})")
+        fact = str(e.get("fact", ""))
+        if _is_market_sizing(fact):
+            logger.info(f"[select] dropped {e.get('id')}: market sizing/forecast or a rival research firm ({fact[:80]!r})")
+            continue
+        if _restates_headline_figures(fact, headline_figures):
+            logger.info(f"[select] dropped {e.get('id')}: every figure it states is one of the fact sheet's own "
+                        f"headline figures ({fact[:80]!r})")
             continue
         if _is_market_sizing(str(e.get("detail", ""))):
             logger.info(f"[select] blanked the detail of {e.get('id')}: it states market sizing or cites a rival research firm")
             e["detail"] = ""
+        kept.append(e)
+    selection["evidence"] = kept
+
+
+_MARKET_NOUN_RE = re.compile(r"\b(market|industry|sector|segment)\b", re.IGNORECASE)
+
+
+def _headline_figures(fs: dict | None) -> dict | None:
+    """The fact sheet's headline numbers (facts.HEADLINE_KEYS: size, forecast, cagr) each normalised the way _figures
+    normalises any fact text, plus their float values so 4.59 and 4.590 still compare equal. None when there is no fact
+    sheet or no headline figure survived it, so callers can pass it straight through to _drop_market_sizing_facts."""
+    if not fs:
+        return None
+    raw: set[str] = set()
+    for key in ("size", "forecast", "cagr"):
+        entry = fs.get(key)
+        if isinstance(entry, dict):
+            raw |= _figures(str(entry.get("value", "")))
+    floats: set[float] = set()
+    for r in raw:
+        try:
+            floats.add(float(r))
+        except ValueError:
+            pass
+    return {"raw": raw, "floats": floats} if (raw or floats) else None
+
+
+def _restates_headline_figures(fact: str, headline: dict | None) -> bool:
+    """True when the fact names a market AND every figure it carries (years never count — see _figures) is one of the
+    fact sheet's own headline figures: numeric content that only re-states what the report itself already states."""
+    if not headline or not _MARKET_NOUN_RE.search(fact):
+        return False
+    figs = _figures(fact)
+    if not figs:
+        return False
+    for n in figs:
+        if n in headline["raw"]:
+            continue
+        try:
+            matched = float(n) in headline["floats"]
+        except ValueError:
+            matched = False
+        if not matched:
+            return False
+    return True
+
+
+# The key-players section shows companies acting in the market, not what was said about them. A recognition (an award,
+# a ranking, an honour, a certification) or a personnel change reads as concrete, named-company news and keeps slipping
+# through SELECT, so this pair of word lists is the deterministic backstop — deliberately narrow and case-insensitive,
+# with every match rounded to whole words.
+_RECOGNITION_RE = re.compile(
+    r"\b(awards?|awarded|recognitions?|ranked|ranking|named among|honou?rs?|honou?red|trophy|of the year|"
+    r"certifications?|certified)\b", re.IGNORECASE)
+_PERSONNEL_RE = re.compile(
+    r"\b(chief (executive|financial|technology|information|operating) officer|ceo|cfo|cto|cio|coo|"
+    r"appointed|appoints|hired|hires|joins as|steps down|stepping down|resigns|departure|leaves|"
+    r"leaving|executives leaving)\b", re.IGNORECASE)
+
+
+def _strip_players_tag(selection: dict, logger: logging.Logger) -> None:
+    """Remove an item's `players` tag when its fact is a recognition or a personnel change (a recognition is what
+    someone else said about the company, a personnel change is inside the company's walls — neither shows how a
+    company changes the market). The item survives under any other tag it carries; it is deleted only when `players`
+    was its one and only tag, so it could never have been used anywhere else."""
+    kept = []
+    for e in list(selection.get("evidence") or []):
+        fact = re.sub(r"\s+", " ", str(e.get("fact", "")))
+        tags = list(e.get("use_for_all") or [])
+        if "players" in tags and (_RECOGNITION_RE.search(fact) or _PERSONNEL_RE.search(fact)):
+            rest = [t for t in tags if t != "players"]
+            if rest:
+                e["use_for_all"] = rest
+                e["use_for"] = rest[0]
+                logger.info(f"[select] removed 'players' from {e.get('id')}: its fact is a recognition or a personnel "
+                            f"change, not the company's own move in the market ({fact[:80]!r})")
+            else:
+                logger.info(f"[select] dropped {e.get('id')}: its fact is a recognition or a personnel change and "
+                            f"'players' was its only tag ({fact[:80]!r})")
+                continue
         kept.append(e)
     selection["evidence"] = kept
 
@@ -1653,7 +1758,7 @@ def run_fetch_confirmed_report(chosen: reports.CatalogEntry, logger: logging.Log
 _EVIDENCE_GROUPS = (
     ("trends", "MARKET TRENDS (back each of the three trends with at least one of these, two where space allows)"),
     ("us", "THE U.S. PARAGRAPH"),
-    ("players", "KEY PLAYERS (give each named company one concrete detail from here)"),
+    ("players", "KEY PLAYERS (each entry about one company explains that company's own move in the market and what it changes for buyers and its rivals)"),
     ("context", "SEGMENTS, SUB-SEGMENTS, GROWTH DRIVERS AND THE BRIDGE (the conclusion adds nothing new)"),
 )
 

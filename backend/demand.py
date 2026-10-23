@@ -11,12 +11,18 @@ Imports pipeline/facts for shared helpers; pipeline never imports this module (m
 import logging
 import re
 
+import checks
 import facts
 import intent
 import llm
 import prompts
 from pipeline import _faq_tokens, _is_definition_question, _market_core
 from pipeline_log import section
+
+# Function words that let a long-tail phrase read as one noun phrase instead of a keyword stack. Imported from
+# checks._LONGTAIL_GLUE_WORDS (no circular import: checks imports only freshness and prompts at module level), so
+# the demand-side filter and the check layer agree on what a joining word is.
+_LONGTAIL_GLUE_WORDS = checks._LONGTAIL_GLUE_WORDS
 
 # Kind of search need -> the SOP section whose job answers it (the section its question may head).
 INTENT_SECTION = {
@@ -142,6 +148,19 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
         # phrase that opens with an interrogative word (a question) is rejected, whatever follows it
         if kw.split() and kw.split()[0] in ("what", "why", "how", "who", "whom", "whose", "where", "when", "which"):
             logger.info(f"[demand] dropped long-tail (read as a question, and a long-tail must fit inside a statement): {kw!r}")
+            continue
+        # and it must read as ONE phrase: a run of four or more consecutive words with no joining word (an article,
+        # a preposition, a conjunction, is/are, like) is a keyword stack, not a phrase a person would say
+        run = 0
+        piled = False
+        for w in re.findall(r"[a-z]+", kw):
+            run = 0 if w in _LONGTAIL_GLUE_WORDS else run + 1
+            if run >= 4:
+                piled = True
+                break
+        if piled:
+            logger.info(f"[demand] dropped long-tail (four or more words in a row with no joining word, so it reads "
+                        f"as a stack of keywords, not a phrase): {kw!r}")
             continue
         n = len(kw.split())
         if not _LONGTAIL_MIN_WORDS <= n <= _LONGTAIL_MAX_WORDS:

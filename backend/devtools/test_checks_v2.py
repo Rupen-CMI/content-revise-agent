@@ -464,6 +464,26 @@ run = run_v2(TITLE, good_draft())
 check("headings: the good draft's headings are planned MSQs / clean topics",
       by_name(run, HEADING_NAME).passed, by_name(run, HEADING_NAME).detail)
 
+# the check layer agrees with planning: a plain size/growth topic heading is clean, a section label is not
+d = good_draft()
+plan2 = copy.deepcopy(PLAN)
+plan2["sections"][0]["msq"] = None
+plan2["sections"][0]["heading"] = "Zzz Widget Services Market Size and Growth"
+d[2]["heading"] = plan2["sections"][0]["heading"]
+run = run_v2(TITLE, d, plan=plan2)
+check("headings: the plain size/growth fallback for report_context passes",
+      by_name(run, HEADING_NAME).passed, by_name(run, HEADING_NAME).detail)
+
+d = good_draft()
+plan2 = copy.deepcopy(PLAN)
+plan2["sections"][0]["msq"] = None
+plan2["sections"][0]["heading"] = "Report Context for the Zzz Widget Services Market"
+d[2]["heading"] = plan2["sections"][0]["heading"]
+run = run_v2(TITLE, d, plan=plan2)
+r = by_name(run, HEADING_NAME)
+check("headings: the old report_context label heading fails", not r.passed, r.detail)
+check("headings: the label failure carries planning's reason", "section label" in r.detail, r.detail)
+
 # ------------------------------------------------------------------ opening jargon (soft)
 
 JARGON_NAME = "The opening and transition hold no measurements or units"
@@ -528,6 +548,55 @@ run = run_v2(TITLE, d)
 r = by_name(run, VOICE_NAME)
 check("voice: a draft with mostly passive sentences fails (soft)", not r.passed, r.detail)
 check("voice: the note carries the offending sentences", "The market is driven" in r.detail, r.detail)
+
+# ------------------------------------------------------------------ long-tail noun pile (soft)
+
+PILE_NAME = "No long-tail phrase is pasted as a noun pile"
+
+# a long phrase of nearly all content words, assigned to the subsegment section (its fact sits there)
+inp4 = test_planning.make_inputs()
+inp4.longtails = inp4.longtails + [
+    {"id": "L4", "keyword": "custom cloud based widget services marketplace pricing", "fact": "fs.segments.0", "why": "x"}]
+raw4 = test_planning.good_plan()
+raw4["sections"][3]["facts"] = ["W2", "fs.segments.0", "fs.segments.1"]   # L4 rests on fs.segments.0
+raw4["sections"][3]["longtail"] = "L4"
+plan4 = planning.validate_plan(raw4, inp4, test_planning.LOG)
+lt_by_sop = {s["sop"]: s["longtail"] for s in plan4["sections"]}
+check("pile setup: the plan keeps the placed long-tails with L4 on subsegment",
+      sum(1 for s in plan4["sections"] if s.get("longtail")) == 3 and lt_by_sop.get("subsegment") == "L4",
+      str(lt_by_sop))
+
+d = good_draft()
+d[5]["paragraphs"][0] = pad(75, ["Custom cloud based widget services marketplace pricing decides which tools a team buys."])
+run = run_v2(TITLE, d, plan=plan4, inp=inp4)
+r = by_name(run, PILE_NAME)
+check("pile: a phrase pasted as the pile-of-nouns subject at the head of a sentence is flagged",
+      not r.passed, r.detail)
+check("pile: the note carries the offending sentence", "pile of nouns" in r.detail and "Custom cloud based" in r.detail, r.detail)
+check("pile: the check is advisory and log-only", "(soft)" in r.name, r.name)
+
+d = good_draft()
+d[5]["paragraphs"][0] = pad(75, ["Widget teams pay custom prices for the cloud services they use in daily work."])
+run = run_v2(TITLE, d, plan=plan4, inp=inp4)
+r = by_name(run, PILE_NAME)
+check("pile: a normal placement of the same words passes", r.passed, r.detail)
+
+d = good_draft()
+run = run_v2(TITLE, d, plan=plan4, inp=inp4)
+r = by_name(run, PILE_NAME)
+check("pile: the good draft flags nothing", r.passed, r.detail)
+
+notes = checks.longtail_pile_notes([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "Custom cloud based widget services marketplace pricing decides which tools a team buys and which features it needs."]}],
+    ["custom cloud based widget services marketplace pricing"])
+check("pile: the helper alone flags the pile and lists the flagged sentence",
+      len(notes) == 1 and "pile of nouns" in notes[0] and "decides which tools" in notes[0], str(notes))
+check("pile: the flagged sentence is truncated in the note",
+      not any("which features it needs" in n for n in notes), str(notes))
+notes = checks.longtail_pile_notes([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "Teams pay custom prices for cloud services they use."]}],
+    ["custom cloud based widget services marketplace pricing"])
+check("pile: the helper alone passes a normal sentence", notes == [], str(notes))
 
 # ------------------------------------------------------------------ summary
 

@@ -963,7 +963,8 @@ def _step3_v2(run: RunState) -> dict:
     The same post-processing the devtools build_chain.load_chain applies to its fixtures."""
     run.logger.info("STEP 3 (market-first chain)")
     try:
-        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger)
+        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
+                                        headline_figures=pipeline._headline_figures(run.fact_sheet))
         evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
         evidence_items = [it for it in pipeline._parse_evidence(evidence) if it.get("group") != "article"]
         questions = demand.mark_answerability(

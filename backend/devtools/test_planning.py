@@ -21,7 +21,7 @@ FAILURES: list[str] = []
 LOG = logging.getLogger("test_planning")
 MARKET = "Zzz Widget Services Market"
 HEADINGS = {
-    "report_context": "Report Context for the Zzz Widget Services Market",
+    "report_context": "Zzz Widget Services Market Size and Growth",
     "trends": "Trends in the Zzz Widget Services Market",
     "segmentation": "Zzz Widget Services Market Segmentation",
     "subsegment": "Sub-Segment Analysis of the Zzz Widget Services Market",
@@ -135,6 +135,22 @@ check("headings: no non-question section keeps a question mark",
       all(not s["heading"].endswith("?") for s in p["sections"] if not s["msq"]), str([s["heading"] for s in p["sections"]]))
 check("headings: a demoted question moves to the FAQ", all(q in p["faq"] for q in ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"] if q not in [s["msq"] for s in p["sections"]]))
 
+# the cap trim never drops the size/growth question from report_context (demand.INTENT_SECTION maps it there and nowhere else)
+raw = good_plan()
+for s, qid in zip(raw["sections"], ["Q1", "Q2", "Q3", "Q4", "Q5", None, None]):
+    s["msq"] = qid
+raw["sections"][0]["facts"] = ["fs.size"]        # report_context ranks last, so the old trim dropped its question
+p = plan_of(raw)
+check("cap trim: five question headings are cut to three", sum(1 for s in p["sections"] if s["msq"]) == 3,
+      str([s["msq"] for s in p["sections"]]))
+check("cap trim: the size question stays on report_context even when that section ranks last",
+      S(p, "report_context")["msq"] == "Q1", str([s["msq"] for s in p["sections"]]))
+check("cap trim: the drops come from the other sections, lowest ranked first",
+      S(p, "key_players")["msq"] is None and S(p, "country_us")["msq"] is None
+      and S(p, "trends")["msq"] == "Q2" and S(p, "segmentation")["msq"] == "Q3",
+      str([s["msq"] for s in p["sections"]]))
+check("cap trim: the dropped questions move to the FAQ", all(q in p["faq"] for q in ["Q4", "Q5"]), str(p["faq"]))
+
 raw = good_plan()
 for s in raw["sections"]:
     s["msq"] = None
@@ -217,6 +233,31 @@ check("heading_problem: each failure kind has its own reason",
            planning.heading_problem("What is changing?", "trends", MARKET),
            planning.heading_problem("Trends in the Zzz Widget Services Market by 2026", "trends", MARKET),
            planning.heading_problem("A heading with far too many words in it to pass the limit test", "trends", MARKET)]))
+check("heading_problem: the old report_context label fallback heading is rejected, by design",
+      planning.heading_problem("Report Context for the Zzz Widget Services Market", "report_context", MARKET)
+      == "it is a section label, not a topic phrase",
+      str(planning.heading_problem("Report Context for the Zzz Widget Services Market", "report_context", MARKET)))
+check("heading_problem: other report-context label wordings are rejected too",
+      all(planning.heading_problem(h, "report_context", MARKET) is not None
+          for h in ["Market Intelligence Report Context", "Market Intelligence: " + MARKET]),
+      str([planning.heading_problem(h, "report_context", MARKET)
+           for h in ["Market Intelligence Report Context", "Market Intelligence: " + MARKET]]))
+check("heading_problem: topic words about size and growth are what a report_context heading must name",
+      planning.heading_problem("Zzz Widget Services Market Size and Growth", "report_context", MARKET) is None
+      and planning.heading_problem("Growth in the Zzz Widget Services Market", "report_context", MARKET) is None
+      and planning.heading_problem("Overview of the Zzz Widget Services Market", "report_context", MARKET) is not None
+      and planning.heading_problem("Context for the Zzz Widget Services Market", "report_context", MARKET) is not None,
+      str([planning.heading_problem("Zzz Widget Services Market Size and Growth", "report_context", MARKET),
+           planning.heading_problem("Growth in the Zzz Widget Services Market", "report_context", MARKET),
+           planning.heading_problem("Overview of the Zzz Widget Services Market", "report_context", MARKET),
+           planning.heading_problem("Context for the Zzz Widget Services Market", "report_context", MARKET)]))
+raw = good_plan()
+raw["sections"][0]["msq"] = None
+raw["sections"][0]["heading"] = "Report Context for the Zzz Widget Services Market"
+p = plan_of(raw)
+check("headings: the label-style report_context heading is replaced by the plain topic fallback",
+      S(p, "report_context")["msq"] is None and S(p, "report_context")["heading"] == HEADINGS["report_context"],
+      str([S(p, "report_context")["msq"], S(p, "report_context")["heading"]]))
 
 # ------------------------------------------------------------------ facts
 raw = good_plan()

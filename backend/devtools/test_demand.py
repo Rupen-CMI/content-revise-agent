@@ -83,30 +83,40 @@ check("terms: capped", len(demand.normalize_terms([f"term{c}" for c in "abcdefgh
 # ------------------------------------------------------------------ long-tail searches
 FLAT = [{"id": "fs.segments.0", "text": "Segmentation type: x"}, {"id": "fs.regions.leader", "text": "Leading region: y"}]
 lt = demand.normalize_longtails([
-    {"keyword": "cloud based widget services in north america", "fact": "fs.regions.leader", "why": "regional buyers"},
+    {"keyword": "widget services for cloud based teams by region", "fact": "fs.regions.leader", "why": "regional buyers"},
     {"keyword": "zzz widget services market growth", "fact": "fs.segments.0", "why": "x"},          # market name + one word
     {"keyword": "browser extension widget tools", "fact": "fs.nope", "why": "x"},                  # unknown fact
     {"keyword": "widget [region] outlook", "fact": "fs.segments.0", "why": "x"},                    # placeholder
     {"keyword": "widgets", "fact": "fs.segments.0", "why": "x"},                                    # too short
-    {"keyword": "Cloud Based Widget Services In North America", "fact": "fs.regions.leader", "why": "dup"},  # duplicate
-    {"keyword": "installable widget software segment trends", "fact": "fs.segments.0", "why": "buyers"},
+    {"keyword": "Widget Services For Cloud Based Teams By Region", "fact": "fs.regions.leader", "why": "dup"},  # duplicate
+    {"keyword": "installable widget software and segment trends", "fact": "fs.segments.0", "why": "buyers"},
 ], FLAT, MARKET, LOG)
 check("long-tail: only grounded, specific, placeholder-free, unique searches survive",
-      [x["keyword"] for x in lt] == ["cloud based widget services in north america", "installable widget software segment trends"], str([x["keyword"] for x in lt]))
+      [x["keyword"] for x in lt] == ["widget services for cloud based teams by region",
+                                      "installable widget software and segment trends"], str([x["keyword"] for x in lt]))
 check("long-tail: records keep the older {keyword, intent, why} shape with an informational intent",
       all(x["intent"] == "informational" and {"keyword", "intent", "why"} <= set(x) for x in lt))
 
 lt2 = demand.normalize_longtails([
     {"keyword": "web scraping for market research market share", "fact": "fs.segments.0", "why": "x"},  # "market" repeats
-    {"keyword": "web scraping services market size in north america", "fact": "fs.segments.0", "why": "regional buyers"},
+    {"keyword": "web scraping services in north america", "fact": "fs.segments.0", "why": "regional buyers"},
     {"keyword": "what is driving growth in web scraping services", "fact": "fs.segments.0", "why": "x"},  # reads as a question
     {"keyword": "how are buyers choosing web scraping services", "fact": "fs.regions.leader", "why": "x"},  # reads as a question
     {"keyword": "why banks are adopting wealth management platforms", "fact": "fs.regions.leader", "why": "buyers"},  # opens with an interrogative
-    {"keyword": "cloud versus on premises wealth management platforms", "fact": "fs.segments.0", "why": "buyers"},
+    {"keyword": "cloud versus on premises in wealth management platforms", "fact": "fs.segments.0", "why": "buyers"},
 ], FLAT, MARKET, LOG)
 check("long-tail: a repeating word or a question-shaped start is dropped; natural phrases even with no repeated word are kept",
-      [x["keyword"] for x in lt2] == ["web scraping services market size in north america",
-                                      "cloud versus on premises wealth management platforms"], str([x["keyword"] for x in lt2]))
+      [x["keyword"] for x in lt2] == ["web scraping services in north america",
+                                      "cloud versus on premises in wealth management platforms"], str([x["keyword"] for x in lt2]))
+
+stack = demand.normalize_longtails([
+    {"keyword": "cloud based widget services marketplace pricing", "fact": "fs.segments.0", "why": "x"},   # four words in a row with no joining word
+    {"keyword": "widget services for cloud based teams", "fact": "fs.segments.0", "why": "x"},             # the same idea, joined
+    {"keyword": "top companies widgets and services market", "fact": "fs.segments.0", "why": "x"},         # a join inside the run saves it
+], FLAT, MARKET, LOG)
+check("long-tail: a run of four or more words with no joining word is rejected; a joined phrase is kept",
+      [x["keyword"] for x in stack] == ["widget services for cloud based teams", "top companies widgets and services market"],
+      str([x["keyword"] for x in stack]))
 
 lt3 = demand.normalize_longtails([
     {"keyword": "how vendors price plans", "fact": "fs.segments.0", "why": "x"},     # opens with an interrogative + noun phrase
@@ -149,7 +159,7 @@ check("answerable: U.S. evidence answers the U.S. question", {x["intent"]: x["an
 # ------------------------------------------------------------------ the call (LLM stubbed)
 def fake_chat(system, user, **kw):
     return {"questions": GOOD + [q("pricing", "How much does it cost?")], "terms": ["cloud based"],
-            "long_tail": [{"keyword": "cloud based widget services in north america", "fact": "fs.regions.leader", "why": "x"}]}
+            "long_tail": [{"keyword": "widget services for cloud based teams by region", "fact": "fs.regions.leader", "why": "x"}]}
 
 
 orig = llm.chat_json

@@ -44,6 +44,24 @@ check("stripper: a section left empty is dropped",
 check("stripper: ordinary market sentences about reports and facts are kept",
       writer.strip_meta_sentences([{"heading": "", "sop": [], "paragraphs": ["Analysts report that three facts of life shape demand, and the report names six vendors."]}], LOG)[0]["paragraphs"][0].startswith("Analysts"))
 
+# ------------------------------------------------------------------ coverage-only sentences (a study examines ...)
+cov_secs = [{"heading": "h", "sop": ["country_us"], "paragraphs": [
+    "A widget-industry study examines how brokerages decide to buy, build or rent these systems.",
+    "A widget-industry study surveys 400 brokerages about their buying habits.",
+    "A widget-industry study examines pricing and says that buyers prefer longer contracts.",
+    "A widget-industry study tracks adoption, naming Zzz Corp, Acme Ltd, Beta Group.",
+    f"A widget-industry study examines buying habits among teams served by {prompts.SPONSOR_TOKEN}.",
+    "A widget-industry study examines coverage in this market, but the same study found a real shift last quarter.",
+]}]
+cov_expected = list(cov_secs[0]["paragraphs"][1:])
+cov_out = writer.strip_meta_sentences(cov_secs, LOG)[0]["paragraphs"]
+check("coverage: a publication-subject sentence with a coverage verb, no figure and no finding is removed",
+      cov_out == cov_expected, str(cov_out))
+check("coverage: the same coverage sentence with a figure in it is kept", cov_out[0].startswith("A widget-industry study surveys 400"), cov_out[0])
+check("coverage: a coverage sentence carrying a finding verb is kept", "says that buyers prefer" in cov_out[1], cov_out[1])
+check("coverage: a coverage sentence whose publication names companies is kept", "Zzz Corp" in cov_out[2], cov_out[2])
+check("coverage: a coverage sentence carrying the sponsor placeholder is kept", prompts.SPONSOR_TOKEN in cov_out[3], cov_out[3])
+
 # ------------------------------------------------------------------ citations found in code
 inp = make_inputs()
 plan = planning.validate_plan(good_plan(), inp, LOG)
@@ -285,6 +303,12 @@ inp.items["fs.size"]["source"] = "marketsite.example.com"
 text2 = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-23")
 check("prompt: a report-position figure from an outside source is marked NOT CMI and named", "source: marketsite.example.com, NOT CMI" in text2)
 check("prompt: a names-only key players section is told to use plain prose", "no bullets" in text2[text2.index("### 6. key_players"):][:1500])
+check("shapes: the key_players shape prescribes complete sentences instead of Name-label bullet lines",
+      "- <Company>" not in writer._SHAPES["key_players"] and "\n- " not in writer._SHAPES["key_players"]
+      and "complete sentences" in writer._SHAPES["key_players"], writer._SHAPES["key_players"])
+check("shapes: the names-only key_players shape stays plain prose naming companies in complete sentences",
+      "no bullets" in writer._SHAPES["key_players_names_only"]
+      and "complete sentences" in writer._SHAPES["key_players_names_only"], writer._SHAPES["key_players_names_only"])
 check("prompt: no evidence_citations side-job is requested", "evidence_citations" not in text)
 # The phrase-mode sponsor must never be shown a template with the placeholder as its own paragraph: that exact
 # template made the model return a bare placeholder paragraph. Build a bare-phrase sponsor and check its template.

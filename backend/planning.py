@@ -60,7 +60,7 @@ _EVIDENCE_TAG_SECTIONS = {
 _SHARED_FACTS = ("fs.segments.",)   # a segment split may serve both segmentation and the sub-segment analysis
 
 _FALLBACK_HEADINGS = {
-    "report_context": "Report Context for the {market}",
+    "report_context": "{market} Size and Growth",
     "trends": "Trends in the {market}",
     "segmentation": "{market} Segmentation",
     "subsegment": "Sub-Segment Analysis of the {market}",
@@ -69,7 +69,7 @@ _FALLBACK_HEADINGS = {
     "conclusion": "Conclusion and Outlook for the {market}",
 }
 _TOPIC_RES = {
-    "report_context": re.compile(r"report|overview|context|intelligence", re.I),
+    "report_context": re.compile(r"size|growth|forecast|outlook|valuation|value", re.I),
     "trends": re.compile(r"trend", re.I),
     "segmentation": re.compile(r"segment", re.I),
     "subsegment": re.compile(r"sub-?\s?segment", re.I),
@@ -83,6 +83,9 @@ _LABEL_TAIL_RE = re.compile(
     r"[:\-–—|]\s*(?:key\s+|latest\s+|major\s+)?(?:trends?|insights?|analysis|outlook|growth drivers?|competitive landscape|"
     r"market intelligence|forecast|overview|report|guide|explained)\s*[.!?]?\s*$", re.IGNORECASE,
 )
+# A non-question heading that opens with the SOP's own label words (the stage names a planner may echo) is a label, not a
+# topic phrase: the SOP topics are rejected as headings so the heading names what the section covers instead.
+_SOP_LABEL_HEAD_RE = re.compile(r"^\s*(?:market\s+intelligence|report\s+context)\b", re.IGNORECASE)
 _TITLE_PRIMARY_START_MAX = 40
 _TITLE_HARD_MIN, _TITLE_HARD_MAX, _TITLE_SOFT_MIN, _TITLE_SOFT_MAX = 30, 80, 40, 70
 
@@ -306,6 +309,8 @@ def heading_problem(heading: str, sop: str, market_name: str, question_texts=())
         return "it is a question"
     if h.lower() in {q.lower() for q in question_texts}:
         return "it repeats a most-searched question"
+    if _SOP_LABEL_HEAD_RE.match(h):
+        return "it is a section label, not a topic phrase"
     if len(h.split()) > _HEADING_MAX_WORDS:
         return "it is too long"
     if re.search(r"\d", heading):
@@ -437,7 +442,14 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     heading_sections = [s for s in sections if s["msq"]]
     if len(heading_sections) > HEADING_QUESTIONS_MAX:
         ranked = sorted(heading_sections, key=lambda s: (-len(s["facts"]), ORDER.index(s["sop"])))
-        for s in ranked[HEADING_QUESTIONS_MAX:]:
+        # The size/growth questions' only possible host is report_context (demand.INTENT_SECTION), so when the cap
+        # forces a drop, that host's question is never dropped — otherwise the size section loses its heading and the
+        # FAQ loses the article's headline numbers. The existing ranking among the other sections is kept.
+        protected = {s["sop"] for s in heading_sections
+                     if s["sop"] == "report_context"
+                     and demand.INTENT_SECTION.get(msq_by_id[s["msq"]]["intent"]) == s["sop"]}
+        droppable = [s for s in ranked if s["sop"] not in protected]
+        for s in droppable[len(droppable) - (len(heading_sections) - HEADING_QUESTIONS_MAX):]:
             repair(f"{s['sop']}: more than {HEADING_QUESTIONS_MAX} question headings; {s['msq']} moves to the FAQ")
             used_q.discard(s["msq"])
             s["msq"] = None

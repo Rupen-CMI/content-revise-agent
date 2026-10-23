@@ -35,8 +35,8 @@ _SHAPES = {
     "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments" and states the split directly, with the report as its actor, saying how many parts the market falls into, in your own words, then one line starting with "\\n- " per split. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the split lets anyone see or do, or why the split matters. Nothing else.',
     "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: what drives its adoption, where it is used and what it adds to the market, using only the listed facts; where the facts say little, it says little. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Plain prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers where the market is strongest and, where facts allow, the United States, in 100 to 200 words in all; fewer than 100 words is a miss, so carry the region picture with the listed facts plus your own plain sentences about what that picture means for buyers.',
-    "key_players": 'Two entries in "paragraphs". First: a short plain passage on how crowded or concentrated the field is. Second: the companies. A company with a listed fact gets one line "- <Company>: <what the fact says>" under a short lead-in clause; companies with no fact are named together in one plain sentence and are never given a detail the facts do not supply.',
-    "key_players_names_only": 'Two entries in "paragraphs", both plain prose with no bullets. First: a short passage on how crowded or concentrated the field is, using only what the listed facts say. Second: one or two sentences naming the companies together; never give a company a detail the facts do not supply.',
+    "key_players": 'Two entries in "paragraphs", both plain prose with no bullet lines. First: a short plain passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
+    "key_players_names_only": 'Two entries in "paragraphs", both plain prose with no bullets. First: a short passage on how crowded or concentrated the field is, naming the companies the facts name together in its opening sentence, using only what the listed facts say. Second: here no company has a listed fact, so the companies stay named together in one or two complete sentences; never give a company a detail the facts do not supply.',
     "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, steady growth, a modest pace). It still uses the market\'s full name once. Its last sentence is the CMI analyst\'s view.',
 }
 
@@ -150,8 +150,49 @@ _META_RE = re.compile(
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+# A sentence that does nothing but advertise what a study, survey, report or site covers — no figure and no finding of
+# its own — tells the reader nothing and is removed (precedent: _META_RE above). A coverage-verb sentence that carries a
+# real figure or a real reported result is left alone by design: it states a finding, not mere coverage. The rule also
+# stays conservative about sentences that already do name work: one carrying the sponsor placeholder, one naming the
+# key players, and one holding a comma-separated list of proper names (the publication naming who or what is in its
+# pages) are never removed.
+_COVERAGE_SUBJECT_RE = re.compile(
+    r"\b(?:report|study|survey|research|publication|analysis|index|website|magazine|whitepaper|white paper)"
+    r"s?(?:[\u2019']s)?\b", re.IGNORECASE)
+_COVERAGE_VERB_RE = re.compile(
+    r"\b(?:tracks?|examines?|studies|studied|covers?|looks? at|explores?|analy[sz]es?|surveys?|charts?|maps?|"
+    r"monitors?|follows?)\b", re.IGNORECASE)
+_FINDING_VERB_RE = re.compile(
+    r"\b(?:found|finds|reported|reports that|shows that|showed|said|says|estimates|estimated|projects|"
+    r"projected|expects|expected|concluded)\b", re.IGNORECASE)
+_NAME_LIST_RE = re.compile(
+    r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*(?:, [A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*){2,}\b")
+
+
+def _is_coverage_ad(sent: str) -> bool:
+    """Whether a sentence only advertises a publication's coverage: a publication-type subject word inside its first
+    8 words (possessives included), a coverage verb, and neither a figure (checks._fact_numbers) nor a finding verb in
+    the sentence itself."""
+    if prompts.SPONSOR_TOKEN in sent:
+        return False
+    lowered = sent.lower()
+    if "key players" in lowered or re.search(r"\bnames\b", lowered):
+        return False
+    if _NAME_LIST_RE.search(sent):
+        return False
+    if not _COVERAGE_SUBJECT_RE.search(" ".join(sent.split()[:8])):
+        return False
+    if not _COVERAGE_VERB_RE.search(sent):
+        return False
+    import checks
+    if checks._fact_numbers(sent):
+        return False
+    return not _FINDING_VERB_RE.search(sent)
+
+
 def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[dict]:
-    """Remove sentences that describe the facts or the plan instead of the market. Works line by line so bullet lists keep
+    """Remove sentences that describe the facts or the plan instead of the market, or that advertise a publication's
+    coverage without reporting any finding from it. Works line by line so bullet lists keep
     their shape; a line left empty is dropped, and a paragraph left empty is dropped with a warning."""
     for s in sections:
         paragraphs = []
@@ -159,10 +200,10 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
             lines = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                good = [x for x in kept if not _META_RE.search(x)]
+                good = [x for x in kept if not (_META_RE.search(x) or _is_coverage_ad(x))]
                 if len(good) != len(kept):
                     logger.info(f"[write] removed {len(kept) - len(good)} process-language sentence(s) from {s['sop'] or 'the opening'}: "
-                                + " | ".join(x[:110] for x in kept if _META_RE.search(x)))
+                                + " | ".join(x[:110] for x in kept if _META_RE.search(x) or _is_coverage_ad(x)))
                 if good:
                     lines.append(" ".join(good))
             if lines:
