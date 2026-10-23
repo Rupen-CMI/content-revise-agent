@@ -563,6 +563,7 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
     state.run.selection = data.selection;
     state.run.questions = data.questions || {};
     if (data.demand) state.run.demand = data.demand;   // market-first: answerability is now marked
+    if (data.long_tail_keywords) state.run.longtails = data.long_tail_keywords;   // market-first: they arrive at Step 3, not Step 2
   } catch (e) {
     showError("Step 3 (fetch report facts)", e);
     state.run.stage = "search_done";
@@ -1264,8 +1265,8 @@ function _renderHighlightedText(text, matchers) {
 
 // Maps a segment's server-assigned "kw" label (checks.find_keyword_spans ran concept-matching
 // there, not a literal phrase search — see main.py's _apply_keyword_spans) to its highlight class.
-const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary", longtail: "hl-longtail" };
-const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword", longtail: "Long-tail keyword" };
+const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary", longtail: "hl-longtail", tertiary: "hl-tertiary" };
+const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword", longtail: "Long-tail keyword", tertiary: "Related term" };
 
 function renderSegmentsHighlighted(segments, matchers) {
   return (segments || [])

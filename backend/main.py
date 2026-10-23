@@ -973,6 +973,11 @@ def _step3_v2(run: RunState) -> dict:
         run.plan_inputs = planning.build_inputs(
             run.report.name, run.fact_sheet, evidence_items, run.demand, run.publisher,
             pipeline._word_count(run.sponsor.text))
+        # The market-first chain's long-tail phrases come from Step 2's search demand (run.demand's
+        # long_tail records), and the planner shards them onto sections via plan_inputs; expose the
+        # same list as run.longtails (the old chain sets it in Step 2) so finalize's usage check, the
+        # keyword-highlighting pass and the UI all see the phrases the writer was actually told to use.
+        run.longtails = [dict(lt) for lt in run.plan_inputs.longtails]
     except (PipelineError, LLMError, LookupError) as e:
         raise _pipeline_failure(run.logger, "Step 3", e)
     run.selection, run.evidence = selection, evidence
@@ -980,7 +985,10 @@ def _step3_v2(run: RunState) -> dict:
     run.logger.info(
         f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s), "
         f"{sum(1 for q in msqs or [] if q.get('answerable'))}/{len(msqs or [])} MSQ(s) answerable")
-    return {"selection": selection, "evidence": evidence, "demand": run.demand}
+    # long_tail_keywords rides along for the UI (renderStep3Panel reads state.run.longtails);
+    # the old chain's Step 2 response already sent it, this chain populates run.longtails here.
+    return {"selection": selection, "evidence": evidence, "demand": run.demand,
+            "long_tail_keywords": run.longtails}
 
 
 @app.post("/step3")

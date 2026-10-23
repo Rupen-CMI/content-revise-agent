@@ -60,6 +60,34 @@ main._display_sections(
 )
 check("counts: nothing is invented where only the primary keyword appears", counts2["secondary"] == {} and counts2["longtail"] == {}, str(counts2))
 
+# The market-first chain (CMI_CHAIN_V2) gets tertiary (related-term) records from its search-demand
+# pass alongside the long-tail phrases (main._step3_v2 sets run.longtails from plan_inputs.longtails).
+# Both must be marked by the same display-sections pass: a long-tail phrase labelled 'longtail' AND a
+# related term labelled 'tertiary' when both sit in the same paragraph.
+counts3: dict = {}
+tertiary_out = main._display_sections(
+    [{"heading": "H", "sop": ["trends"], "paragraphs": [
+        "The Zzz Widget Market is large. Buyers now prefer widget upgrades, and edge widget pricing models are still a niche search."]}],
+    sponsor, None, MARKET, secondary_plan,
+    longtails=["edge widget pricing models"], counts=counts3,
+    tertiary_terms=["widget upgrades"],
+)
+tertiary_marks = []
+longtail_marks = []
+for s in tertiary_out:
+    for p in s["paragraphs"]:
+        for seg in p:
+            if seg.get("kw") == "tertiary":
+                tertiary_marks.append(seg["text"])
+            elif seg.get("kw") == "longtail":
+                longtail_marks.append(seg["text"])
+check("tertiary: a related term is labelled 'tertiary' when it appears with a long-tail phrase",
+      tertiary_marks == ["widget upgrades"], str(tertiary_marks))
+check("tertiary: the long-tail phrase in the same paragraph is still labelled 'longtail'",
+      longtail_marks == ["edge widget pricing models"], str(longtail_marks))
+check("tertiary: counted per phrase, long-tail counted per phrase, same pass",
+      counts3["tertiary"] == {"widget upgrades": 1} and counts3["longtail"] == {"edge widget pricing models": 1}, str(counts3))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
