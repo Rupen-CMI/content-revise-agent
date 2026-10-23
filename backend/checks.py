@@ -1341,14 +1341,14 @@ def v2_heading_shape_problems(sections: list[dict], plan: dict, inp, market_name
     return out
 
 
-# A deliberate copy of the same list the publisher module uses — checks cannot import publisher
-# (a circular import), so the two lists must be kept in step by hand.
-_OPENING_JARGON_RE = re.compile(r"(?:\b(?:kilobytes?|megabytes?|gigabytes?|terabytes?|KB|MB|GB|TB|milliseconds?|latency|throughput|headless|selectors?|parsers?|parsing|async\w*|scripting|scripts?|instances?|regex|SDK|APIs?|of code|source code|code)\b|\d+\s?(?:kb|mb|gb|tb|ms|ghz|mhz)\b)", re.IGNORECASE)
+# A deliberate copy of the publisher module's _JARGON_RE measurement pattern — checks cannot import publisher
+# (a circular import), so the two must be kept in step by hand.
+_OPENING_JARGON_RE = re.compile(r"\d+(?:[.,]\d+)?\s?(?:kb|mb|gb|tb|ms|hz|khz|mhz|ghz|mg|mcg|kg|km|kph|mph|mm|cm|ml|kw|kwh|mw|gw|psi|rpm|bpm|hp)\b|\b(?:kilobytes?|megabytes?|gigabytes?|terabytes?|milliseconds?|kilograms?|kilometres?|kilometers?|kilowatts?|megawatts?|gigawatts?|horsepower|milligrams?)\b", re.IGNORECASE)
 
 
 def v2_opening_jargon_notes(sections: list[dict]) -> list[str]:
     """Soft notes: the opening and the transition must be plain-English blocks (the publisher's voice),
-    so any technical term that reaches them is surfaced — the market sections may keep their terms."""
+    so any measurement that reaches them is surfaced — the market sections may keep their measurements."""
     out: list[str] = []
     for s in sections:
         sop = s.get("sop") or []
@@ -1357,7 +1357,7 @@ def v2_opening_jargon_notes(sections: list[dict]) -> list[str]:
         label = "the opening" if not sop else "the transition"
         for p in s.get("paragraphs") or []:
             for m in _OPENING_JARGON_RE.finditer(_sponsor_replacement(p, " ")):
-                note = f"{label} uses the technical term {m.group(0).lower()!r}"
+                note = f"{label} holds the measurement {m.group(0).lower()!r}"
                 if note not in out:
                     out.append(note)
     return out
@@ -1470,7 +1470,7 @@ def run_checks_v2(
     # ---- soft (§3.9): the opening and transition are the publisher's plain-English blocks
     jargon_notes = v2_opening_jargon_notes(sections)
     results.append(CheckResult(
-        "The opening and transition use no technical terms (soft)",
+        "The opening and transition hold no measurements or units (soft)",
         not jargon_notes,
         "; ".join(jargon_notes) if jargon_notes else "",
     ))

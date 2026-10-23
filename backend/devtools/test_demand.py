@@ -96,6 +96,19 @@ check("long-tail: only grounded, specific, placeholder-free, unique searches sur
 check("long-tail: records keep the older {keyword, intent, why} shape with an informational intent",
       all(x["intent"] == "informational" and {"keyword", "intent", "why"} <= set(x) for x in lt))
 
+lt2 = demand.normalize_longtails([
+    {"keyword": "web scraping for market research market share", "fact": "fs.segments.0", "why": "x"},  # "market" repeats
+    {"keyword": "web scraping services market size in north america", "fact": "fs.segments.0", "why": "regional buyers"},
+    {"keyword": "what is driving growth in web scraping services", "fact": "fs.segments.0", "why": "x"},  # reads as a question
+    {"keyword": "how are buyers choosing web scraping services", "fact": "fs.regions.leader", "why": "x"},  # reads as a question
+    {"keyword": "why banks are adopting wealth management platforms", "fact": "fs.regions.leader", "why": "buyers"},
+    {"keyword": "cloud versus on premises wealth management platforms", "fact": "fs.segments.0", "why": "buyers"},
+], FLAT, MARKET, LOG)
+check("long-tail: a repeating word or a question-shaped start is dropped; natural phrases even with no repeated word are kept",
+      [x["keyword"] for x in lt2] == ["web scraping services market size in north america",
+                                      "why banks are adopting wealth management platforms",
+                                      "cloud versus on premises wealth management platforms"], str([x["keyword"] for x in lt2]))
+
 # ------------------------------------------------------------------ answerability
 def fs_with(**fields):
     fs = facts.validate_fact_sheet({}, "page", MARKET, LOG)

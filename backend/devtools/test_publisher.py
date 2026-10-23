@@ -57,32 +57,33 @@ check("an intro angle that states a market fact is dropped",
       run({"intro_angle": "The widget market is growing fast, so these tools matter more each year.", "points": []})["intro_angle"] == "")
 check("non-dict and odd inputs are survived", run(None) == {"intro_angle": "", "points": []} and run({"points": "x"})["points"] == [])
 
-# ------------------------------------------------------------------ technical words are banned
+# ------------------------------------------------------------------ measurements are banned (domain-neutral:
+# a number with a unit, in any industry; plain-language wording is enforced by the prompts, not by a word list)
 check("a point containing kilobytes is dropped",
       run({"points": ["Some stores have pages that shrink to just a few kilobytes of plain text at times."]})["points"] == [])
-check("a point containing scripts is dropped",
-      run({"points": ["A browser runs scripts for every page that a real person opens today."]})["points"] == [])
-check("a point containing instances is dropped",
-      run({"points": ["Each instance of the tool reads a different kind of page in its own way."]})["points"] == [])
-check("a point containing parser is dropped",
-      run({"points": ["The parser turns every messy page into plain text that people can read later."]})["points"] == [])
-check("a plain point with no technical word is kept",
+check("a plain point containing script and parser is not rejected by point_problem (no measurement in it)",
+      publisher.point_problem("A browser script reads each page for the buyer every day of the week.", set(), BRANDS)
+      is None)
+check("a plain point with no measurement is kept",
       len(run({"points": ["Every shopper wants a page that loads quickly and says what the store is all about."]})["points"]) == 1)
 check("an intro angle containing megabytes is dropped",
       run({"intro_angle": "Reading pages can cost whole megabytes of data, so plain text helps everyone.", "points": []})["intro_angle"] == "")
-why = publisher.point_problem("Latency is the reason some pages feel slow for people on older connections today.", set(range(100)), BRANDS)
-check("point_problem reports the technical term for a point with latency",
-      isinstance(why, str) and why.startswith("uses a technical term"), str(why))
 
-# a number glued to a unit abbreviation is also technical vocabulary (the word-boundary rule misses these)
-for label, text in [("300KB", "A page can be 300KB of markup before cleanup for general readers."),
-                    ("5MB", "The file is 5MB in size for most readers today."),
-                    ("200ms", "It loads in 200ms for most visitors on any device.")]:
-    why = publisher.point_problem(text, {"300", "5", "200"}, BRANDS)
-    check(f"point_problem drops a unit glued to a number ({label})",
-          isinstance(why, str) and why.startswith("uses a technical term"), str(why))
+# a number glued to a unit, or a number with a spaced unit, is a measurement a lay opening never needs
+for label, text, nums in [("300KB", "A page can be 300KB of markup before cleanup for general readers.", {"300"}),
+                          ("5MB", "The file is 5MB in size for most readers today.", {"5"}),
+                          ("200ms", "It loads in 200ms for most visitors on any device.", {"200"}),
+                          ("3 KB", "The guide is 3 KB of plain text for most readers.", {"3"}),
+                          ("2 ms", "It responds in 2 ms on any device today.", {"2"}),
+                          ("12 kg", "The parcel weighs 12 kg before it is shipped out.", {"12"}),
+                          ("60 mph", "Cars travel at 60 mph on that road for most of the day.", {"60"})]:
+    why = publisher.point_problem(text, nums, BRANDS)
+    check(f"point_problem drops a number with a unit ({label})",
+          isinstance(why, str) and why.startswith("holds a measurement"), str(why))
 check("a point with a legitimate article number is kept",
       publisher.point_problem("A typical online store sells about 40 products in its first month.", {"40"}, BRANDS) is None)
+check("a point whose number is no unit count is kept",
+      publisher.point_problem("Teams that grow past 3 offices often change how they share work.", {"3"}, BRANDS) is None)
 
 # ------------------------------------------------------------------ the call (LLM stubbed)
 article = SourceArticle(title="Tools", paragraphs=[Paragraph(index=0, text=BODY, links=[]),

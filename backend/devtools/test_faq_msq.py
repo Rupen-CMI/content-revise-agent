@@ -91,6 +91,16 @@ check("normalize: a leading 'That + noun' in an answer becomes 'The + noun'",
 check("normalize: a bare pointing word in an answer ('That is ...') stays as it is",
       len(out_pt) == 2 and out_pt[1]["answer"] == "That is because demand grows.", str([e["answer"] for e in out_pt]))
 
+# ------------------------------------------------------------------ bare pointing sentence in the answer joined with ', which'
+raw_j = [
+    {"question": by_id["Q3"]["question"], "answer": "Demand keeps rising across regions. That makes the field more competitive."},
+]
+draft_j = "Demand grows every year. That is what the draft carries."
+out_j = faqs.normalize_faq(raw_j, plan, inp, draft_j, LOG)
+check("normalize: a bare pointing sentence in an answer is joined to the sentence before with ', which'",
+      len(out_j) == 1 and out_j[0]["answer"] == "Demand keeps rising across regions, which makes the field more competitive.",
+      str([e.get("answer") for e in out_j]))
+
 # ------------------------------------------------------------------ the call (LLM stubbed)
 orig = llm.chat_json
 llm.chat_json = lambda *a, **k: {"faq": raw}

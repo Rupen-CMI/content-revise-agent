@@ -466,14 +466,20 @@ check("headings: the good draft's headings are planned MSQs / clean topics",
 
 # ------------------------------------------------------------------ opening jargon (soft)
 
-JARGON_NAME = "The opening and transition use no technical terms"
+JARGON_NAME = "The opening and transition hold no measurements or units"
 
 d = good_draft()
 d[0]["paragraphs"][2] = filler(111) + " A page can be 300KB of markup."
 run = run_v2(TITLE, d)
 r = by_name(run, JARGON_NAME)
-check("jargon: 300KB in the opening fails the technical-terms check", not r.passed, r.detail)
-check("jargon: the technical-terms check is advisory", "(soft)" in r.name)
+check("jargon: 300KB in the opening fails the measurement check", not r.passed, r.detail)
+check("jargon: the note names the measurement it holds", "holds the measurement" in r.detail, r.detail)
+check("jargon: the measurement check is advisory", "(soft)" in r.name)
+d = good_draft()
+d[0]["paragraphs"][2] = filler(100) + " A browser script and a parser read each page for the buyer every day."
+run = run_v2(TITLE, d)
+r = by_name(run, JARGON_NAME)
+check("jargon: tech words with no measurement in the opening still pass", r.passed, r.detail)
 run = run_v2(TITLE, good_draft())
 check("jargon: the good draft's opening and transition are plain",
       by_name(run, JARGON_NAME).passed, by_name(run, JARGON_NAME).detail)

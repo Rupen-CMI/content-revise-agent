@@ -238,6 +238,52 @@ def fix_pointing_determiners(sections: list[dict], logger: logging.Logger) -> li
     return sections
 
 
+# A sentence that opens with a bare pointing word ("That works out to...", "It suggests that...") points backwards
+# across a sentence boundary, which no single-word swap can fix. Such a sentence is attached to the one before it
+# with ", which": the pointing word is dropped and the verb continues the previous sentence's thought, so the
+# reference lives inside one sentence ("Forecasters expect USD 910 million by 2034, which works out to 7.3% a year.").
+_BARE_POINTER_RE = re.compile(r"^(?P<dem>This|That|It)\s+(?P<verb>[A-Za-z']+)\b", re.IGNORECASE)
+_BARE_VERBS_THAT = frozenset({"is","was","will","would","can","could","may","might","makes","means","shows","leads","points","suggests","implies","explains","matters","helps","keeps","gives","adds","reflects","reveals","signals","indicates","works","comes","puts","brings","raises","drives","pushes","creates","lets","allows","leaves","supports","fits","covers","remains","becomes","seems","looks","translates","amounts","equates"})
+_BARE_VERBS_IT = frozenset({"means","shows","points","suggests","implies","explains","matters","leads","signals","reflects","reveals","indicates","helps","makes","keeps","gives","adds"})
+_MERGE_MAX_WORDS = 45
+
+
+def join_bare_pointers(sections: list[dict], logger: logging.Logger) -> list[dict]:
+    """Join a sentence that opens with a bare pointing word (That/This + verb, or It + a pointing verb) to the sentence before it with ', which'."""
+    for s in sections:
+        n, originals = 0, []
+        for pi, p in enumerate(s["paragraphs"]):
+            lines = []
+            for line in p.split("\n"):
+                marker, text = "", line
+                if text.startswith("- ") or text.startswith("• "):
+                    marker, text = text[:2], text[2:]
+                out = []
+                for sent in [x for x in _SENTENCE_SPLIT_RE.split(text) if x.strip()]:
+                    m = _BARE_POINTER_RE.match(sent)
+                    prev = out[-1].rstrip() if out else ""
+                    verb_ok = (m and m.group("verb").lower() in (
+                        _BARE_VERBS_IT if m.group("dem").lower() == "it" else _BARE_VERBS_THAT))
+                    joined = ""
+                    if (m and prev and verb_ok and prev.endswith(".") and not prev.endswith("..")
+                            and len(prev.split()) >= 4 and prompts.SPONSOR_TOKEN not in prev
+                            and prompts.SPONSOR_TOKEN not in sent):
+                        joined = prev[:-1] + ", which " + sent[m.start("verb"):]
+                        if len(joined.split()) <= _MERGE_MAX_WORDS:
+                            originals.append(sent[:80])
+                            out[-1] = joined
+                            n += 1
+                            continue
+                    out.append(sent)
+                lines.append(marker + " ".join(out) if out else line)
+            s["paragraphs"][pi] = "\n".join(lines)
+        if n:
+            label = s["sop"][0] if s.get("sop") else "the opening"
+            logger.info(f"[write] joined {n} sentence(s) that opened with a bare pointing word to the sentence before in {label}: "
+                        + " | ".join(originals))
+    return sections
+
+
 def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, sponsor_text: str, logger: logging.Logger) -> list[dict]:
     """An invented or rounded figure ("near 7%" from a 7.3% CAGR) must never print. The write prompt bans
     rounding and the trace check flags a number that no fact-sheet entry, evidence item, guest point, the
@@ -438,6 +484,7 @@ def run_write_v2(
     sections = strip_untraced_figures(sections, inp, sponsor.text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
     sections = fix_pointing_determiners(sections, logger)
+    sections = join_bare_pointers(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")

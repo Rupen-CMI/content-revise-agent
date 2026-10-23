@@ -132,6 +132,14 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
         if re.search(r"\d", kw):
             logger.info(f"[demand] dropped long-tail (it holds a year or number, which cannot sit naturally in prose): {kw!r}")
             continue
+        words = re.findall(r"[a-z]+", kw)
+        repeats = {w for w in words if len(w) >= 4 and words.count(w) > 1}
+        if repeats:
+            logger.info(f"[demand] dropped long-tail (a word repeats, so it cannot read as one phrase): {kw!r}")
+            continue
+        if re.search(r"^(what|why|how|who|where|when|which)\s+(is|are|does|do)\b", kw):
+            logger.info(f"[demand] dropped long-tail (it reads as a question): {kw!r}")
+            continue
         n = len(kw.split())
         if not _LONGTAIL_MIN_WORDS <= n <= _LONGTAIL_MAX_WORDS:
             logger.info(f"[demand] dropped long-tail (length {n}): {kw!r}")

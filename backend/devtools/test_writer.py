@@ -156,6 +156,66 @@ for dem, nxt, want in _noun_follows_cases:
     check(f"pointing: _noun_follows({dem!r}, {nxt!r}) is {want}",
           writer._noun_follows(dem, nxt) == want)
 
+
+# ------------------------------------------------------------------ bare pointing sentences joined with ', which'
+def jb(text: str) -> str:
+    return writer.join_bare_pointers([{"sop": ["trends"], "paragraphs": [text]}], LOG)[0]["paragraphs"][0]
+
+
+# The full decision table for the join rule (round 3): every MUST CHANGE row is attached to the sentence before it.
+join_change = [
+    ("Forecasters expect USD 910 million by 2034. That works out to growth of 7.3% a year.",
+     "Forecasters expect USD 910 million by 2034, which works out to growth of 7.3% a year."),
+    ("Buyers rent their tools from providers. That is why vendors host the browsers for them.",
+     "Buyers rent their tools from providers, which is why vendors host the browsers for them."),
+    ("Prices fell sharply last year. It means buyers pay less for managed services.",
+     "Prices fell sharply last year, which means buyers pay less for managed services."),
+    ("Demand keeps rising across every region. This shows how fast the market grows.",
+     "Demand keeps rising across every region, which shows how fast the market grows."),
+    ("Lead-in sentence.\n- Costs fell for most buyers. That makes buyers happy.",
+     "Lead-in sentence.\n- Costs fell for most buyers, which makes buyers happy."),
+    ("Prices fell sharply last year. That means buyers pay less. That makes switching cheap.",
+     "Prices fell sharply last year, which means buyers pay less, which makes switching cheap."),
+]
+for src, want in join_change:
+    check(f"join: must change -> {src[:50]}...", jb(src) == want, jb(src))
+
+# Every MUST STAY row must come back character for character.
+join_stay = [
+    "That is why buyers pay less for managed services.",
+    "Prices fell sharply last year! That makes switching cheap.",
+    "Prices fell sharply for these reasons: That makes switching cheap.",
+    "Here is the list: That makes switching cheap for everyone.",
+    "Prices fell sharply last year. That said, buyers still compare prices carefully.",
+    "Prices fell sharply last year. It is the largest region today.",
+    "Prices fell sharply last year. These are the main drivers of the market.",
+    "Prices fell. That makes switching cheap.",
+]
+for src in join_stay:
+    check(f"join: must stay unchanged -> {src[:50]}...", jb(src) == src, jb(src))
+
+# A merged sentence that would pass the 45-word cap is never built.
+_join_big_prev = ("Buyers across the region kept buying cleaner managed tools every quarter of the year, and the "
+                  "steady demand pushed every single provider in the field.")
+_join_big_cur = ("That makes the combined passage about services run well past the strict word limit that this "
+                 "deterministic check is meant to guard, so it stays.")
+check("join: a merged sentence over the word cap is left untouched",
+      jb(f"{_join_big_prev} {_join_big_cur}") == f"{_join_big_prev} {_join_big_cur}", jb(f"{_join_big_prev} {_join_big_cur}"))
+
+# The sponsor placeholder never moves into the merged sentence and a pair already carrying it never merges.
+_join_cur_sponsor = f"Prices fell sharply last year. That makes {prompts.SPONSOR_TOKEN} buyers happier."
+check("join: a sentence carrying the sponsor placeholder is untouched",
+      jb(_join_cur_sponsor) == _join_cur_sponsor, jb(_join_cur_sponsor))
+_join_prev_sponsor = f"Prices fell {prompts.SPONSOR_TOKEN} for teams in the field. That makes buyers happier."
+check("join: a sentence with the placeholder before the merge is untouched",
+      jb(_join_prev_sponsor) == _join_prev_sponsor, jb(_join_prev_sponsor))
+
+# Two separate `paragraphs` entries of one section are never merged across the paragraph boundary.
+_join_paras = ["Prices fell sharply last year.", "That makes switching cheap for everyone."]
+out = writer.join_bare_pointers([{"sop": [], "paragraphs": list(_join_paras)}], LOG)[0]["paragraphs"]
+check("join: two separate paragraphs of one section stay untouched", out == _join_paras, str(out))
+
+
 # ------------------------------------------------------------------ assembly
 written = {
     "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
@@ -227,6 +287,26 @@ try:
     para = next(s for s in secs_pt if s["sop"] == ["report_context"])["paragraphs"][0]
     check("call: a leading pointing word in the write output reaches the returned sections as 'The + noun'",
           para.startswith("The figure covers"), para)
+finally:
+    llm.chat_json = orig
+
+# The join backstop inside the call: the stubbed paragraph's figures must be traceable, so the size fact is
+# extended with them before the call (and its source restored, whose being named per figure would only re-filter
+# the sentence). Nothing after this block reads those two figures anywhere else.
+inp.items["fs.size"]["source"] = "CMI report"
+inp.items["fs.size"]["text"] += " The forecast reaches USD 910 million by 2034, working out to 7.3% a year."
+written_join = {
+    "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
+    "transition": {"paragraphs": ["Why it matters."]},
+    "sections": [{"sop": "trends", "heading": "model heading",
+                  "paragraphs": ["The forecast reaches USD 910 million by 2034. That works out to 7.3% a year."]}],
+}
+llm.chat_json = lambda *a, **k: written_join
+try:
+    _, _, secs_j, _ = writer.run_write_v2(plan, inp, sponsor, report, LOG)
+    para = next(s for s in secs_j if s["sop"] == ["trends"])["paragraphs"][0]
+    check("call: a bare pointing sentence in the write output is joined to the sentence before with ', which'",
+          "by 2034, which works out to 7.3% a year." in para, para)
 finally:
     llm.chat_json = orig
 
