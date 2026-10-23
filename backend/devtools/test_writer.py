@@ -272,6 +272,12 @@ sponsor = Paragraph(index=0, text="Teams can ask Acme Corp for help with scrapin
 report = reports.Report(news_id=1, name=MARKET, subject="s", url="https://x", source="live", sections={"live_report_page": "p"})
 text = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-23")
 check("prompt: carries the final title and every section's exact heading", plan["title"] in text and all(s["heading"] in text for s in plan["sections"]))
+_lt_lines = sum(1 for s in plan["sections"] if s["longtail"])
+check("prompt: the long-tail line carries the REQUIRED framing like the secondary keyword's",
+      _lt_lines > 0
+      and text.count("REQUIRED long-tail search: one sentence of this section must contain every content word of ") == _lt_lines
+      and "REQUIRED secondary keyword" in text,
+      str([l for l in text.splitlines() if "long-tail search:" in l]))
 check("prompt: a question heading is flagged to be answered directly", text.count("Answer it directly in the first one or two sentences") == 3)
 check("prompt: the report link token and the sponsor placeholder are present", f"[[CMI_LINK:{MARKET}]]" in text and prompts.SPONSOR_TOKEN in text)
 check("prompt: an outside-sourced fact is marked NOT CMI", "NOT CMI" not in text or "source: News Site" in text)

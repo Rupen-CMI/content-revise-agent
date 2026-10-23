@@ -64,7 +64,9 @@ def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
         lines.append(f'  - REQUIRED secondary keyword: one sentence of this section must contain all three words "{s["secondary"]}", "{core}" and "market" (reorder them as the sentence needs). A synonym does not count: an "opening" is not "opportunities", "how big" is not "size", and a sentence that says "the main drivers" without naming the market does not carry the keyword. Put that sentence in one paragraph only.')
     if s["longtail"]:
         lt = next(x for x in inp.longtails if x["id"] == s["longtail"])
-        lines.append(f'  - Long-tail search: "{lt["keyword"]}" (rests on {lt["fact"]}).')
+        lines.append(f'  - REQUIRED long-tail search: one sentence of this section must contain every content word of '
+                     f'"{lt["keyword"]}" (reorder the words freely; only a, the, of, in, for, and may sit between them; '
+                     f'never swap a word for a synonym). (rests on {lt["fact"]}).')
     if s["terms"]:
         lines.append("  - Related terms (optional): " + ", ".join(s["terms"]) + ".")
     return "\n".join(lines) or "  - No keyword is assigned to this section beyond the primary keyword."

@@ -285,6 +285,23 @@ for s in raw["sections"]:
     s["longtail"] = None
 p = plan_of(raw)
 check("keywords: with none chosen, long-tails are added where their own fact sits", sum(1 for s in p["sections"] if s["longtail"]) >= 2)
+inp3 = make_inputs()
+inp3.longtails = [
+    {"id": "L9", "keyword": "top companies widgets market", "fact": "fs.players", "why": "x"},  # every word sits in Q5
+    {"id": "L1", "keyword": "cloud based widget services by region", "fact": "fs.regions.leader", "why": "x"},
+    {"id": "L2", "keyword": "widget piracy risk", "fact": "fs.restraints.0", "why": "x"},
+]
+raw = good_plan()
+for s in raw["sections"]:
+    s["longtail"] = None
+raw["sections"][4]["msq"] = None          # make room for a third question heading
+raw["sections"][5]["msq"] = "Q5"          # key_players heads Q5, whose question words L9 would only restate
+raw["sections"][5]["longtail"] = "L9"
+p = plan_of(raw, inp3)
+check("long-tails: a phrase whose words all sit in its section's MSQ question is dropped and valid phrases fill the minimum",
+      S(p, "key_players")["longtail"] is None and S(p, "country_us")["longtail"] == "L1" and S(p, "trends")["longtail"] == "L2"
+      and any("restates the question heading" in r for r in p["repairs"]),
+      str([s["longtail"] for s in p["sections"]]) + "; " + str(p["repairs"]))
 raw = good_plan()
 raw["sections"][1]["terms"] = ["Cloud Based", "made up term", "browser extension", "data aggregation", "cloud based"]
 p = plan_of(raw)

@@ -101,13 +101,21 @@ lt2 = demand.normalize_longtails([
     {"keyword": "web scraping services market size in north america", "fact": "fs.segments.0", "why": "regional buyers"},
     {"keyword": "what is driving growth in web scraping services", "fact": "fs.segments.0", "why": "x"},  # reads as a question
     {"keyword": "how are buyers choosing web scraping services", "fact": "fs.regions.leader", "why": "x"},  # reads as a question
-    {"keyword": "why banks are adopting wealth management platforms", "fact": "fs.regions.leader", "why": "buyers"},
+    {"keyword": "why banks are adopting wealth management platforms", "fact": "fs.regions.leader", "why": "buyers"},  # opens with an interrogative
     {"keyword": "cloud versus on premises wealth management platforms", "fact": "fs.segments.0", "why": "buyers"},
 ], FLAT, MARKET, LOG)
 check("long-tail: a repeating word or a question-shaped start is dropped; natural phrases even with no repeated word are kept",
       [x["keyword"] for x in lt2] == ["web scraping services market size in north america",
-                                      "why banks are adopting wealth management platforms",
                                       "cloud versus on premises wealth management platforms"], str([x["keyword"] for x in lt2]))
+
+lt3 = demand.normalize_longtails([
+    {"keyword": "how vendors price plans", "fact": "fs.segments.0", "why": "x"},     # opens with an interrogative + noun phrase
+    {"keyword": "why buyers switch tools", "fact": "fs.segments.0", "why": "x"},     # opens with an interrogative + noun phrase
+    {"keyword": "which vendors sell widgets", "fact": "fs.segments.0", "why": "x"},  # opens with an interrogative + noun phrase
+    {"keyword": "software for small teams", "fact": "fs.segments.0", "why": "x"},    # a noun-phrase search that fits a statement
+], FLAT, MARKET, LOG)
+check("long-tail: any phrase that opens with an interrogative word is dropped; a noun-phrase search is kept",
+      [x["keyword"] for x in lt3] == ["software for small teams"], str([x["keyword"] for x in lt3]))
 
 # ------------------------------------------------------------------ answerability
 def fs_with(**fields):

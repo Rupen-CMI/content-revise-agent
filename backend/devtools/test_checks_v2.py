@@ -82,7 +82,7 @@ def good_draft() -> list[dict]:
             filler(140),
         ]},
         {"heading": plan_sec["trends"]["heading"], "sop": ["trends"], "paragraphs": [
-            pad(30, [f"What is changing the {MARKET} first shows in its trends."]),
+            pad(30, [f"What is changing the {MARKET} first shows in its trends, and {ls['L2']} leads the list."]),
             "\n".join(f"- {filler(57)}" for _ in range(3)),
         ]},
         {"heading": plan_sec["segmentation"]["heading"], "sop": ["segmentation"], "paragraphs": [

@@ -117,7 +117,8 @@ def normalize_terms(raw, market_name: str, logger: logging.Logger) -> list[str]:
 def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: logging.Logger) -> list[dict]:
     """Informational long-tail searches, shaped like the older long-tail records ({keyword, intent, why}) so the keyword
     highlighting and checks that already read them keep working. Each must rest on a real fact id, be 3-8 words and hold
-    at least two words beyond the market's own name."""
+    at least two words beyond the market's own name. The phrases are noun-phrase style searches: they fit inside a
+    statement, so a question-shaped phrase (one whose first word is an interrogative) is never kept."""
     fact_ids = {f["id"] for f in flat_facts}
     core_words = set(re.findall(r"[a-z0-9]+", _market_core(market_name))) | {"market", "global", "the", "of", "in", "for", "and"}
     out: list[dict] = []
@@ -137,8 +138,10 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
         if repeats:
             logger.info(f"[demand] dropped long-tail (a word repeats, so it cannot read as one phrase): {kw!r}")
             continue
-        if re.search(r"^(what|why|how|who|where|when|which)\s+(is|are|does|do)\b", kw):
-            logger.info(f"[demand] dropped long-tail (it reads as a question): {kw!r}")
+        # a long-tail search phrase is a noun-phrase style search that a writer can sit inside a statement, so any
+        # phrase that opens with an interrogative word (a question) is rejected, whatever follows it
+        if kw.split() and kw.split()[0] in ("what", "why", "how", "who", "whom", "whose", "where", "when", "which"):
+            logger.info(f"[demand] dropped long-tail (read as a question, and a long-tail must fit inside a statement): {kw!r}")
             continue
         n = len(kw.split())
         if not _LONGTAIL_MIN_WORDS <= n <= _LONGTAIL_MAX_WORDS:

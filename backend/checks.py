@@ -1635,15 +1635,43 @@ def run_checks_v2(
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
     results.append(CheckResult("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words"))
 
-    # ---- soft (§3.9): 2-3 long-tail keywords used
+    # ---- soft (§3.9): 2-3 long-tail keywords used — counted against the phrases the PLAN assigned when it assigned at
+    # least one (the writer is only on the hook for its own sections; the pool holds spares the plan never handed out).
+    # With no assignment (or no plan) the whole pool is counted, as before.
     longtail_phrases = [lt["keyword"] for lt in getattr(inp, "longtails", [])]
     if longtail_phrases:
+        lt_by_id = {lt["id"]: lt["keyword"] for lt in getattr(inp, "longtails", [])}
+        plan_sections = (plan.get("sections") if isinstance(plan, dict) else None) or []
+        assigned_ids = [s.get("longtail") for s in plan_sections if s.get("longtail")]
+        assigned_phrases = [lt_by_id[lid] for lid in assigned_ids if lid in lt_by_id]
+        pool = assigned_phrases or longtail_phrases
         body = full.replace(SPONSOR_TOKEN, " ")
-        used_lt = [kw for kw in longtail_phrases if longtail_spans(body, kw)]
+        used_lt = [kw for kw in pool if longtail_spans(body, kw)]
+        if assigned_phrases:
+            detail = (f"{len(used_lt)} of {len(assigned_phrases)} assigned used ({len(longtail_phrases)} in pool): "
+                      + (", ".join(used_lt) or "none"))
+        else:
+            detail = f"{len(used_lt)} of {len(longtail_phrases)} used: " + (", ".join(used_lt) or "none")
         results.append(CheckResult(
             f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
             LONGTAIL_MIN_USED <= len(used_lt) <= LONGTAIL_MAX_USED,
-            f"{len(used_lt)} of {len(longtail_phrases)} used: " + (", ".join(used_lt) or "none"),
+            detail,
+        ))
+        # and each assigned phrase must appear in the section the plan gave it, not only somewhere in the post
+        assigned_by_sop = {s["sop"]: s["longtail"] for s in plan_sections
+                           if isinstance(s.get("sop"), str) and s.get("longtail")}
+        missing_in_section = []
+        for s in sections:
+            tag = s["sop"][0] if _is_market_section(s) else ""
+            kw = lt_by_id.get(assigned_by_sop.get(tag, ""))
+            if kw is None:
+                continue
+            if not longtail_spans("\n".join(s["paragraphs"]), kw):
+                missing_in_section.append(kw)
+        results.append(CheckResult(
+            "Every assigned long-tail is used in its own section (soft)",
+            not missing_in_section,
+            ", ".join(missing_in_section),
         ))
 
     # ---- soft (§3.9): no sentence over the word ceiling

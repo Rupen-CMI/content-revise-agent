@@ -324,6 +324,22 @@ def _fallback_heading(sop: str, market_name: str) -> str:
     return _FALLBACK_HEADINGS[sop].format(market=market_name)
 
 
+def _longtail_restates_heading(lt: dict, s: dict, msq_by_id: dict) -> bool:
+    """True when a long-tail phrase would only restate its section's question heading: the section's heading is an MSQ
+    question and every content word of the phrase (stemmed the way checks._stem stems, light glue words ignored) already
+    sits in that question text. Such a phrase can only repeat the heading's own words inside the section, so it is never
+    assigned there."""
+    import checks
+    if not lt.get("keyword") or not s.get("msq"):
+        return False
+    content = [w for w in re.findall(r"[a-z0-9']+", str(lt["keyword"]).lower()) if w not in checks._LONGTAIL_GLUE_WORDS]
+    if not content:
+        return False
+    q = msq_by_id.get(s["msq"]) or {}
+    qstems = {checks._stem(m.group(0)) for m in re.finditer(r"[a-z0-9']+", str(q.get("question") or "").lower())}
+    return all(checks._stem(w) in qstems for w in content)
+
+
 def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     """Turn the planner's raw answer into a plan that satisfies every structural rule. Pure: no network, no model.
     Returns {title, title_basis, intro, transition, sections, faq, budgets, repairs}."""
@@ -497,6 +513,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
                 repair(f"segmentation: long-tail {lid} dropped (a list leaves no room for a natural sentence)")
             elif longtail_by_id[lid]["fact"] not in s["facts"]:
                 repair(f"{s['sop']}: long-tail {lid} rests on {longtail_by_id[lid]['fact']}, which is not in this section, and was dropped")
+            elif _longtail_restates_heading(longtail_by_id[lid], s, msq_by_id):
+                repair(f"{s['sop']}: long-tail {lid} only restates the question heading and was dropped")
             else:
                 s["longtail"] = lid
                 used_lt.append(lid)
@@ -504,7 +522,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
         for lt in inp.longtails:
             if len(used_lt) >= LONGTAIL_MIN:
                 break
-            host = next((s for s in sections if s["longtail"] is None and s["sop"] != "segmentation" and lt["fact"] in s["facts"]), None)
+            host = next((s for s in sections if s["longtail"] is None and s["sop"] != "segmentation"
+                         and lt["fact"] in s["facts"] and not _longtail_restates_heading(lt, s, msq_by_id)), None)
             if host and lt["id"] not in used_lt:
                 host["longtail"] = lt["id"]
                 used_lt.append(lt["id"])
