@@ -568,7 +568,7 @@ check("pile setup: the plan keeps the placed long-tails with L4 on subsegment",
 
 d = good_draft()
 d[5]["paragraphs"][0] = pad(75, ["Custom cloud based widget services marketplace pricing decides which tools a team buys."])
-run = run_v2(TITLE, d, plan=plan4, inp=inp4)
+run = run_v2(TITLE, d, plan=plan4, inp=inp4, include_disconnected=True)
 r = by_name(run, PILE_NAME)
 check("pile: a phrase pasted as the pile-of-nouns subject at the head of a sentence is flagged",
       not r.passed, r.detail)
@@ -577,12 +577,12 @@ check("pile: the check is advisory and log-only", "(soft)" in r.name, r.name)
 
 d = good_draft()
 d[5]["paragraphs"][0] = pad(75, ["Widget teams pay custom prices for the cloud services they use in daily work."])
-run = run_v2(TITLE, d, plan=plan4, inp=inp4)
+run = run_v2(TITLE, d, plan=plan4, inp=inp4, include_disconnected=True)
 r = by_name(run, PILE_NAME)
 check("pile: a normal placement of the same words passes", r.passed, r.detail)
 
 d = good_draft()
-run = run_v2(TITLE, d, plan=plan4, inp=inp4)
+run = run_v2(TITLE, d, plan=plan4, inp=inp4, include_disconnected=True)
 r = by_name(run, PILE_NAME)
 check("pile: the good draft flags nothing", r.passed, r.detail)
 
@@ -649,7 +649,7 @@ raw5["sections"][3]["longtail"] = "L5"      # the sub-segment section, where its
 plan5 = planning.validate_plan(raw5, inp5, test_planning.LOG)
 d = good_draft()
 d[5]["paragraphs"][0] = pad(75, [LT_SPREAD_SENT])
-run = run_v2(TITLE, d, plan=plan5, inp=inp5)
+run = run_v2(TITLE, d, plan=plan5, inp=inp5, include_disconnected=True)
 r = by_name(run, "Every assigned long-tail")
 check("long-tail loose: the spread, reordered use counts for its own section",
       r.passed and "zorb" not in r.detail, r.detail)
@@ -657,7 +657,7 @@ r = by_name(run, "Uses 2-3 long-tail")
 check("long-tail loose: the spread use is counted in the used tally",
       r.passed and "zorb widget services pricing" in r.detail, r.detail)
 d = good_draft()
-run = run_v2(TITLE, d, plan=plan5, inp=inp5)
+run = run_v2(TITLE, d, plan=plan5, inp=inp5, include_disconnected=True)
 r = by_name(run, "Every assigned long-tail")
 check("long-tail loose: with the phrase's words absent the own-section check still fails",
       not r.passed and "zorb widget services pricing" in r.detail, r.detail)
@@ -674,6 +674,50 @@ notes = checks.longtail_pile_notes([{"heading": "", "sop": ["subsegment"], "para
     "Vendors charge custom prices so cloud widgets spread marketplace pricing costs apart."]}],
     ["custom cloud based widget services marketplace pricing"])
 check("pile extended: the same words spread across the clause raise no pile note", notes == [], str(notes))
+
+# ------------------------------------------------------------------ disconnected soft checks (owner's instruction)
+
+# Five soft checks are DISCONNECTED from the default results on the owner's instruction: the code that
+# builds them stays in checks.py, and include_disconnected=True is the only way to get them back.
+
+DISC_NAMES = {
+    "Uses 2-3 long-tail keywords (soft)",
+    "Every assigned long-tail is used in its own section (soft)",
+    "No long-tail phrase is pasted as a noun pile (soft)",
+    "No sentence over 30 words (soft)",
+    "Readability Flesch >= 50 (soft)",
+}
+
+check("disconnected: the set holds exactly five names", len(checks.V2_DISCONNECTED_CHECKS) == 5,
+      str(checks.V2_DISCONNECTED_CHECKS))
+check("disconnected: the set holds exactly the five disconnected names",
+      set(checks.V2_DISCONNECTED_CHECKS) == DISC_NAMES, str(sorted(checks.V2_DISCONNECTED_CHECKS)))
+check("disconnected: the set entries derive from the constants that build the names",
+      f"Uses {checks.LONGTAIL_MIN_USED}-{checks.LONGTAIL_MAX_USED} long-tail keywords (soft)" in checks.V2_DISCONNECTED_CHECKS
+      and f"No sentence over {checks._V2_SENTENCE_MAX_WORDS} words (soft)" in checks.V2_DISCONNECTED_CHECKS
+      and f"Readability Flesch >= {checks._V2_FLESCH_MIN} (soft)" in checks.V2_DISCONNECTED_CHECKS)
+
+d = good_draft()
+default = run_v2(TITLE, d)
+default_names = [r.name for r in default]
+check("disconnected: by default none of the five names is in the results",
+      not [n for n in default_names if n in DISC_NAMES],
+      str([n for n in default_names if n in DISC_NAMES]))
+check("disconnected: the active-voice soft check still runs by default",
+      any("Active voice" in n for n in default_names))
+check("disconnected: hard checks still run by default",
+      any(n.startswith("Draft structure matches") for n in default_names))
+check("disconnected: other soft checks still run by default (length band, tertiary terms)",
+      any(n == "Length is 1,200-1,500 words (soft)" for n in default_names))
+
+flagged = run_v2(TITLE, d, include_disconnected=True)
+flagged_names = [r.name for r in flagged]
+check("disconnected: with the flag all five soft checks (that apply to the draft) are present",
+      not [n for n in DISC_NAMES if n not in flagged_names],
+      str([n for n in DISC_NAMES if n not in flagged_names]))
+check("disconnected: adding the flag loses nothing else (default == flagged minus the five)",
+      default_names == [n for n in flagged_names if n not in DISC_NAMES],
+      str([n for n in flagged_names if n not in DISC_NAMES and n not in default_names]))
 
 # ------------------------------------------------------------------ summary
 

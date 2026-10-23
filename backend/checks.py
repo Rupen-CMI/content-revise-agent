@@ -1519,6 +1519,19 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
     return [s2[:90] for s2 in passive[:4]]
 
 
+# Names of the soft checks DISCONNECTED from run_checks_v2's results, on the owner's instruction
+# ('remove all these SOPs'): the code that produces them is kept untouched above, the results just no
+# longer surface in the draft's checks list. Re-enable by emptying this set. The names are derived
+# from the same constants that build them inside run_checks_v2, so the strings keep matching there.
+V2_DISCONNECTED_CHECKS = frozenset({
+    f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
+    "Every assigned long-tail is used in its own section (soft)",
+    "No long-tail phrase is pasted as a noun pile (soft)",
+    f"No sentence over {_V2_SENTENCE_MAX_WORDS} words (soft)",
+    f"Readability Flesch >= {_V2_FLESCH_MIN} (soft)",
+})
+
+
 # ===================================================================================================
 # run_checks_v2 — the v2 chain's check list (§3.9): the kept checks from the old run_checks, the new
 # hard checks (the plan's validated structure, block shares and order, placeholder figures, number
@@ -1533,6 +1546,7 @@ def run_checks_v2(
     sponsor_brand_terms: list[str] = (), sponsor_text: str = "",
     report_text: str = "", report_name: str = "",
     selection: dict | None = None, hits: list | None = None,
+    include_disconnected: bool = False,
 ) -> list[CheckResult]:
     import planning
 
@@ -1858,4 +1872,7 @@ def run_checks_v2(
             f"not found: {', '.join(t for t in terms if t not in used_terms)}",
         ))
 
-    return results
+    # The disconnected soft checks stay out of the results unless the caller asks for them again.
+    if include_disconnected:
+        return results
+    return [r for r in results if r.name not in V2_DISCONNECTED_CHECKS]
