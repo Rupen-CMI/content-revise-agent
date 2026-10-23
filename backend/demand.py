@@ -193,8 +193,18 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
             continue
         seen.add(kw)
         out.append({"keyword": kw, "intent": "informational", "why": " ".join(str(item.get("why") or "").split()), "fact": fid})
-        if len(out) >= _LONGTAIL_MAX:
-            break
+    # cap the kept pool, preferring fact diversity: take at most 2 phrases per fact id in order first, then fill the
+    # remaining slots in order, so phrases resting on different facts survive the cut whenever they exist
+    per_fact: dict[str, int] = {}
+    primary: list[dict] = []
+    for rec in out:
+        f = rec["fact"]
+        if per_fact.get(f, 0) < 2:
+            per_fact[f] = per_fact.get(f, 0) + 1
+            primary.append(rec)
+    rest = [rec for rec in out if rec not in primary]
+    out = primary + rest
+    out = out[:_LONGTAIL_MAX]
     logger.info(f"[demand] {len(out)} long-tail search(es): {[o['keyword'] for o in out]}")
     return out
 

@@ -145,7 +145,27 @@ check("long-tail: the market's core phrase is ONE noun unit, so phrases built on
                                       "enterprise adoption rates forecast by region"],
       str([x["keyword"] for x in lt4]))
 
-# ------------------------------------------------------------------ answerability
+# --- the kept pool caps at 8, preferring fact diversity when it must cut
+FIVE_FACTS = [{"id": f"fs.f{i}", "text": f"Fact {i}"} for i in range(5)]
+# 10 valid candidates: four rest on fs.f0, the other six spread over fs.f1..fs.f4
+TEN = [{"keyword": f"widget services for banks in item {letter} growth",
+        "fact": ["fs.f0", "fs.f0", "fs.f0", "fs.f0", "fs.f1", "fs.f1", "fs.f2", "fs.f2", "fs.f3", "fs.f4"][i],
+        "why": "buyers"}
+       for i, letter in enumerate("abcdefghij")]
+kept10 = demand.normalize_longtails(TEN, FIVE_FACTS, MARKET, LOG)
+check("long-tail: more than 8 valid candidates are cut to the cap of 8", len(kept10) == 8, str(len(kept10)))
+check("long-tail: the cap keeps at most 2 phrases per fact id when other facts have candidates",
+      all(sum(1 for x in kept10 if x["fact"] == f"fs.f{i}") <= 2 for i in range(5))
+      and all(any(x["fact"] == f"fs.f{i}" for x in kept10) for i in range(5)),
+      str([(x["keyword"], x["fact"]) for x in kept10]))
+# the diversity preference must never fall below the cap: with only one fact id, up to 8 are still kept
+ONE_FACT = [{"id": "fs.f0", "text": "Fact 0"}]
+NINE_ONE = [{"keyword": f"widget services for banks in item {letter} growth", "fact": "fs.f0", "why": "buyers"}
+            for letter in "abcdefghij"]
+kept1 = demand.normalize_longtails(NINE_ONE, ONE_FACT, MARKET, LOG)
+check("long-tail: with only one fact id, up to 8 phrases on that sole fact are still kept",
+      len(kept1) == 8 and all(x["fact"] == "fs.f0" for x in kept1), str([x["keyword"] for x in kept1]))
+
 def fs_with(**fields):
     fs = facts.validate_fact_sheet({}, "page", MARKET, LOG)
     fs.update(fields)
