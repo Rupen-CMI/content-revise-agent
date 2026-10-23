@@ -25,32 +25,37 @@ HEADING_QUESTIONS_MIN, HEADING_QUESTIONS_MAX = 2, 3
 SECONDARY_MIN, SECONDARY_MAX = 4, 6
 LONGTAIL_MIN, LONGTAIL_MAX = 2, 3
 TERMS_PER_SECTION, SNIPPETS_MAX, INTRO_POINTS_MIN, INTRO_POINTS_MAX = 3, 3, 2, 3
-_FACTS_MAX = {"report_context": 4, "trends": 6, "segmentation": 3, "subsegment": 4, "country_us": 5, "key_players": 5, "conclusion": 3}
+_FACTS_MAX = {"report_context": 4, "trends": 7, "segmentation": 3, "subsegment": 5, "country_us": 6, "key_players": 6, "conclusion": 3}
 _TRANSITION_MAX_WORDS = 40
 
 # Block word budgets (plan section 3.6b): hard caps on the share of the article body, met by construction.
-TARGET_WORDS = 1350               # middle of the SOP's 1,200-1,500
+# The article targets 1,350 words whatever the market carries (a short section fills its gap with plain
+# explanation), the intro budgets to ~18% (hard-capped 20%, growing-article exception for a long retained
+# paragraph), and the transition and market block take fixed shares of that target.
 MAX_WORDS = 1500
-INTRO_SHARE, INTRO_CAP = 0.18, 0.20
+TARGET_WORDS = 1350               # §3.6b: the SOP's 1,200-1,500 lands the target at its middle
+INTRO_SHARE, INTRO_CAP = 0.18, 0.20   # the intro budgets to ~18% of the target, hard-capped at 20%
 TRANSITION_SHARE = 0.075          # inside the 5-10% band
-MIN_OWN_INTRO_WORDS = 30          # below this the intro is one lead-in sentence plus the retained paragraph
-_SECTION_WEIGHTS = {"report_context": 110, "trends": 190, "segmentation": 90, "subsegment": 190,
+MIN_OWN_INTRO_WORDS = 20          # one lead-in sentence carrying the report link, beside the retained paragraph
+_SECTION_WEIGHTS = {"report_context": 110, "trends": 190, "segmentation": 70, "subsegment": 190,
                     "country_us": 150, "key_players": 150, "conclusion": 100}
-_THIN_WEIGHT = 0.6                # a section without good facts stays short
-_SECTION_BOUNDS = {"country_us": (110, 190), "conclusion": (80, 130)}  # the U.S. SOP is 100-200 words
+_FACTS_FOR_FULL_BUDGET = {"report_context": 3, "trends": 5, "segmentation": 3, "subsegment": 4, "country_us": 4, "key_players": 4}
+_MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
+_SECTION_BOUNDS = {"country_us": (110, 190)}  # the U.S. SOP is 100-200 words
+_THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sections run short of their SOP shapes
 
 # Which sections a report fact may sit in; headline figures live in report_context only so each is stated once.
 _FACT_SECTIONS = {
     "size": {"report_context"}, "forecast": {"report_context"}, "cagr": {"report_context"},
     "segments": {"segmentation", "subsegment"}, "regions": {"country_us"}, "us": {"country_us"},
-    "drivers": {"trends", "report_context", "subsegment", "country_us", "conclusion"},
-    "restraints": {"trends", "subsegment", "country_us", "conclusion"},
+    "drivers": {"trends", "report_context", "subsegment", "country_us"},
+    "restraints": {"trends", "subsegment", "country_us"},
     "opportunities": {"conclusion", "trends", "subsegment"},
     "players": {"key_players"},
 }
 _EVIDENCE_TAG_SECTIONS = {
-    "trends": {"trends", "subsegment", "country_us", "conclusion"}, "us": {"country_us"}, "players": {"key_players", "trends"},
-    "context": {"report_context", "segmentation", "subsegment", "trends", "key_players", "country_us", "conclusion"},
+    "trends": {"trends", "subsegment", "country_us"}, "us": {"country_us"}, "players": {"key_players", "trends"},
+    "context": {"report_context", "segmentation", "subsegment", "trends", "key_players", "country_us"},
 }
 _SHARED_FACTS = ("fs.segments.",)   # a segment split may serve both segmentation and the sub-segment analysis
 
@@ -77,32 +82,67 @@ _TITLE_HARD_MIN, _TITLE_HARD_MAX, _TITLE_SOFT_MIN, _TITLE_SOFT_MAX = 30, 80, 40,
 
 # --------------------------------------------------------------------------------------------------- budgets
 
-def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None) -> dict:
-    """Word budgets per block, computed from the retained paragraph's real length so the intro share stays under its
-    cap and the transition inside its band. Returns {target, intro_total, intro_own, transition, sections, notes}."""
-    lengths = lengths or {}
+def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, fact_counts: dict[str, int] | None = None) -> dict:
+    """Word budgets per block (§3.6b). The article targets 1,350 words regardless of how much material
+    the market carries — a section with fewer facts gets a smaller slice of the same market block and
+    fills its gap with plain explanation, not a shorter article. The intro budgets to about 18% of the
+    target (never below the retained paragraph plus one lead-in sentence), and the article grows inside
+    the 1,500-word ceiling when a long retained paragraph would otherwise break the 20% intro cap; the
+    transition takes 7.5%; the market block takes the remainder, split by each SOP section's weight
+    scaled by its fact count, with the SOP minimums clamped (U.S. 110-190) and any clamp redistributed
+    across the other sections.
+    Returns {target, intro_total, intro_own, transition, sections, market_total, notes}."""
+    lengths, fact_counts = lengths or {}, fact_counts or {}
     notes: list[str] = []
-    target = TARGET_WORDS
-    need = sponsor_words + MIN_OWN_INTRO_WORDS
-    if need > INTRO_CAP * target - 8:          # a very long retained paragraph: lengthen the article, never the intro cap
-        grown = min(MAX_WORDS, math.ceil(need / (INTRO_CAP - 0.01)))
-        notes.append(f"the retained paragraph ({sponsor_words} words) is long: the target grows from {target} to {grown} words")
-        target = grown
-    intro_total = max(need, round(INTRO_SHARE * target))
-    if intro_total > INTRO_CAP * target:
-        notes.append(f"the intro cannot fit the {INTRO_CAP:.0%} cap even at {target} words ({intro_total} words)")
-    transition = round(TRANSITION_SHARE * target)
-    market = target - intro_total - transition
-    weights = {s: _SECTION_WEIGHTS[s] * (_THIN_WEIGHT if lengths.get(s) in ("short", "qualitative") else 1.0) for s in ORDER}
-    scale = market / sum(weights.values())
-    words = {}
+    eff = {}
     for s in ORDER:
-        w = weights[s] * scale
-        lo, hi = _SECTION_BOUNDS.get(s, (0, 10 ** 6))
-        words[s] = int(round(min(max(w, lo), hi) if s in _SECTION_BOUNDS else w))
+        base = _FACTS_FOR_FULL_BUDGET.get(s)
+        factor = 1.0 if base is None else min(1.0, max(_MIN_FACTOR, (fact_counts.get(s, base) + 1) / (base + 1)))
+        if lengths.get(s) == "qualitative":
+            factor = min(factor, 0.8)
+        eff[s] = _SECTION_WEIGHTS[s] * factor
+    if sum(eff.values()) < _THIN_MATERIAL_SHARE * sum(_SECTION_WEIGHTS.values()):
+        notes.append("the material is thin: several market sections carry few facts; their budgets shrink "
+                     "inside the same 1,350-word target, and the writing fills the gap with explanation")
+    total = TARGET_WORDS
+    need = sponsor_words + MIN_OWN_INTRO_WORDS
+    cap_total = math.ceil(need / (INTRO_CAP - 0.01))
+    if cap_total > total:
+        notes.append(f"the retained paragraph ({sponsor_words} words) is long: the article grows from {round(total)} to {cap_total} words to keep the intro under {INTRO_CAP:.0%}")
+        total = min(MAX_WORDS, cap_total)
+    intro_total = max(need, round(INTRO_SHARE * TARGET_WORDS))
+    transition = round(TRANSITION_SHARE * total)
+    market = total - intro_total - transition
+    if intro_total > INTRO_CAP * total:
+        notes.append(f"the intro cannot fit the {INTRO_CAP:.0%} cap at {round(total)} words ({intro_total} words)")
+    words = {s: market * eff[s] / sum(eff.values()) for s in ORDER}
+    bound = _SECTION_BOUNDS.get("country_us")
+    clamp_note = None
+    if bound and words["country_us"] < bound[0]:
+        words["country_us"] = bound[0]
+        clamp_note = f"the country_us section is lifted to its SOP minimum of {bound[0]} words"
+    elif bound and words["country_us"] > bound[1]:
+        words["country_us"] = bound[1]
+        clamp_note = f"the country_us section is held to its SOP maximum of {bound[1]} words"
+    if clamp_note:
+        rest = [s for s in ORDER if s != "country_us"]
+        rest_total = market - words["country_us"]
+        rest_eff = sum(eff[s] for s in rest)
+        for s in rest:
+            words[s] = rest_total * eff[s] / rest_eff
+        notes.append(clamp_note)
+    ints = {s: int(round(w)) for s, w in words.items()}
+    diff = market - sum(ints.values())
+    if diff:
+        biggest = max(ints, key=lambda s: ints[s])
+        ints[biggest] += diff
+    for s in ("trends", "subsegment"):
+        if ints[s] < 100:
+            notes.append(f"the {s} section's material is thin ({int(fact_counts.get(s, _FACTS_FOR_FULL_BUDGET[s]))} facts): "
+                         f"its {ints[s]}-word budget is under its SOP shape")
     return {
-        "target": target, "intro_total": intro_total, "intro_own": max(0, intro_total - sponsor_words),
-        "transition": transition, "sections": words, "market_total": sum(words.values()), "notes": notes,
+        "target": round(total), "intro_total": intro_total, "intro_own": max(0, intro_total - sponsor_words),
+        "transition": transition, "sections": ints, "market_total": sum(ints.values()), "notes": notes,
     }
 
 
@@ -229,6 +269,25 @@ def fallback_title(market_name: str, plan_sections: list[dict]) -> str:
 def _split_key(name: str) -> str:
     """A segment split's name without the words the fact list wraps around it ("Segmentation type", "By type")."""
     return re.sub(r"^(?:segmentation|segment|split|by)\s+", "", facts._norm(name)).strip()
+
+
+_SNIPPET_STOP = frozenset({
+    "about", "after", "again", "because", "being", "between", "could", "every", "from", "have", "into", "makes", "matters",
+    "might", "more", "most", "much", "once", "other", "over", "should", "still", "than", "that", "their", "then", "there",
+    "these", "they", "this", "those", "through", "under", "until", "very", "what", "when", "where", "which", "while", "with",
+    "without", "would", "market", "markets",
+})
+
+
+def _vocab(text: str) -> set[str]:
+    return {facts._stem(w) for w in re.findall(r"[a-z]{5,}", (text or "").lower()) if w not in _SNIPPET_STOP}
+
+
+def _snippet_fits(point_text: str, section: dict, inp: PlanInputs) -> bool:
+    """A guest snippet may sit in a market section only when it shares real vocabulary with that section's heading, point
+    or facts (two or more content words), so it illustrates what the section says instead of changing the subject."""
+    section_text = " ".join([section["heading"], section["point"]] + [inp.items[f]["text"] for f in section["facts"]])
+    return len(_vocab(point_text) & _vocab(section_text)) >= 2
 
 
 def _fallback_heading(sop: str, market_name: str) -> str:
@@ -399,6 +458,10 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
                 repair(f"{s['sop']}: long-tail {lid} is already used and was dropped")
             elif len(used_lt) >= LONGTAIL_MAX:
                 repair(f"{s['sop']}: long-tail {lid} dropped (at most {LONGTAIL_MAX})")
+            elif s["sop"] == "segmentation":
+                repair(f"segmentation: long-tail {lid} dropped (a list leaves no room for a natural sentence)")
+            elif longtail_by_id[lid]["fact"] not in s["facts"]:
+                repair(f"{s['sop']}: long-tail {lid} rests on {longtail_by_id[lid]['fact']}, which is not in this section, and was dropped")
             else:
                 s["longtail"] = lid
                 used_lt.append(lid)
@@ -406,7 +469,7 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
         for lt in inp.longtails:
             if len(used_lt) >= LONGTAIL_MIN:
                 break
-            host = next((s for s in sections if s["longtail"] is None and lt["fact"] in s["facts"]), None)
+            host = next((s for s in sections if s["longtail"] is None and s["sop"] != "segmentation" and lt["fact"] in s["facts"]), None)
             if host and lt["id"] not in used_lt:
                 host["longtail"] = lt["id"]
                 used_lt.append(lt["id"])
@@ -443,6 +506,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             repair(f"{s['sop']}: unknown guest point {pid!r} dropped")
         elif pid in intro_ids:
             repair(f"{s['sop']}: guest point {pid} already opens the article and was dropped as a snippet")
+        elif not _snippet_fits(next(p["text"] for p in inp.points if p["id"] == pid), s, inp):
+            repair(f"{s['sop']}: guest point {pid} shares too little with this section to illustrate it and was dropped as a snippet")
         elif snippets >= SNIPPETS_MAX:
             repair(f"{s['sop']}: guest snippet {pid} dropped (at most {SNIPPETS_MAX})")
         else:
@@ -457,7 +522,9 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
 
     # ---- lengths and budgets
     for s in sections:
-        if not s["facts"] or (s["sop"] == "key_players" and all(fid == "fs.players" for fid in s["facts"])):
+        if s["sop"] == "conclusion":
+            s["length"] = "normal"        # it pulls the post together from what is already there, so it needs no facts of its own
+        elif not s["facts"] or (s["sop"] == "key_players" and all(fid == "fs.players" for fid in s["facts"])):
             s["length"] = "short"     # no facts, or only a list of names with no detail to say about any of them
         elif s["sop"] == "country_us" and not any(
                 inp.items[f]["kind"] in ("us", "regions") or "us" in inp.items[f]["tags"] for f in s["facts"]):
@@ -466,7 +533,9 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             s["length"] = "normal"
         if s["sop"] == "country_us" and not inp.has_us_facts and s["length"] == "normal":
             s["length"] = "qualitative"
-    budgets = compute_budgets(inp.sponsor_words, {s["sop"]: s["length"] for s in sections})
+    budgets = compute_budgets(
+        inp.sponsor_words, {s["sop"]: s["length"] for s in sections},
+        {s["sop"]: len([f for f in s["facts"] if f != "fs.players"]) + (1 if "fs.players" in s["facts"] else 0) for s in sections})
     for note in budgets["notes"]:
         repair(note)
     for s in sections:

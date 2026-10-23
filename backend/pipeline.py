@@ -416,7 +416,7 @@ def _market_core(market_name: str) -> str:
 
 _VALID_SOP_TAGS = {
     "trends", "report_context", "segmentation", "subsegment",
-    "country_us", "key_players", "conclusion",
+    "country_us", "key_players", "conclusion", "transition",
 }
 
 # Some models (gpt-oss in testing: 50 non-breaking hyphens and 13 narrow no-break spaces in one
@@ -3211,26 +3211,38 @@ def run_finalize(
     evidence_citations: list[dict] = (),
     faq: list[dict] = (),
     longtails: list[dict] = (),
+    plan: dict | None = None, plan_inputs=None,
 ) -> RevampResult:
     """SOP checks + write .docx. Returns the finished RevampResult. `faq` (from run_faq) is never
-    passed to run_checks — it sits outside the article's word limit entirely, by construction, so it
-    must never influence a length/word-count/SOP check — but it is appended to the .docx output
-    after the article's own sections (see faq_sections)."""
+    passed to a length/word-count/SOP check whose body is the article itself — the market-first
+    chain's run_checks_v2 DOES read the FAQ (plan §3.8: FAQ figures must trace), but no article
+    length or share check ever counts FAQ words (they sit outside the article entirely). It is
+    appended to the .docx output after the article's own sections (see faq_sections)."""
     section(logger, "SOP CHECKS")
     report_text = _report_text(report)
     primary_kw, secondary_kw = _seo_keyword_plan(report.name)
-    checks = run_checks(
-        title, sections, f"{report_text}\n{evidence}\n{sponsor.text}", _brand_terms(sponsor),
-        sponsor.text, article.body, report.name, selection, hits, report_text=report_text,
-        primary_keyword=primary_kw, secondary_keywords=[kw for kw, _ in secondary_kw],
-        original_title=article.title, questions=_parse_question_assignments(evidence),
-        longtails=[t["keyword"] for t in longtails],
-    )
-    for c in checks:
+    # The market-first chain hands the finalized draft its validated plan and planner inputs; seen
+    # here, those pick checks.run_checks_v2 (the old chain's draft never has them). The v2 checks
+    # keep the checks §3.9 keeps and add the plan/structure/block ones; nothing below branches further.
+    if plan is not None and plan_inputs is not None:
+        check_results = checks.run_checks_v2(
+            title, sections, plan, plan_inputs, faq=faq, sponsor_brand_terms=_brand_terms(sponsor),
+            sponsor_text=sponsor.text, report_text=report_text, report_name=report.name,
+            selection=selection, hits=hits,
+        )
+    else:
+        check_results = run_checks(
+            title, sections, f"{report_text}\n{evidence}\n{sponsor.text}", _brand_terms(sponsor),
+            sponsor.text, article.body, report.name, selection, hits, report_text=report_text,
+            primary_keyword=primary_kw, secondary_keywords=[kw for kw, _ in secondary_kw],
+            original_title=article.title, questions=_parse_question_assignments(evidence),
+            longtails=[t["keyword"] for t in longtails],
+        )
+    for c in check_results:
         logger.info(("PASS " if c.passed else "FAIL ") + c.name + (f" - {c.detail}" if c.detail else ""))
 
     result = RevampResult(
-        title, sections, sponsor, report, candidates, orient, selection, hits, checks,
+        title, sections, sponsor, report, candidates, orient, selection, hits, check_results,
         evidence_citations=list(evidence_citations), faq=list(faq),
     )
     output_path = output_path_for(original_filename)

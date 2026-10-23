@@ -820,6 +820,8 @@ button.menu-toggle {
   --hl-primary-text: #78350f;
   --hl-secondary-bg: #bbf7d0;
   --hl-secondary-text: #14532d;
+  --hl-tertiary-bg: #e2e8f0;
+  --hl-tertiary-text: #334155;
   --hl-evidence-bg: #bfdbfe;
   --hl-evidence-text: #1e3a8a;
   --hl-longtail-bg: #fbcfe8;
@@ -830,6 +832,8 @@ button.menu-toggle {
   --hl-primary-text: #fde68a;
   --hl-secondary-bg: #14532d;
   --hl-secondary-text: #bbf7d0;
+  --hl-tertiary-bg: #334155;
+  --hl-tertiary-text: #e2e8f0;
   --hl-evidence-bg: #1e3a8a;
   --hl-evidence-text: #bfdbfe;
   --hl-longtail-bg: #831843;
@@ -838,6 +842,7 @@ button.menu-toggle {
 
 mark.hl-primary { background: var(--hl-primary-bg); color: var(--hl-primary-text); border-radius: 3px; padding: 0 2px; }
 mark.hl-secondary { background: var(--hl-secondary-bg); color: var(--hl-secondary-text); border-radius: 3px; padding: 0 2px; }
+mark.hl-tertiary { background: var(--hl-tertiary-bg); color: var(--hl-tertiary-text); border-radius: 3px; padding: 0 2px; }
 mark.hl-longtail { background: var(--hl-longtail-bg); color: var(--hl-longtail-text); border-radius: 3px; padding: 0 2px; }
 mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-text); border-radius: 3px; padding: 0 2px; cursor: help; }
 
@@ -857,9 +862,27 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .legend-swatch--primary { background: var(--hl-primary-bg); }
 .legend-swatch--secondary { background: var(--hl-secondary-bg); }
+.legend-swatch--tertiary { background: var(--hl-tertiary-bg); }
 .legend-swatch--longtail { background: var(--hl-longtail-bg); }
 .legend-swatch--evidence { background: var(--hl-evidence-bg); }
 .legend-count { font-weight: 700; color: var(--text); }
+
+/* Market-first chain (restructure plan §3.11): MSQ headings and FAQ entries carry a small tag so a
+   reviewer can tell at a glance which headings answer a Most Searched Question. */
+.msq-badge, .faq-intent {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
 
 /* ---------- Checklist ---------- */
 .checklist { list-style: none; margin: 0; padding: 4px 14px 14px; }
@@ -1005,6 +1028,7 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 /* ---------- FAQ block (final page) ---------- */
 #final-faq-block { margin-top: 24px; }
 .faq-item { padding: 16px 0; border-top: 1px solid var(--border); }
+.factsheet-gap strong { color: var(--danger, #b91c1c); }
 .faq-item:first-child { border-top: 0; padding-top: 6px; }
 .faq-item:last-child { padding-bottom: 0; }
 .faq-item .faq-question { margin: 0 0 6px; font-size: 15.5px; letter-spacing: 0.01em; }

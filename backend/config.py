@@ -39,6 +39,13 @@ SEARCH_MAX_PER_HOST = int(os.getenv("SEARCH_MAX_PER_HOST", "8"))  # per site, so
 # set true to turn it back on, nothing else needs to change (orient_claims() returns [] everywhere while this is off).
 SEARCH_CLAIMS_ENABLED = os.getenv("SEARCH_CLAIMS_ENABLED", "false").strip().lower() not in ("0", "false", "no", "off")
 
+# Market-first chain switch (docs/restructure_plan.md §4 phase 8): when true (default) the backend runs the
+# new chain — Step 2 builds the fact sheet (+ figure gap backing), search demand and publisher points, Step 3
+# selects evidence and marks the MSQs answerable, and Step 4 plans, writes and answers the FAQ, with
+# finalize running run_checks_v2. When false the original chain stays wired and running exactly as it was
+# (old Step 2 prep, old write + revise, old FAQ, old checks) — this only flips which Step 2/3/4 branches run.
+CMI_CHAIN_V2 = os.getenv("CMI_CHAIN_V2", "true").strip().lower() not in ("0", "false", "no", "off")
+
 CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"
 

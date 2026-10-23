@@ -225,6 +225,20 @@
             <ul class="plain-list" id="step2-questions"></ul>
           </div>
         </div>
+        <div class="content-card" id="step2-factsheet-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Fact sheet</span>
+            <p class="field-hint">Every figure the article may state, read off the confirmed report. A missing market size, forecast or growth rate is highlighted as a gap — Step 2 then looks for one outside source to fill it (below, "Figure gap"); a figure that stays a gap is never stated anywhere in the article.</p>
+            <ul class="plain-list" id="step2-factsheet"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step2-msqs-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Most searched questions</span>
+            <p class="field-hint">What people actually search about this market. The 2-3 that become article headings are picked when the article is planned (Step 4); the rest are answered in the FAQ. Answerability is checked in Step 3, once the evidence is in.</p>
+            <ul class="plain-list" id="step2-msqs"></ul>
+          </div>
+        </div>
         <div id="step2-confirm-block" class="btn-row">
           <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 (report facts)</button>
           <button class="btn btn-ghost" id="step2-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
@@ -330,6 +344,7 @@
         <div class="highlight-legend" id="final-highlight-legend">
           <span class="legend-item"><i class="legend-swatch legend-swatch--primary"></i> Primary keyword <span class="legend-count" id="legend-count-primary"></span></span>
           <span class="legend-item"><i class="legend-swatch legend-swatch--secondary"></i> Secondary keyword <span class="legend-count" id="legend-count-secondary"></span></span>
+          <span class="legend-item" id="legend-tertiary"><i class="legend-swatch legend-swatch--tertiary"></i> Related term <span class="legend-count" id="legend-count-tertiary"></span></span>
           <span class="legend-item" id="legend-longtail"><i class="legend-swatch legend-swatch--longtail"></i> Long-tail keyword <span class="legend-count" id="legend-count-longtail"></span></span>
           <span class="legend-item"><i class="legend-swatch legend-swatch--evidence"></i> Cited evidence <span class="legend-count" id="legend-count-evidence"></span></span>
         </div>

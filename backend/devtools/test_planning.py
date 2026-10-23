@@ -241,6 +241,16 @@ raw["intro"] = {"points": ["P9"]}
 p = plan_of(raw)
 check("intro: unknown guest points are dropped and the opening is topped up to two", len(p["intro"]["points"]) == 2)
 
+inp2 = make_inputs()
+inp2.points[4]["text"] = "Cloud pricing is metered by credit, so small jobs stay cheap for teams."
+inp2.points[5]["text"] = "A quick brown fox jumps over every lazy dog near the river."
+raw = good_plan()
+raw["sections"][3]["snippet"] = "P5"
+raw["sections"][5]["snippet"] = "P6"
+p = plan_of(raw, inp2)
+check("snippets: one that shares vocabulary with its section is kept, an unrelated one is dropped",
+      S(p, "subsegment")["snippet"] == "P5" and S(p, "key_players")["snippet"] is None, str([s["snippet"] for s in p["sections"]]))
+
 # ------------------------------------------------------------------ sub-segments
 raw = good_plan()
 raw["sections"][3]["sub_segments"] = [{"split": "By Type", "name": "Browser Extension"}, {"split": "By Type", "name": "Cloud Based"}]
@@ -284,6 +294,7 @@ check("robustness: nonsense input is survived", len(p["sections"]) == 7)
 
 # ------------------------------------------------------------------ budgets
 b = planning.compute_budgets(84)
+check("budgets: the target is the SOP's middle, 1,350", b["target"] == planning.TARGET_WORDS, str(b["target"]))
 check("budgets: the intro share is under its cap, the transition inside its band",
       b["intro_total"] / b["target"] <= planning.INTRO_CAP and 0.05 <= b["transition"] / b["target"] <= 0.10, str(b))
 total = b["intro_total"] + b["transition"] + b["market_total"]
@@ -293,9 +304,14 @@ check("budgets: the U.S. section stays inside the SOP's 100-200 words", 100 <= b
 check("budgets: the intro's own words are its budget minus the retained paragraph", b["intro_own"] == b["intro_total"] - 84)
 big = planning.compute_budgets(260)
 check("budgets: a very long retained paragraph lengthens the article, within the ceiling, and keeps the intro cap",
-      big["target"] > planning.TARGET_WORDS and big["target"] <= planning.MAX_WORDS and big["intro_total"] / big["target"] <= planning.INTRO_CAP and big["notes"], str(big))
-thin = planning.compute_budgets(84, {"trends": "short", "key_players": "short"})
+      big["target"] > b["target"] and big["target"] <= planning.MAX_WORDS and big["intro_total"] / big["target"] <= planning.INTRO_CAP and big["notes"], str(big))
+thin = planning.compute_budgets(84, {}, {"trends": 0, "key_players": 0})
 check("budgets: a thin section gets fewer words than a normal one", thin["sections"]["trends"] < b["sections"]["trends"])
+few = planning.compute_budgets(84, {}, {"report_context": 1, "trends": 1, "segmentation": 1, "subsegment": 0, "country_us": 1, "key_players": 0})
+check("budgets: fewer facts shrink a section inside the same 1,350-word target, and the shares still hold",
+      few["target"] == b["target"] and few["sections"]["trends"] < b["sections"]["trends"]
+      and few["intro_total"] / few["target"] <= planning.INTRO_CAP and 0.05 <= few["transition"] / few["target"] <= 0.10, str(few))
+check("budgets: a section's budget never falls below its floor share of its weight", few["sections"]["subsegment"] > 0)
 plan = plan_of(good_plan())
 check("budgets: the plan carries the code-computed words per block",
       plan["intro"]["words"] == plan["budgets"]["intro_total"] and all(s["words"] > 0 for s in plan["sections"]))

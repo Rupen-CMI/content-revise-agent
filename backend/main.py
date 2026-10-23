@@ -58,12 +58,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import checks
+import config
+import demand
+import facts
+import faqs
 import freshness
 import llm
 import pipeline
+import planning
 import prompts
+import publisher
 import reports
 import search
+import writer
 from docx_io import OUTPUT_DIR, Link, Paragraph, SourceArticle, read_docx
 from llm import LLMError
 from pipeline import PipelineError
@@ -253,6 +260,14 @@ class RunState:
     sections: list[dict] = field(default_factory=list)
     evidence_citations: list[dict] = field(default_factory=list)
     faq: list[dict] = field(default_factory=list)
+    # ---- market-first chain (v2, config.CMI_CHAIN_V2): Step 2's own products and Step 3/4's handoffs.
+    # The old fields above stay readable from either chain; finalize picks run_checks_v2 by plan_inputs.
+    fact_sheet: dict | None = None          # facts.run_fact_sheet (+ figure backing), Step 2
+    gap_pages: list | None = None           # the figure-gap search's candidate pages, Step 2
+    demand: dict | None = None              # run_search_demand; questions get their answerability in Step 3
+    publisher: dict | None = None           # publisher.run_publisher_points, Step 2
+    plan: dict | None = None                # planning.run_plan (validated + repaired), Step 4
+    plan_inputs: planning.PlanInputs | None = None   # the planner's world, built at the end of Step 3
 
 
 _RUNS: dict[str, RunState] = {}
@@ -493,10 +508,13 @@ def _display_sections(
     sections: list[dict], sponsor: Paragraph, report_url: str | None,
     primary_kw: str | None = None, secondary_plan: list[tuple[str, str]] = (),
     longtails: list[str] = (), counts: dict | None = None,
+    tertiary_terms: list[str] = (),
 ) -> list[dict]:
     """`counts`, when given, is filled with the keyword use counts that the highlighting itself found
-    ({"primary": n, "secondary": {kw: n}, "longtail": {phrase: n}}) — the SAME spans the reader sees
-    highlighted, so the legend at the top of the page can never disagree with the marks in the text."""
+    ({"primary": n, "secondary": {kw: n}, "longtail": {phrase: n}, "tertiary": {term: n}}) — the SAME
+    spans the reader sees highlighted, so the legend at the top of the page can never disagree with
+    the marks in the text. `tertiary_terms` (the market-first chain's related search terms) are marked
+    as a literal word-group; the old chain leaves it empty."""
     out = []
     for s in sections:
         # Only the secondary keywords TAGGED FOR this section are eligible to highlight in it — a
@@ -509,7 +527,8 @@ def _display_sections(
         for p in s.get("paragraphs", []):
             segs = _segment_dicts(p, sponsor, report_url)
             if primary_kw:
-                segs = _apply_keyword_spans(segs, primary_kw, section_secondary, longtails, counts)
+                segs = _apply_keyword_spans(segs, primary_kw, section_secondary, longtails, counts,
+                                            tertiary_terms=tertiary_terms)
             paragraphs.append(segs)
         out.append({"heading": s.get("heading", ""), "paragraphs": paragraphs})
     return out
@@ -520,6 +539,7 @@ def _display_sections(
 def _apply_keyword_spans(
     segments: list[dict], primary_kw: str, section_secondary: list[tuple[str, str]],
     longtails: list[str] = (), counts: dict | None = None,
+    tertiary_terms: list[str] = (),
 ) -> list[dict]:
     """Highlights the primary keyword's exact text, plus each SECTION-SCOPED secondary keyword's
     suffix word (only the keywords actually tagged for the section this paragraph belongs to —
@@ -537,12 +557,13 @@ def _apply_keyword_spans(
     # always win, since the primary keyword is never reworded and its exact text is the one thing
     # every CMI_LINK anchor and every full market-name mention actually is.
     taken: list[str | None] = [None] * len(plain)
+    low_plain = plain.lower()
     if counts is not None:
         counts.setdefault("primary", 0)
         counts.setdefault("secondary", {})
         counts.setdefault("longtail", {})
     if primary_kw:
-        low_plain, low_phrase = plain.lower(), primary_kw.lower()
+        low_phrase = primary_kw.lower()
         pos = 0
         while (i := low_plain.find(low_phrase, pos)) != -1:
             for k in range(i, i + len(low_phrase)):
@@ -563,6 +584,23 @@ def _apply_keyword_spans(
                 taken[k] = "longtail"
             if counts is not None:
                 counts["longtail"][phrase] = counts["longtail"].get(phrase, 0) + 1
+
+    # Pass 1c: the market-first chain's tertiary (related) search terms, marked as a plain
+    # case-insensitive word-group fill — a tertiary term is a loosely related phrase the writer
+    # used naturally, never restated verbatim from the plan, so the concept matcher used for
+    # secondary keywords above (§ market words + suffix words) has no suffix to anchor one.
+    for term in tertiary_terms:
+        if counts is not None:
+            counts.setdefault("tertiary", {})
+        low_term = term.lower()
+        pos = 0
+        while (i := low_plain.find(low_term, pos)) != -1:
+            if all(taken[k] is None for k in range(i, i + len(low_term))):
+                for k in range(i, i + len(low_term)):
+                    taken[k] = "tertiary"
+                if counts is not None:
+                    counts["tertiary"][term] = counts["tertiary"].get(term, 0) + 1
+            pos = i + len(low_term)
 
     # Pass 2: each section-scoped secondary keyword's suffix word fills in whatever's left, but
     # TRIM at any cell the primary pass already claimed instead of discarding the whole match — a
@@ -763,6 +801,71 @@ def step1(req: Step1Request) -> dict:
     }
 
 
+def _step2_v2(run: RunState, chosen: reports.CatalogEntry) -> dict:
+    """Step 2 on the market-first chain (plan §3 diagram): fetch the report, build the fact sheet (with
+    the figure gap search + figure backing when size/forecast/CAGR is missing), then — in parallel —
+    search demand and the publisher points, and the LLM's search queries feeding the market web search.
+    The three prep streams are independent (only demand needs the fact sheet, which finishes first), so
+    they overlap the way the old chain's Step 2 prep did; the web search is still the long pole."""
+    run.logger.info("STEP 2 (market-first chain)")
+    timer = StageTimer(run.logger, "Step 2")
+    try:
+        with timer.stage("Fetch CMI report"):
+            report = pipeline.run_fetch_confirmed_report(chosen, run.logger)
+        with timer.stage("Fact sheet"):
+            fs = facts.run_fact_sheet(report.name, report, run.logger)
+        gap_pages: list[search.SearchHit] = []
+        if fs["gaps"]:
+            with timer.stage("Figure gap search"):
+                hosts = [
+                    search.urlparse(l.url).netloc.lower().removeprefix("www.")
+                    for l in run.sponsor.links if l.is_external
+                ]
+                gap_pages = facts.run_figure_gap_search(report.name, hosts, run.logger)
+            if gap_pages:
+                with timer.stage("Figure backing"):
+                    fs = facts.run_figure_backing(report.name, fs, gap_pages, hosts, run.logger)
+        prep = ThreadPoolExecutor(max_workers=3, thread_name_prefix="step2-v2")
+        try:
+            def timed(name: str, fn, *args):
+                with timer.stage(name):
+                    return fn(*args)
+
+            demand_f = prep.submit(timed, "Search demand", demand.run_search_demand, report.name, fs, run.logger)
+            publisher_f = prep.submit(
+                timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
+            search_queries_f = prep.submit(
+                timed, "Plan market search queries", pipeline.prepare_search_queries, report.name,
+                list(reports.key_players(report)), run.logger, list(report.segment_terms),
+            )
+            prepared_queries = search_queries_f.result()
+        finally:
+            prep.shutdown(wait=False)
+        with timer.stage("Market web search"):
+            hits = pipeline.run_search_evidence(
+                report.name, run.sponsor, run.candidates, run.logger,
+                key_players=reports.key_players(report), orient=run.orient, segments=report.segment_terms,
+                search_queries=prepared_queries,
+            )
+        demand_result, publisher_result = demand_f.result(), publisher_f.result()
+    except (PipelineError, LLMError, LiveFetchError) as e:
+        raise _pipeline_failure(run.logger, "Step 2", e)
+    run.report, run.hits = report, hits
+    run.fact_sheet, run.gap_pages, run.demand, run.publisher = fs, gap_pages, demand_result, publisher_result
+    run.timings = timer.summary()
+    run.logger.info(
+        f"STEP 2 DONE in {run.timings['total_s']}s — report {report.name}, {len(hits)} hits, "
+        f"{len(demand_result.get('questions') or [])} MSQ(s), fact sheet gaps: {fs['gaps'] or 'none'}"
+    )
+    return {
+        "report": _report_dict(report), "hits": [_hit_dict(h) for h in hits],
+        "fact_sheet": fs,
+        "demand": demand_result,
+        "publisher": publisher_result,
+        "timings": run.timings,
+    }
+
+
 @app.post("/step2")
 def step2(req: Step2Request) -> dict:
     """Step 2: fetch market evidence online. Runs ONLY after the human confirms a market —
@@ -774,6 +877,11 @@ def step2(req: Step2Request) -> dict:
     chosen = next((c for c in run.candidates if c.news_id == req.report_id), None)
     if chosen is None:
         raise HTTPException(400, f"Report {req.report_id} is not one of the matched reports for this run.")
+    # Market-first chain (docs/restructure_plan.md §3): fact sheet (+ figure gap backing), search demand
+    # and publisher points replace the old Step 2 prep (subheading questions, report claims, longtails —
+    # those keep running unchanged behind the flag off, see _step2_v2's docstring).
+    if config.CMI_CHAIN_V2:
+        return _step2_v2(run, chosen)
     timer = StageTimer(run.logger, "Step 2")
     try:
         with timer.stage("Fetch CMI report"):
@@ -848,6 +956,33 @@ def step2(req: Step2Request) -> dict:
     }
 
 
+def _step3_v2(run: RunState) -> dict:
+    """Step 3 on the market-first chain (plan §3 diagram): SELECT vets the market news with no
+    question/claim backing (those chains are disconnected behind the old flag), and afterwards code
+    marks every MSQ answerable / unanswerable and assembles the planner's world (`run.plan_inputs`).
+    The same post-processing the devtools build_chain.load_chain applies to its fixtures."""
+    run.logger.info("STEP 3 (market-first chain)")
+    try:
+        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger)
+        evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
+        evidence_items = [it for it in pipeline._parse_evidence(evidence) if it.get("group") != "article"]
+        questions = demand.mark_answerability(
+            [dict(q) for q in (run.demand or {}).get("questions") or []],
+            run.fact_sheet, evidence_items, run.logger)
+        run.demand = {**run.demand, "questions": questions}
+        run.plan_inputs = planning.build_inputs(
+            run.report.name, run.fact_sheet, evidence_items, run.demand, run.publisher,
+            pipeline._word_count(run.sponsor.text))
+    except (PipelineError, LLMError, LookupError) as e:
+        raise _pipeline_failure(run.logger, "Step 3", e)
+    run.selection, run.evidence = selection, evidence
+    msqs = run.demand.get("questions") if run.demand else []
+    run.logger.info(
+        f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s), "
+        f"{sum(1 for q in msqs or [] if q.get('answerable'))}/{len(msqs or [])} MSQ(s) answerable")
+    return {"selection": selection, "evidence": evidence, "demand": run.demand}
+
+
 @app.post("/step3")
 def step3(req: Step3Request) -> dict:
     """Step 3: fetch market report facts. Call 2 (LLM) selects usable evidence from the Step 2
@@ -855,6 +990,8 @@ def step3(req: Step3Request) -> dict:
     run = _get_run(req.run_token)
     if run.report is None or run.hits is None:
         raise HTTPException(400, "No confirmed report/evidence yet — finish Step 2 first.")
+    if config.CMI_CHAIN_V2:
+        return _step3_v2(run)
     # The subheading questions and report claims were already chosen/extracted in Step 2 (see
     # run.questions, run.report_claims); SELECT here only judges which of the evidence gathered for
     # them (run.question_evidence, run.report_claim_evidence) is usable.
@@ -875,12 +1012,32 @@ def step3(req: Step3Request) -> dict:
     return {"selection": selection, "evidence": evidence, "questions": run.questions}
 
 
+def _step4_chain(run: RunState) -> dict:
+    """Step 4 on the market-first chain (plan §3 diagram): PLAN (one LLM call, validated and repaired in
+    code) ──> WRITE ──> FAQ ANSWERS. Every regeneration runs the full plan call again — there is no
+    quality retry anywhere in the chain, so a new draft is a new plan."""
+    try:
+        plan = planning.run_plan(run.plan_inputs, run.logger)
+        run.plan = plan
+        _, title, sections, evidence_citations = writer.run_write_v2(
+            plan, run.plan_inputs, run.sponsor, run.report, run.logger)
+        faq = faqs.run_faq(plan, run.plan_inputs, sections, run.logger)
+    except (PipelineError, LLMError) as e:
+        raise _pipeline_failure(run.logger, "Step 4", e)
+    run.title, run.sections, run.evidence_citations, run.faq = title, sections, evidence_citations, faq
+    run.logger.info(f"STEP 4 DONE — draft {title!r} ({len(sections)} sections, {len(faq)} MSQ FAQ entries"
+                    + (f"; plan repairs: {'; '.join(plan.get('repairs'))}" if plan.get("repairs") else "") + ")")
+    return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url), "faq": faq}
+
+
 @app.post("/step4")
 def step4(req: Step4Request) -> dict:
     """Step 4: write the report (Call 3), then run the SEO/readability revision pass (Call 4)."""
     run = _get_run(req.run_token)
     if run.report is None or run.selection is None or run.evidence is None:
         raise HTTPException(400, "No confirmed report/evidence yet — finish Step 3 first.")
+    if config.CMI_CHAIN_V2:
+        return _step4_chain(run)
     try:
         _, title, sections, evidence_citations = pipeline.run_write(
             run.article, run.orient, run.sponsor, run.report, run.evidence, run.logger, longtails=run.longtails
@@ -918,6 +1075,10 @@ def get_run(run_token: str) -> dict:
         "report": _report_dict(run.report) if run.report else None,
         "selection": run.selection,
         "questions": run.questions,
+        "demand": run.demand,
+        "fact_sheet": run.fact_sheet,
+        "publisher": run.publisher,
+        "plan": run.plan,
         "long_tail_keywords": run.longtails,
         "timings": run.timings,
         "title": run.title,
@@ -943,6 +1104,7 @@ def finalize(req: FinalizeRequest) -> dict:
             run.filename, run.logger,
             evidence_citations=run.evidence_citations,
             faq=run.faq, longtails=run.longtails,
+            plan=run.plan, plan_inputs=run.plan_inputs,
         )
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "finalize", e)
@@ -967,6 +1129,10 @@ def finalize(req: FinalizeRequest) -> dict:
     ]
     primary_kw, secondary_plan = pipeline._seo_keyword_plan(result.report.name)
     secondary_kws = [kw for kw, _ in secondary_plan]
+    # Market-first chain extras: the search demand's related (tertiary) terms are highlighted and
+    # counted the same way, and the plan's MSQ headings are reported so the final view can mark them.
+    tertiary_terms = [t for t in (getattr(run.plan_inputs, "terms", []) or [])] if run.plan_inputs is not None else []
+    msq_headings = [ps["heading"] for ps in ((run.plan or {}).get("sections") or []) if ps.get("msq")]
     # Whether each generated long-tail phrase survived into the finished draft — a literal,
     # whitespace-normalised match, since WRITE freezes a phrase's word order. Reported to the UI
     # and logged; an unused candidate is fine by design (the writer was told to use at most 3 and
@@ -986,14 +1152,20 @@ def finalize(req: FinalizeRequest) -> dict:
     display_sections = _display_sections(
         result.sections, result.sponsor, result.report.url, primary_kw, secondary_plan,
         longtails=[t["keyword"] for t in longtail_usage], counts=keyword_counts,
+        tertiary_terms=tertiary_terms,
     )
+    tertiary_total = sum(keyword_counts.get("tertiary", {}).values())
+    tertiary_used = len(keyword_counts.get("tertiary", {}))
     run.logger.info(
         f"[keywords] highlighted uses — primary x{keyword_counts.get('primary', 0)}, "
         f"secondary {sum(keyword_counts.get('secondary', {}).values())}x "
         f"({len(keyword_counts.get('secondary', {}))}/{len(secondary_kws)} keywords), "
+        f"tertiary {tertiary_total}x ({tertiary_used}/{len(tertiary_terms)} terms), "
         f"long-tail {sum(keyword_counts.get('longtail', {}).values())}x "
         f"({len(keyword_counts.get('longtail', {}))}/{len(longtail_usage)} phrases)"
     )
+    if msq_headings:
+        run.logger.info("[plan] MSQ headings: " + "; ".join(msq_headings))
     return {
         "result": {
             "title": result.title,
@@ -1005,6 +1177,8 @@ def finalize(req: FinalizeRequest) -> dict:
             "evidence_citations": citations_out,
             "primary_keyword": primary_kw,
             "secondary_keywords": secondary_kws,
+            "tertiary_terms": tertiary_terms,
+            "msq_headings": msq_headings,
             "keyword_counts": keyword_counts,
             "long_tail_keywords": [
                 {"keyword": t["keyword"], "intent": t["intent"], "used": t["used"]}
