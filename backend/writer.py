@@ -169,6 +169,75 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
     return [s for s in sections if s["paragraphs"]]
 
 
+# A sentence that opens with a pointing word nearly always points straight at a noun that already names the thing
+# ("That skill matters..."), and a hard check rejects every such opener. A pointing word that stands alone ("That
+# is why...") cannot be fixed mechanically, so the word after the demonstrative decides: only a noun is rewritten.
+_DEMONSTRATIVE_RE = re.compile(r"^(?P<lead>[\"'\u201c\u2018(\s]*)(?P<dem>This|That|These|Those)(?P<gap>\s+)(?P<next>[A-Za-z][A-Za-z'-]*)", re.IGNORECASE)
+_NOT_A_NOUN = frozenset({
+    "is", "are", "was", "were", "be", "been", "being", "will", "would", "can", "could", "may", "might", "must",
+    "shall", "should", "has", "have", "had", "does", "did", "do", "means", "mean", "shows", "show", "makes", "make",
+    "leads", "lead", "points", "point", "suggests", "suggest", "implies", "imply", "explains", "explain", "matters",
+    "matter", "helps", "help", "keeps", "keep", "gives", "give", "adds", "add", "reflects", "reflect", "reveals",
+    "reveal", "signals", "signal", "indicates", "indicate", "drives", "drive", "raises", "raise", "pushes", "push",
+    "creates", "create", "lets", "let", "allows", "allow", "leaves", "leave", "puts", "put", "brings", "bring",
+    "supports", "support", "feeds", "feed", "fits", "fit", "covers", "cover", "said", "also", "only", "alone",
+    "then", "now", "too", "as", "because", "which", "who", "when", "where", "while", "and", "but", "so", "if",
+    "for", "to", "of", "in", "on", "at", "by", "with", "from", "not", "never", "always", "still", "even", "just",
+    "really", "simply", "often",
+})
+_TIME_WORDS = frozenset({"year", "years", "month", "months", "week", "weeks", "day", "days", "time", "times",
+                         "morning", "evening", "quarter", "decade", "season", "way", "moment", "point"})
+_IRREGULAR_PAST = frozenset({"led", "made", "meant", "kept", "gave", "came", "went", "took", "saw", "got", "set",
+                             "put", "ran", "began", "grew", "drove", "rose", "fell", "held", "left", "brought",
+                             "became", "was", "were", "had", "did", "said", "told", "found", "thought", "knew",
+                             "felt", "seemed"})
+
+
+def _noun_follows(dem: str, nxt: str) -> bool:
+    """Decide, by grammar shape alone, whether the word after a leading demonstrative is a noun/adjective
+    (so 'That skill' may become 'The skill') or a verb ('That changes' stays). A mangled sentence is worse
+    than the pointing word, so anything not clearly noun-shaped is left alone."""
+    w, d = nxt.lower(), dem.lower()
+    if w in _NOT_A_NOUN or w in _TIME_WORDS or w in _IRREGULAR_PAST or w.endswith("ed"):
+        return False
+    if d in ("this", "that"):  # a singular verb ends in -s, so noun/adjective only without -s (or ss/sis/us)
+        return not w.endswith("s") or w.endswith(("ss", "sis", "us"))
+    if d in ("these", "those"):  # a plural noun ends in -s; a verb after a plural subject never does
+        return w.endswith("s") and not w.endswith("ss")
+    return False
+
+
+def fix_pointing_determiners(sections: list[dict], logger: logging.Logger) -> list[dict]:
+    """Turn a leading 'That/This/These/Those + noun' into 'The + noun' (the noun already names the thing); leave bare pointing words alone."""
+    for s in sections:
+        n, originals = 0, []
+        for pi, p in enumerate(s["paragraphs"]):
+            lines = []
+            for line in p.split("\n"):
+                marker, text = "", line
+                if text.startswith("- ") or text.startswith("• "):
+                    marker, text = text[:2], text[2:]
+                out = []
+                for sent in [x for x in _SENTENCE_SPLIT_RE.split(text) if x.strip()]:
+                    m = _DEMONSTRATIVE_RE.match(sent)
+                    if (m and _noun_follows(m.group("dem"), m.group("next")) and prompts.SPONSOR_TOKEN not in sent
+                            and len(sent.split()) >= 4):
+                        originals.append(sent[:80])
+                        sent = sent[:m.start("dem")] + "The" + sent[m.end("dem"):]
+                        n += 1
+                    out.append(sent)
+                lines.append(marker + " ".join(out) if out else line)
+            if lines:
+                s["paragraphs"][pi] = "\n".join(lines)
+            else:
+                s["paragraphs"][pi] = p
+        if n:
+            label = s["sop"][0] if s.get("sop") else "the opening"
+            logger.info(f"[write] replaced {n} leading pointing word(s) with 'The' in {label}: "
+                        + " | ".join(originals))
+    return sections
+
+
 def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, sponsor_text: str, logger: logging.Logger) -> list[dict]:
     """An invented or rounded figure ("near 7%" from a 7.3% CAGR) must never print. The write prompt bans
     rounding and the trace check flags a number that no fact-sheet entry, evidence item, guest point, the
@@ -368,6 +437,7 @@ def run_write_v2(
     sections = strip_meta_sentences(assemble_sections(written, plan, logger), logger)
     sections = strip_untraced_figures(sections, inp, sponsor.text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
+    sections = fix_pointing_determiners(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")

@@ -42,6 +42,9 @@ def load_chain(path: Path, logger, fresh: bool = False, gap: bool = True) -> dic
     hits = [_hit(h) for h in fixture["hits"]]
     orient = fixture["orient"]
     changed = False
+    if fresh and "plan" in fixture:
+        del fixture["plan"]       # a plan cites fact ids of the inputs it was built from, so a rebuild invalidates it
+        changed = True
 
     if fresh or "evidence" not in fixture or "selection" not in fixture:
         selection = pipeline.run_select(article, orient, sponsor, report, hits, logger)

@@ -157,6 +157,10 @@ def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, lo
             logger.info(f"[faq] {qid} came back with no answer and was dropped: {q['question']!r}")
             continue
         answer = strip_unsupported(q, sources_for_question(q, inp), _plain(answer), draft_text, logger)
+        import writer   # lazy: writer imports pipeline-adjacent modules, so a module-level import here would cycle
+        fixed = writer.fix_pointing_determiners([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq"))
+        if fixed:
+            answer = fixed[0]["paragraphs"][0]
         if not answer:
             logger.info(f"[faq] {qid}: nothing left after stripping unsupported sentences; question dropped")
             continue

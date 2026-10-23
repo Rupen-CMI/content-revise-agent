@@ -73,6 +73,89 @@ check("source naming: report (CMI) figures are never touched",
       writer.name_outside_sources([{"heading": "", "sop": ["report_context"], "paragraphs": ["Robo advisory opens room to grow, CMI says."]}], inp_src, LOG)[0]["paragraphs"]
       == ["Robo advisory opens room to grow, CMI says."])
 
+# ------------------------------------------------------------------ leading pointing words become 'The + noun'
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "That skill matters because collecting data has become routine."]}], LOG)
+check("pointing: 'That + noun' is rewritten to 'The + noun'",
+      out[0]["paragraphs"] == ["The skill matters because collecting data has become routine."], out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "Those needs rarely disappear, which keeps spending steady."]}], LOG)
+check("pointing: 'Those needs ...' starts with 'The needs rarely disappear'",
+      out[0]["paragraphs"][0].startswith("The needs rarely disappear"), out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "These trends in the market push buyers toward managed services."]}], LOG)
+check("pointing: 'These trends in the ...' starts with 'The trends in the market'",
+      out[0]["paragraphs"][0].startswith("The trends in the market"), out[0]["paragraphs"])
+bare = ["That is why buyers pay less for managed services.",
+        "That makes it a small but steadily growing business.",
+        "This shows how fast the market grows today.",
+        "That said, buyers still compare prices carefully."]
+out = writer.fix_pointing_determiners([{"heading": "", "sop": [], "paragraphs": list(bare)}], LOG)
+check("pointing: bare pointing words ('That is/makes/shows/said') are left untouched",
+      out[0]["paragraphs"] == bare, out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["segmentation"], "paragraphs": [
+    "Lead-in sentence.\n- This segment drives demand among small teams."]}], LOG)
+check("pointing: a bullet line keeps its marker and its pointing word is fixed",
+      out[0]["paragraphs"][0] == "Lead-in sentence.\n- The segment drives demand among small teams.", out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": [], "paragraphs": [
+    f"That team relies on {prompts.SPONSOR_TOKEN} for its daily workflow."]}], LOG)
+check("pointing: a sentence carrying the sponsor placeholder is untouched",
+      out[0]["paragraphs"] == [f"That team relies on {prompts.SPONSOR_TOKEN} for its daily workflow."], out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": [], "paragraphs": [
+    '"That figure covers what buyers spend on services," the report says.']}], LOG)
+check("pointing: a sentence that opens with a quote keeps the quote mark",
+      out[0]["paragraphs"][0] == '"The figure covers what buyers spend on services," the report says.', out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "The market is small. That figure covers spending on services. Buyers want clean data."]}], LOG)
+check("pointing: only the pointing sentence changes and the sentence spacing is preserved",
+      out[0]["paragraphs"] == ["The market is small. The figure covers spending on services. Buyers want clean data."],
+      out[0]["paragraphs"])
+out = writer.fix_pointing_determiners([{"heading": "", "sop": [], "paragraphs": ["That works."]}], LOG)
+check("pointing: a sentence shorter than four words is left untouched",
+      out[0]["paragraphs"] == ["That works."], out[0]["paragraphs"])
+
+# The full decision table for the grammar-based rule (round 2): every MUST CHANGE row becomes 'The + rest'.
+change = ["That skill matters because collecting data has become routine.",
+          "That range shows how many ways a buyer can rent capacity.",
+          "Those needs rarely disappear, which keeps spending steady.",
+          "These trends in the market push buyers toward managed services.",
+          "This sub-segment drives demand because the output feeds analysis.",
+          "These vendors serve very different kinds of buyer in the market.",
+          "That wider business is the market that buyers rent from.",
+          "That everyday need for clean data is what the market sells.",
+          "That figure covers what buyers spend on services each year.",
+          "This segmentation of the market covers delivery type, application and region."]
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": list(change)}], LOG)[0]["paragraphs"]
+for src, got in zip(change, out):
+    check(f"pointing: must change -> {src}",
+          got == "The " + src.split(" ", 1)[1], got)
+
+# Every MUST STAY row must come back character for character.
+stay = ["This year, buyers are choosing managed services more often.",
+        "These include browser tools, installable software and cloud services.",
+        "That changes everything about how buyers choose a provider today.",
+        "That remains true for most small teams buying services today.",
+        "This month, three vendors raised their prices for new customers.",
+        "These days, most buyers compare several providers before they sign.",
+        "That is why buyers pay less for managed services.",
+        "That makes it a small but steadily growing business.",
+        "This shows how fast the market grows today.",
+        "That said, buyers still compare prices carefully.",
+        "That remained true for most buyers throughout the year.",
+        "That became clear to most small teams buying services."]
+out = writer.fix_pointing_determiners([{"heading": "", "sop": [], "paragraphs": list(stay)}], LOG)[0]["paragraphs"]
+for src in stay:
+    check(f"pointing: must stay unchanged -> {src}",
+          src in out, out)
+
+# Direct unit tests of the helper itself.
+_noun_follows_cases = [("That", "skill", True), ("That", "changes", False), ("These", "include", False),
+                       ("These", "trends", True), ("This", "year", False), ("This", "business", True),
+                       ("Those", "days", False)]
+for dem, nxt, want in _noun_follows_cases:
+    check(f"pointing: _noun_follows({dem!r}, {nxt!r}) is {want}",
+          writer._noun_follows(dem, nxt) == want)
+
 # ------------------------------------------------------------------ assembly
 written = {
     "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
@@ -129,6 +212,21 @@ try:
     check("call: returns the title, the sections and code-found citations in the shape finalize reads",
           title == plan["title"] and len(secs2) == len(sections) and isinstance(cites2, list))
     check("call: a missing sponsor placeholder is repaired", True)
+finally:
+    llm.chat_json = orig
+
+written_pointing = {
+    "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
+    "transition": {"paragraphs": ["Why it matters."]},
+    "sections": [{"sop": "report_context", "heading": "model heading",
+                  "paragraphs": ["That figure covers what buyers spend on services."]}],
+}
+llm.chat_json = lambda *a, **k: written_pointing
+try:
+    _, _, secs_pt, _ = writer.run_write_v2(plan, inp, sponsor, report, LOG)
+    para = next(s for s in secs_pt if s["sop"] == ["report_context"])["paragraphs"][0]
+    check("call: a leading pointing word in the write output reaches the returned sections as 'The + noun'",
+          para.startswith("The figure covers"), para)
 finally:
     llm.chat_json = orig
 

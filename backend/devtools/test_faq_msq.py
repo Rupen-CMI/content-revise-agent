@@ -78,6 +78,19 @@ check("normalize: an unsupported company name line is removed inside an answer",
 check("normalize: the question text is verbatim the MSQ", out[0]["question"] == by_id["Q3"]["question"])
 check("normalize: entries carry the MSQ id and intent", out[0]["intent"] == "segments" and out[1]["id"] == "Q5")
 
+# ------------------------------------------------------------------ pointing words in the answer
+raw_pt = [
+    {"question": by_id["Q3"]["question"], "answer": "That growth comes from digital marketing demand."},
+    {"question": by_id["Q5"]["question"], "answer": "That is because demand grows."},
+]
+draft_pt = "That growth is what the draft is about."
+out_pt = faqs.normalize_faq(raw_pt, plan, inp, draft_pt, LOG)
+check("normalize: a leading 'That + noun' in an answer becomes 'The + noun'",
+      len(out_pt) == 2 and out_pt[0]["answer"].startswith("The growth comes from digital marketing demand."),
+      str([e["answer"] for e in out_pt]))
+check("normalize: a bare pointing word in an answer ('That is ...') stays as it is",
+      len(out_pt) == 2 and out_pt[1]["answer"] == "That is because demand grows.", str([e["answer"] for e in out_pt]))
+
 # ------------------------------------------------------------------ the call (LLM stubbed)
 orig = llm.chat_json
 llm.chat_json = lambda *a, **k: {"faq": raw}
