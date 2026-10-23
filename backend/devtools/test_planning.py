@@ -20,6 +20,15 @@ import prompts  # noqa: E402
 FAILURES: list[str] = []
 LOG = logging.getLogger("test_planning")
 MARKET = "Zzz Widget Services Market"
+HEADINGS = {
+    "report_context": "Report Context for the Zzz Widget Services Market",
+    "trends": "Trends in the Zzz Widget Services Market",
+    "segmentation": "Zzz Widget Services Market Segmentation",
+    "subsegment": "Sub-Segment Analysis of the Zzz Widget Services Market",
+    "country_us": "U.S. Analysis of the Zzz Widget Services Market",
+    "key_players": "Key Players in the Zzz Widget Services Market",
+    "conclusion": "Conclusion and Outlook for the Zzz Widget Services Market",
+}
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -71,7 +80,7 @@ def make_inputs() -> planning.PlanInputs:
 
 
 def sec(sop, **kw):
-    base = {"sop": sop, "heading": f"Plain heading for {sop}", "msq": None, "point": f"point {sop}", "facts": [],
+    base = {"sop": sop, "heading": HEADINGS[sop], "msq": None, "point": f"point {sop}", "facts": [],
             "secondary": None, "longtail": None, "terms": [], "snippet": None}
     base.update(kw)
     return base
@@ -144,13 +153,70 @@ raw = good_plan()
 raw["sections"][2]["heading"] = "Segmentation"
 raw["sections"][5]["heading"] = "What drives growth in the Zzz Widget Services Market?"
 p = plan_of(raw)
-check("headings: a bare label and a copied question text are replaced by plain headings",
-      S(p, "segmentation")["heading"] != "Segmentation" and not S(p, "key_players")["heading"].endswith("?"))
+check("headings: a bare label and a copied question text are replaced by clean topic headings",
+      S(p, "segmentation")["heading"] == HEADINGS["segmentation"] and S(p, "key_players")["heading"] == HEADINGS["key_players"],
+      str([S(p, "segmentation")["heading"], S(p, "key_players")["heading"]]))
 
 raw = good_plan()
-raw["sections"][2]["heading"] = raw["sections"][3]["heading"] = "Same heading"
+raw["sections"][2]["heading"] = raw["sections"][3]["heading"] = "Sub-Segments of the Zzz Widget Services Market"   # valid for both topic regexes
 p = plan_of(raw)
 check("headings: duplicates are made unique", len({s["heading"].lower() for s in p["sections"]}) == 7)
+
+raw = good_plan()
+raw["sections"][1]["msq"] = None      # trends loses its question heading, so its own heading is checked
+raw["sections"][1]["heading"] = "Where the market stands"
+p = plan_of(raw)
+check("headings: a topic-less heading is replaced by the section's fallback topic heading",
+      S(p, "trends")["heading"] == HEADINGS["trends"], S(p, "trends")["heading"])
+
+raw = good_plan()
+raw["sections"][4]["msq"] = None      # country_us loses its question heading, so its own heading is checked
+raw["sections"][4]["heading"] = "North America leads while Asia Pacific grows fastest"
+p = plan_of(raw)
+check("headings: a finding-sentence heading is replaced by the section's fallback topic heading",
+      S(p, "country_us")["heading"] == HEADINGS["country_us"], S(p, "country_us")["heading"])
+
+raw = good_plan()
+raw["sections"][2]["heading"] = "How the Zzz Widget Services Market is divided"
+p = plan_of(raw)
+check("headings: an interrogative heading without a question mark is replaced too",
+      S(p, "segmentation")["heading"] == HEADINGS["segmentation"], S(p, "segmentation")["heading"])
+
+raw = good_plan()
+raw["sections"][1]["msq"] = None
+raw["sections"][1]["heading"] = "Trends"
+p = plan_of(raw)
+check("headings: a heading that does not name the market is replaced by the fallback topic heading",
+      S(p, "trends")["heading"] == HEADINGS["trends"], S(p, "trends")["heading"])
+
+p = plan_of(good_plan())
+check("headings: a clean topic heading is kept unchanged and logs no heading repair",
+      S(p, "key_players")["heading"] == HEADINGS["key_players"] and not any("heading" in r for r in p["repairs"]),
+      str([S(p, "key_players")["heading"], p["repairs"]]))
+
+raw = good_plan()
+for s, qid in zip(raw["sections"], ["Q1", "Q2", "Q3", "Q4", None, None, None]):
+    s["msq"] = qid
+p = plan_of(raw)
+check("headings: an MSQ section keeps the exact question text",
+      S(p, "trends")["heading"] == "What drives growth in the Zzz Widget Services Market?", S(p, "trends")["heading"])
+check("headings: a demoted question leaves a clean topic heading, not the question",
+      S(p, "country_us")["msq"] is None and S(p, "country_us")["heading"] == HEADINGS["country_us"],
+      str([S(p, "country_us")["msq"], S(p, "country_us")["heading"]]))
+
+check("fallbacks: every fallback topic heading passes its own heading_problem check",
+      all(planning.heading_problem(text.format(market=MARKET), sop, MARKET) is None
+          for sop, text in planning._FALLBACK_HEADINGS.items()),
+      str({s: planning.heading_problem(text.format(market=MARKET), s, MARKET) for s, text in planning._FALLBACK_HEADINGS.items()}))
+check("heading_problem: each failure kind has its own reason",
+      planning.heading_problem("", "trends", MARKET) == "it is empty"
+      and planning.heading_problem("What is changing?", "trends", MARKET) == "it is a question"
+      and planning.heading_problem("Trends in the Zzz Widget Services Market by 2026", "trends", MARKET) == "it holds a figure"
+      and planning.heading_problem("A heading with far too many words in it to pass the limit test", "trends", MARKET) == "it is too long",
+      str([planning.heading_problem("", "trends", MARKET),
+           planning.heading_problem("What is changing?", "trends", MARKET),
+           planning.heading_problem("Trends in the Zzz Widget Services Market by 2026", "trends", MARKET),
+           planning.heading_problem("A heading with far too many words in it to pass the limit test", "trends", MARKET)]))
 
 # ------------------------------------------------------------------ facts
 raw = good_plan()

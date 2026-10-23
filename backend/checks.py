@@ -1275,6 +1275,94 @@ def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict]) -> l
                 out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} states {n}, which neither its facts nor "
                            "the draft carry")
     return out
+# Product rule: every sentence must be understandable by itself — no sentence may open with a
+# pointing word that leans on an earlier sentence for its subject.
+_VAGUE_OPENER_RE = re.compile(r"^(?:this|that|these|those|such)\b|^(?:it|they)\s+(?:means|shows|points|suggests|implies|explains|matters|leads|signals|reflects|reveals|indicates|helps|makes|keeps|gives|adds)\b", re.IGNORECASE)
+_VAGUE_LEADING_CHARS = "\"' \u201c\u2018()"
+_VAGUE_BULLET_MARKERS = ("- ", "• ")
+
+
+def v2_vague_reference_problems(sections: list[dict], faq: list[dict] = ()) -> list[str]:
+    """Sentences that open with a pointing word, in EVERY section (opening, transition, market) and
+    every FAQ answer: read alone, the sentence never says what "this/that/these/those/it" refers to.
+    The retained sponsor paragraph is exempt — the token is blanked, since the sponsor's wording is
+    not ours to judge — as are FAQ questions (only answers are judged)."""
+    out: list[str] = []
+
+    def flagged(label: str, text: str) -> list[str]:
+        hits: list[str] = []
+        for line in text.split("\n"):
+            line = line.strip()
+            for marker in _VAGUE_BULLET_MARKERS:
+                if line.startswith(marker):
+                    line = line[len(marker):].strip()
+                    break
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                sentence = sentence.lstrip(_VAGUE_LEADING_CHARS).strip()
+                if len(sentence.split()) < 3:
+                    continue
+                if _VAGUE_OPENER_RE.search(sentence):
+                    hits.append(f'{label}: "{sentence[:70]}" opens with a pointing word')
+        return hits
+
+    for s in sections:
+        label = (s.get("heading") or "").strip() or (
+            "the opening" if not s.get("sop")
+            else "the transition" if s.get("sop") == ["transition"] else s["sop"][0])
+        for p in s.get("paragraphs") or []:
+            out.extend(flagged(label, _sponsor_replacement(p, " ")))
+    for qa in faq:
+        label = f"FAQ answer to {str(qa.get('question') or '')[:40]!r}"
+        out.extend(flagged(label, str(qa.get("answer") or "")))
+    return out
+
+
+def v2_heading_shape_problems(sections: list[dict], plan: dict, inp, market_name: str) -> list[str]:
+    """The shape of every market section's heading (§3.9): a planned MSQ's heading IS its question's
+    text, and any other heading is a short SOP-topic phrase naming the market — never a question."""
+    import planning
+    out: list[str] = []
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        sop = s["sop"][0]
+        p = next((p for p in plan["sections"] if p["sop"] == sop), None)
+        if p is None:
+            continue
+        heading = (s.get("heading") or "").strip()
+        if p.get("msq"):
+            question = next(q["question"] for q in inp.questions if q["id"] == p["msq"])
+            if heading != question:
+                out.append(f"the {sop} heading {heading!r} is not its planned question")
+        else:
+            reason = planning.heading_problem(heading, sop, market_name, [q["question"] for q in inp.questions])
+            if reason is not None:
+                out.append(f"the {sop} heading {heading!r} is not a clean topic heading ({reason})")
+    return out
+
+
+# A deliberate copy of the same list the publisher module uses — checks cannot import publisher
+# (a circular import), so the two lists must be kept in step by hand.
+_OPENING_JARGON_RE = re.compile(r"(?:\b(?:kilobytes?|megabytes?|gigabytes?|terabytes?|KB|MB|GB|TB|milliseconds?|latency|throughput|headless|selectors?|parsers?|parsing|async\w*|scripting|scripts?|instances?|regex|SDK|APIs?|of code|source code|code)\b|\d+\s?(?:kb|mb|gb|tb|ms|ghz|mhz)\b)", re.IGNORECASE)
+
+
+def v2_opening_jargon_notes(sections: list[dict]) -> list[str]:
+    """Soft notes: the opening and the transition must be plain-English blocks (the publisher's voice),
+    so any technical term that reaches them is surfaced — the market sections may keep their terms."""
+    out: list[str] = []
+    for s in sections:
+        sop = s.get("sop") or []
+        if sop and sop != ["transition"]:
+            continue
+        label = "the opening" if not sop else "the transition"
+        for p in s.get("paragraphs") or []:
+            for m in _OPENING_JARGON_RE.finditer(_sponsor_replacement(p, " ")):
+                note = f"{label} uses the technical term {m.group(0).lower()!r}"
+                if note not in out:
+                    out.append(note)
+    return out
+
+
 # ===================================================================================================
 # run_checks_v2 — the v2 chain's check list (§3.9): the kept checks from the old run_checks, the new
 # hard checks (the plan's validated structure, block shares and order, placeholder figures, number
@@ -1359,6 +1447,32 @@ def run_checks_v2(
         "Draft structure matches the validated plan (title, SOP order, 2-3 MSQ headings)",
         not structure,
         "; ".join(structure) if structure else "",
+    ))
+
+    # ---- hard (§3.9): the SHAPE of each heading — question headings are their planned MSQ's text,
+    # every other heading a short SOP-topic phrase naming the market and never a question
+    heading_problems = v2_heading_shape_problems(sections, plan, inp, market_name)
+    results.append(CheckResult(
+        "Headings: question headings are planned MSQs, every other heading names its SOP topic and the market",
+        not heading_problems,
+        "; ".join(heading_problems) if heading_problems else "",
+    ))
+
+    # ---- hard (§3.9): every sentence names what it refers to — none opens with a pointing word
+    vague_problems = v2_vague_reference_problems(sections, faq)
+    results.append(CheckResult(
+        "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)",
+        not vague_problems,
+        "; ".join(vague_problems[:6]) + (f" (+{len(vague_problems) - 6} more)" if len(vague_problems) > 6 else "")
+        if vague_problems else "",
+    ))
+
+    # ---- soft (§3.9): the opening and transition are the publisher's plain-English blocks
+    jargon_notes = v2_opening_jargon_notes(sections)
+    results.append(CheckResult(
+        "The opening and transition use no technical terms (soft)",
+        not jargon_notes,
+        "; ".join(jargon_notes) if jargon_notes else "",
     ))
 
     # ---- hard (§3.7): secondary keywords — 4-6 assigned, each used in its section, one per paragraph

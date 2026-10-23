@@ -291,7 +291,7 @@ would not actually improve a single sentence of that article, do not select it j
 Reject listicles, product promotions, how-to guides, and anything about a different market. It is fine to select fewer \
 than {max_selected}, or none, if few results pass all four tests — do not pad with weak, generic, or off-topic results to reach a \
 higher count; a shorter list of results that each genuinely earn their place beats a longer list padded with filler. \
-For each selected result write two fields. "fact": one factual sentence stating only what the result says. \
+For each selected result write two fields. "fact": one factual sentence stating only what the result says, with whoever acts (a company, a regulator, a survey's authors) as its subject and an active verb, in plain words. \
 "detail": one or two more sentences, taken only from the result text shown above, giving the specifics a writer needs \
 to explain and back the fact (amounts, figures, named people or companies, dates, a stated reason or a quote). If the \
 result shows nothing beyond the fact (a bare headline), set "detail" to an empty string. In both fields, do not add, \
@@ -1102,7 +1102,7 @@ FIELDS
 - restraints: what the page says holds the market back, one entry per distinct restraint.
 - opportunities: what the page presents as openings for the market, one entry per distinct opportunity.
 - players: the companies the page names as key or leading players in the market, each written as the page writes the name but without a legal suffix such as Inc., Ltd or LLC.
-For us, drivers, restraints and opportunities each entry has "text" (one plain sentence in your own words, carrying only what the quote says) and "quote".
+For us, drivers, restraints and opportunities each entry has "text" (one plain sentence in your own words, carrying only what the quote says, with whoever acts as its subject and an active verb) and "quote".
 
 TESTS BEFORE ANSWERING
 - Every "quote" appears word for word in the page text above.
@@ -1218,18 +1218,19 @@ PARAGRAPH THE GUEST PAID TO KEEP (it is reproduced word for word elsewhere, so d
 {sponsor}
 
 PURPOSE
-CMI's article is about the market above. The guest article's subject only sets the scene for it: the opening of the post uses it as an example, and a later section may borrow one short point from it where that makes a market point easier to follow. Readers are ordinary people on the internet, so everything you write must make sense to someone who has never read the guest article and knows none of its jargon.
+CMI's article is about the market above. The guest article's subject only sets the scene: the opening of the post uses it to give a stranger the background they need before the market is discussed, and a later section may borrow one short point where that makes a market point easier to follow. Readers are ordinary people on the internet who have not read the guest article and do not care about its specifics, so everything you write must make sense to them without any technical background.
 
 HOW TO WORK
-1. Read the guest article for what it shows or explains to its own readers: how something works, what it costs or saves, how two options differ, what to watch for, what a typical case looks like. Ignore what it says about the market itself.
-2. Choose the 4 to 6 points a general reader would find most useful or surprising, in the order the article makes them.
-3. Write each point as one plain sentence of at most 30 words, in the third person (never "you") and in everyday words, that can be understood alone. If a technical term cannot be avoided, explain it in a few words inside the sentence; if the sentence works without it, leave it out.
+1. Read the guest article for the background it gives about its subject: what the activity is, who does it and why, why it matters to organisations, and what has changed recently. Ignore what it says about the market itself, and ignore its technical detail (measurements, tool names, how-to steps, comparisons between tools).
+2. Choose the 4 to 6 statements that best prepare a stranger for a discussion of the market above, in the order that builds understanding: what it is, who does it and why, why it matters, what is changing. Choose by how well a statement sets that context, never by how interesting or surprising it is.
+3. Write each as one plain sentence of at most 30 words, in the third person (never "you") and in everyday words, that can be understood alone and carries every piece of background a stranger needs. Use no technical term: if the idea needs one, say the idea in everyday words instead.
 4. Write "intro_angle": one plain sentence saying what the guest article's subject is and why someone interested in it would want to know about the market above. It is the bridge a writer uses to move from the example into the market.
 
 TESTS BEFORE ANSWERING
 - No point states the size, growth rate, share, segments, regions or vendors of any market or industry, and none is attributed to CMI or any other research firm. Leave those out entirely.
 - Every number in a point is a number the guest article itself gives, used for what the article uses it for.
 - No point repeats the paragraph the guest paid to keep, names the guest's company or website, or copies a sentence of the article.
+- No point holds a measurement, a tool name or a technical step.
 - Each point could stand alone in a sentence of a different article and still be understood.
 
 Return JSON in exactly this shape:
@@ -1277,7 +1278,7 @@ An opening from the guest article's subject, a short transition into the market,
 HOW TO PLAN
 1. Storyline. Give every section a "point": one plain line saying what a reader learns there. A point states only what that section's assigned facts support; it never adds a claim, a company type or a detail of its own. Read the seven in order. Each must follow from the one before, so the article reads as one explanation with no jump. If a point does not follow, change the point.
 2. Question headings. Pick exactly 2 or 3 questions to be section headings. Choose the ones whose answers your facts make strongest and most specific, each for a different section (the one its entry says it can head). A question heading is answered directly in the first sentences of its section.
-3. Other headings. Every other section gets a plain statement heading: what the section covers, in everyday words, using the market's name or its short form and the section's main point. A heading is never a question, never only the section's bare job name, and never about the guest article. It must read naturally to a stranger who has not seen this plan, with no word that only makes sense inside it.
+3. Other headings. A section that is not headed by a question gets its SOP topic as its heading, phrased cleanly for this market. The SOP topics are: Market Trends; Market Intelligence Report Context; Market Segmentation; Sub-Segment Analysis; Country Analysis (U.S.); Market Participants / Key Players; Conclusion. The heading is a short phrase (about three to eight words) that names the topic and the market (its full name or its short form). It names the topic, never the findings: it is not a sentence, not a question, and holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
 4. Facts. Assign each section its strongest facts, about three to five (a trends section: one or two facts for each of its three trends), using only the ids listed above. A fact appears in one section only, so a figure is stated once. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. Report facts are CMI's; news evidence is credited to its source by the writer. A fact marked as historical is presented with its year, never as current. A section with no good fact gets none and stays short: do not stretch a fact to fill it.
    - key_players: name the companies together; give a company a detail only where a fact in the list supplies one.
    - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category), chosen from different splits in the report facts, by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
@@ -1285,13 +1286,13 @@ HOW TO PLAN
    - Secondary: choose 4 to 6 keys from the pool, at most one per section, each in the section where one of its facts makes the keyword fit a sentence the writer would write anyway.
    - Long-tail: choose 2 or 3, each in a different section whose facts include the fact the search rests on.
    - Related terms: up to three per section where they fit; leave the field empty when none does.
-6. Guest article points. For the opening choose the 2 or 3 points that set the scene best. Later, a point may appear as one short example inside a market section, but only if, once the facts are placed, that example makes the section's point clearer to a general reader. Most articles need none or one. Never add one to reach a number.
+6. Guest article points. For the opening choose the 2 or 3 points that best set the context for the market the post goes on to cover: the ones that tell a stranger what the activity is, who does it, why it matters and what is changing. Choose by how well a point prepares the reader for the market, never because it is interesting or surprising, and never a point that needs technical vocabulary to follow. Later, a point may appear as one short example inside a market section, but only if, once the facts are placed, that example makes the section's point clearer to a general reader. Most articles need none or one. Never add one to reach a number.
 7. Transition. Write one plain line of at most 30 words on why the guest article's subject belongs to this wider market and what the reader will learn about the market next. The opening and the transition never state market facts.
 8. Title. Find the one development, force or direction that the facts behind your sections show most convincingly about this market, and state it to yourself in a plain sentence: what is changing and why, or where the market is heading and why. Match it to the kind of search that point answers. Write a title of about 50 to 65 characters (never more than 70) that puts the market's full name, exactly as given at the top (including the word Market), first or near the start and keeps only the words that carry that point. The title holds no figure or year: it states the point in words, and the figures live in the sections with their source. List the fact ids it rests on in "title_basis".
 
 TESTS BEFORE ANSWERING
 - Read the seven points in order: does each follow from the one before?
-- Exactly 2 or 3 headings are questions, each the exact question text of one entry above, and none is in a section the entry cannot head.
+- Exactly 2 or 3 headings are questions, each the exact question text of one entry above, and none is in a section the entry cannot head. Every other heading is a short topic phrase that names its SOP topic and the market.
 - Every id you used exists above; no fact is in two sections; no secondary keyword key is used twice.
 - Every point says nothing that its section's own facts do not say.
 - Each long-tail search sits in a section whose facts include the fact it rests on.
@@ -1312,7 +1313,7 @@ Return JSON in exactly this shape (all seven sections, in the order above):
  ]}}"""
 
 # ---------------------------------------------------------------- market-first chain: WRITE
-WRITE_SYSTEM = """You are a writer at Coherent Market Insights (CMI), a market research firm, writing a blog post about one market for CMI's own blog. The readers are ordinary people who found the post by searching for the market. You write plainly, you use only the facts the plan hands you, and you never invent a figure, a company detail or a source. Respond with JSON only."""
+WRITE_SYSTEM = """You are a highly trained content writer at Coherent Market Insights (CMI), a market research firm, writing a blog post about one market for CMI's own blog. You write the way an experienced human editor writes: clear, natural, confident prose with a varied rhythm, concrete subjects and active verbs; never robotic, never padded, never reaching for a phrase just because it sounds like an article. The readers are ordinary people who found the post by searching for the market. They know nothing about the guest article or the technical side of its field, and they do not care about either. You use only the facts the plan hands you, and you never invent a figure, a company detail or a source. Respond with JSON only."""
 
 WRITE_USER = """TITLE (final, already decided; you do not write or change it): {title}
 THE MARKET (the primary keyword, always written exactly like this): {market_name}
@@ -1322,27 +1323,32 @@ HOW THE POST IS BUILT
 Three blocks in this order, and the post never goes back: an OPENING that uses a guest article's subject as an example, a short TRANSITION into the market, then the MARKET SECTIONS. Every block and section has a word budget: write up to it — each block and section lands between nine tenths and eleven tenths of its budget, because a short block is a half-written block, not a plain one.
 
 THE OPENING (at most {intro_own} words of your own, plus the retained text; this is a hard limit, so stay under it)
+- Who it is for: a reader who has never seen the guest article, does not care about its details and knows nothing about the field. Everything that reader needs in order to follow the opening has to be in the opening itself.
 - The guest article's subject: {intro_angle}
-- Points you may use to set the scene, in your own words (plain statements; choose from these only):
+- Context you may draw on, in your own words. Each statement was chosen because it helps a stranger understand the market the post goes on to cover; use them to explain what the activity is, who does it, why it matters and what is changing:
 {intro_points}
-- The retained paragraph is written by someone else and is placed by code. Never write its words. {sponsor_rule}
+- The retained paragraph is written by someone else and is placed by code. Never write its words or a paraphrase of them. Read it, so that your lead-in prepares the reader for whatever it takes for granted (a term, a comparison, something it refers back to). Its words are: "{sponsor_text}"
+- {sponsor_rule}
+- How to write it: begin with the plain idea (what the subject is and why anyone cares), build one step at a time so that each sentence rests on the one before it, and explain every word a stranger might not know the first time it appears, in everyday words. Leave out measurements, tool names, technical steps and anything only a specialist would care about.
 - Build the opening as: {opening_shape} The link is written exactly once, as {link_token}, and it is the first time the market's name appears.
 - The opening states no market fact (no size, growth, share, segment or vendor).
 
 THE TRANSITION (about {transition_words} words, one or two short paragraphs, no heading; never fewer than {transition_floor} words — a shorter transition vanishes between the opening and the sections and falls below the share the plan gives this block)
 - What it must do: {transition_point}
-- Purpose: the reader should feel the turn from the example to the market as natural. Name the need the example shows, widen it to the market, then tell the reader what they will learn about the market next. It neither repeats the opening nor starts stating the market's facts.
+- Purpose: the reader should feel the turn from the example to the market as natural. Say in plain words what the market is (what is bought, who buys it and why), tie it to the need the opening described, then lead into the first market section. Do not describe the post itself and do not list what follows. It neither repeats the opening nor starts stating the market's facts.
 
 THE MARKET SECTIONS (in this order; each heading is given and is final)
 {sections}
 
 RULES THAT APPLY EVERYWHERE
 - Voice: plain everyday English for a general reader. Short sentences with one idea each, averaging about 15 words and none longer than 25. Prefer the everyday word (use, show, buy, grow, help) to the formal one. A bullet is one or two short sentences, never one long one. Contractions are fine. No slang, hype, calls to action or direct address ("you"). The first time a technical term is unavoidable, explain it in a few words; if a sentence works without it, leave it out.
+- Actors: say who does what. The subject of a sentence is the person, company, group or thing that acts (buyers, vendors, teams, regulators, a technology), and its verb is active. A source's name goes in a short clause beside the fact, never in a frame that makes a report or a website the subject of a sentence about the market. Use a passive verb only when nobody can be named as the actor.
+- Clear reference: every sentence can be understood by itself. No sentence begins with a pointing word (this, that, these, those, such) or with a bare pronoun that refers back to an earlier sentence or idea; name the thing again with its own noun. A reader who lands on any single sentence must know what it is about without reading the one before it.
 - Facts: state only the facts listed for a section. A fact from the CMI report may be stated plainly. A fact whose source is not CMI (news evidence, or a figure marked NOT CMI) names that source, and the month when it has one, in the same sentence and is never credited to CMI. Every sentence that carries a number from such a fact names the source inside that very sentence, even when the sentence before it already did. Every sentence that gives one of another source's figures carries the source's name again in itself — "The same source", "That source" and "It" pointing back at a source are never written. A fact marked historical carries its year and is never presented as current. A figure appears once in the whole post: never repeat one from an earlier section, the conclusion included; refer back to it in words. A sentence that gives a number says what the number measures. Never write a figure, company detail or claim that no listed fact supports; where a section has few facts, it stays short. The "Purpose" line of a section tells you what the reader should learn; it is not a source of facts.
 - Explaining: you may add plain sentences that explain what a fact means, what a term means or why it matters to the market, as long as they add no figure, name, date or claim of their own. This is how a section with few facts still reads as a full, useful section.
 - Never talk about the writing process: no mention of "the facts", "the plan", "the report not saying", "what is not available" or what you could not find. Leave out what you cannot support, quietly.
 - Placement: put each fact in the sentence that makes the section's point. At most one fact per sentence, and no chains of "according to".
-- Flow: each section's first sentence picks up from the section before it. After the transition the post stays on the market: a guest example is only ever one sentence inside a market paragraph.
+- Flow: each section's first sentence picks up from the section before it. After the transition the post stays on the market. The guest article's context belongs to the opening alone: a market section uses a guest point only when that section lists one as a guest example, and then in one sentence.
 - Fresh writing: put every fact in your own words and sentence shapes; never reuse a run of ten or more words from a fact or the report as written — this includes lists of segment categories, which you break up by writing the connective words your own way and keeping a few of your own words between the split and its categories. A fact that arrives as a full sentenced statement (a driver, a restraint, a U.S. statement, a company note) is research wording, not a line of prose: say its meaning again in your own words, keeping only its figures; its sentence shape must not survive into the draft. Similarly, when a fact lists many companies, name only the few that matter in that sentence (at most six), grouped or ordered your own way, never the whole list in the order given.
 - Primary keyword: use the full market name once in every market section, the conclusion included, and never twice in the same paragraph. The sentence that carries a section's secondary keyword may be that one use. Elsewhere in the section say "the market", "this market" or "it". It is plain text everywhere except the link in the opening. The market is an industry category made of many companies' products: never say or imply that it is a product, software or a company.
 - Secondary keyword: where a section lists one, every word of it must appear together in one sentence of that section — that section is not finished without it, whatever its facts allow. Each keyword belongs to its section alone: its words sit in one paragraph there, never spread over two, and when the same idea comes up in other sections it is said in different words ("openings", "the biggest opening", the word the world uses), never in a listed keyword's words. You may reorder a keyword's words to fit the sentence; you may not replace one with a synonym. Use no keyword outside the section it is listed for, so a paragraph never ends up playing host to two sections' keywords.

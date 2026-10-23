@@ -109,6 +109,18 @@ check("prompt: a phrase sponsor's output template embeds the placeholder in an o
       f"embeds {prompts.SPONSOR_TOKEN} inside one of its sentences" in text_phrase
       and "\":[\"<the lead-in paragraph with the report link>\", \"[[SPONSOR_PARAGRAPH]]\"" not in text_phrase)
 
+# The retained paragraph's own words are shown to the writer so the lead-in can prepare the reader for what the
+# retained paragraph takes for granted: the template's {sponsor_text} key must be fed, and only it.
+quoted = f'Its words are: "{sponsor.text}"'
+check("prompt: the retained paragraph's own words are shown to the writer (no KeyError)",
+      isinstance(text, str) and quoted in text, quoted)
+check("prompt: the placeholder token is still shown for placement and no unformatted sponsor_text key is left",
+      prompts.SPONSOR_TOKEN in text and "{sponsor_text}" not in text)
+check("prompt: the new voice rules are present and the writer persona lives in the system prompt",
+      "Clear reference" in text and "Actors" in text and "highly trained content writer" in prompts.WRITE_SYSTEM)
+check("prompt: a phrase sponsor's own words are shown too, still building without a KeyError",
+      f'Its words are: "{phrase_sponsor.text}"' in text_phrase)
+
 # ------------------------------------------------------------------ the call (LLM stubbed)
 orig = llm.chat_json
 llm.chat_json = lambda *a, **k: written

@@ -8,6 +8,7 @@ placement, the plan's structure, secondary keyword rules, block order/shares, nu
 attribution, placeholder shapes, FAQ = MSQs, SOP specifics (trends, sub-segments, U.S. length),
 recency and title problems.
 """
+import copy
 import logging
 import sys
 import types
@@ -37,7 +38,7 @@ plan_sec = {s["sop"]: s for s in PLAN["sections"]}
 
 # ------------------------------------------------------------------ builders
 
-_FILL_SENT = "This piece looks at what the firms do next and where they go."
+_FILL_SENT = "The piece looks at what the firms do next and where they go."
 _FILL_WORDS = _FILL_SENT.split()
 
 
@@ -388,6 +389,98 @@ dense_sent = "Unaccountably understanding particular individuals characterize de
 score = checks._flesch_reading_ease(" ".join([dense_sent] * 15))
 check("flesch: dense graduate-level prose measures below the Flesch floor", score is not None and score < checks._V2_FLESCH_MIN,
       f"score {score if score is None else round(score)}")
+
+# ------------------------------------------------------------------ vague-reference openers
+
+VAGUE_NAME = "Every sentence names what it refers to"
+
+d = good_draft()
+d[2]["paragraphs"][0] += " This shows how fast the market grows."
+run = run_v2(TITLE, d)
+r = by_name(run, VAGUE_NAME)
+check("vague: 'This shows how fast the market grows.' fails", not r.passed, r.detail)
+check("vague: the detail names the pointing-word pattern", "opens with a pointing word" in r.detail, r.detail)
+
+d = good_draft()
+d[4]["paragraphs"][1] = "That is why buyers pay less."
+run = run_v2(TITLE, d)
+check("vague: 'That is why buyers pay less.' fails", not by_name(run, VAGUE_NAME).passed,
+      by_name(run, VAGUE_NAME).detail)
+
+d = good_draft()
+d[5]["paragraphs"][1] = "It means buyers pay less."
+run = run_v2(TITLE, d)
+check("vague: 'It means buyers pay less.' fails (bare pronoun)", not by_name(run, VAGUE_NAME).passed,
+      by_name(run, VAGUE_NAME).detail)
+
+d = good_draft()
+d[6]["paragraphs"][1] = "It is the largest region today."
+run = run_v2(TITLE, d)
+check("vague: 'It is the largest region today.' states its subject and passes",
+      by_name(run, VAGUE_NAME).passed, by_name(run, VAGUE_NAME).detail)
+
+d = good_draft()
+d[4]["paragraphs"][1] = d[4]["paragraphs"][1] + "\n- This keeps costs low."
+run = run_v2(TITLE, d)
+r = by_name(run, VAGUE_NAME)
+check("vague: a bullet line opening with This fails", not r.passed, r.detail)
+
+run = run_v2(TITLE, good_draft(),
+             sponsor_text="This approach keeps the stack simple for every team that uses it.")
+check("vague: the retained sponsor paragraph is exempt from the pointing-word check",
+      by_name(run, VAGUE_NAME).passed, by_name(run, VAGUE_NAME).detail)
+
+d = good_draft()
+faq2 = copy.deepcopy(GOOD_FAQ)
+faq2[0]["answer"] = "That is because the market grows."
+run = run_v2(TITLE, d, faq=faq2)
+r = by_name(run, VAGUE_NAME)
+check("vague: an FAQ answer opening with That fails", not r.passed, r.detail)
+check("vague: the FAQ hit is labelled with its question", "FAQ answer to" in r.detail, r.detail)
+
+# ------------------------------------------------------------------ heading shape
+
+HEADING_NAME = "Headings: question headings are planned MSQs"
+
+d = good_draft()
+plan2 = copy.deepcopy(PLAN)
+plan2["sections"][2]["heading"] = "Where the market stands"          # segmentation: not an MSQ section
+d[4]["heading"] = plan2["sections"][2]["heading"]
+run = run_v2(TITLE, d, plan=plan2)
+r = by_name(run, HEADING_NAME)
+check("headings: a non-question heading that names no SOP topic fails", not r.passed, r.detail)
+check("headings: the detail carries planning's reason", "not a clean topic heading" in r.detail, r.detail)
+
+d = good_draft()
+plan2 = copy.deepcopy(PLAN)
+plan2["sections"][2]["heading"] = "What is changing the market?"     # a question where no MSQ was planned
+d[4]["heading"] = plan2["sections"][2]["heading"]
+run = run_v2(TITLE, d, plan=plan2)
+r = by_name(run, HEADING_NAME)
+check("headings: a question heading on a non-MSQ section fails", not r.passed, r.detail)
+check("headings: the detail says why (it is a question)", "it is a question" in r.detail, r.detail)
+
+run = run_v2(TITLE, good_draft())
+check("headings: the good draft's headings are planned MSQs / clean topics",
+      by_name(run, HEADING_NAME).passed, by_name(run, HEADING_NAME).detail)
+
+# ------------------------------------------------------------------ opening jargon (soft)
+
+JARGON_NAME = "The opening and transition use no technical terms"
+
+d = good_draft()
+d[0]["paragraphs"][2] = filler(111) + " A page can be 300KB of markup."
+run = run_v2(TITLE, d)
+r = by_name(run, JARGON_NAME)
+check("jargon: 300KB in the opening fails the technical-terms check", not r.passed, r.detail)
+check("jargon: the technical-terms check is advisory", "(soft)" in r.name)
+run = run_v2(TITLE, good_draft())
+check("jargon: the good draft's opening and transition are plain",
+      by_name(run, JARGON_NAME).passed, by_name(run, JARGON_NAME).detail)
+run = run_v2(TITLE, good_draft(),
+             sponsor_text=SPONSOR_TEXT + " The retained paragraph can mention kilobytes.")
+check("jargon: kilobytes inside the retained sponsor paragraph is exempt",
+      by_name(run, JARGON_NAME).passed, by_name(run, JARGON_NAME).detail)
 
 # ------------------------------------------------------------------ summary
 

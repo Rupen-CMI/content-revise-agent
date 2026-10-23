@@ -34,6 +34,14 @@ _RESEARCH_SOURCE_RE = re.compile(
     r"\b(CMI|Coherent Market Insights|market research firm|research firm|Gartner|Forrester|IDC|Statista|Mordor|"
     r"Grand View|MarketsandMarkets|Fortune Business)\b", re.IGNORECASE,
 )
+# A point may not use technical vocabulary (units, developer terms): the opening of the post is written for readers
+# who know nothing about the guest article's field.
+_JARGON_RE = re.compile(
+    r"(?:\b(?:kilobytes?|megabytes?|gigabytes?|terabytes?|KB|MB|GB|TB|milliseconds?|latency|throughput|headless|"
+    r"selectors?|parsers?|parsing|async\w*|scripting|scripts?|instances?|regex|SDK|APIs?|of code|source code|code)\b"
+    r"|\d+\s?(?:kb|mb|gb|tb|ms|ghz|mhz)\b)",
+    re.IGNORECASE,
+)
 
 
 def point_problem(text: str, article_numbers: set[str], brand_terms: list[str]) -> str | None:
@@ -43,6 +51,9 @@ def point_problem(text: str, article_numbers: set[str], brand_terms: list[str]) 
         return f"length ({words} words)"
     if _RESEARCH_SOURCE_RE.search(text):
         return "attributed to CMI or a research firm"
+    m = _JARGON_RE.search(text)
+    if m:
+        return f"uses a technical term ({m.group(0).lower()})"
     if _MARKET_WORD_RE.search(text) and _MARKET_FACT_RE.search(text):
         return "states a market fact"
     stray = sorted(n for n in facts._numbers(text) if n not in article_numbers)

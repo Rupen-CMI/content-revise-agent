@@ -127,6 +127,7 @@ def build_write_prompt(plan: dict, inp: planning.PlanInputs, sponsor: Paragraph,
         transition_floor=transition_floor,
         transition_point=plan["transition"]["point"] or "explain why the guest article's subject belongs to this wider market and what the reader will learn next",
         sections="\n\n".join(blocks), total_words=total, sponsor_token=prompts.SPONSOR_TOKEN,
+        sponsor_text=sponsor.text,
     )
 
 

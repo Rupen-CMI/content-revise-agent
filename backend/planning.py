@@ -60,18 +60,25 @@ _EVIDENCE_TAG_SECTIONS = {
 _SHARED_FACTS = ("fs.segments.",)   # a segment split may serve both segmentation and the sub-segment analysis
 
 _FALLBACK_HEADINGS = {
-    "report_context": "How big the {core} market is and where it is heading",
-    "trends": "What is changing the {core} market",
-    "segmentation": "How the {core} market is divided",
-    "subsegment": "Two parts of the {core} market worth a closer look",
-    "country_us": "Where the {core} market is strongest, including the United States",
-    "key_players": "The companies shaping the {core} market",
-    "conclusion": "What the {core} market means going forward",
+    "report_context": "Report Context for the {market}",
+    "trends": "Trends in the {market}",
+    "segmentation": "{market} Segmentation",
+    "subsegment": "Sub-Segment Analysis of the {market}",
+    "country_us": "U.S. Analysis of the {market}",
+    "key_players": "Key Players in the {market}",
+    "conclusion": "Conclusion and Outlook for the {market}",
 }
-_BARE_LABELS = frozenset({
-    "key players", "trends", "market trends", "segmentation", "market segmentation", "conclusion", "report context",
-    "u.s. market", "us market", "u.s. market analysis", "sub-segment analysis", "market participants", "introduction",
-})
+_TOPIC_RES = {
+    "report_context": re.compile(r"report|overview|context|intelligence", re.I),
+    "trends": re.compile(r"trend", re.I),
+    "segmentation": re.compile(r"segment", re.I),
+    "subsegment": re.compile(r"sub-?\s?segment", re.I),
+    "country_us": re.compile(r"\bu\.s\b|\bus\b|united states|country", re.I),
+    "key_players": re.compile(r"key players?|players|participants|companies", re.I),
+    "conclusion": re.compile(r"conclusion|outlook|takeaway", re.I),
+}
+_INTERROGATIVE_RE = re.compile(r"^\s*(what|how|which|who|whom|whose|why|where|when|is|are|was|were|do|does|did|can|could|will|would|should)\b", re.I)
+_HEADING_MAX_WORDS = 12
 _LABEL_TAIL_RE = re.compile(
     r"[:\-–—|]\s*(?:key\s+|latest\s+|major\s+)?(?:trends?|insights?|analysis|outlook|growth drivers?|competitive landscape|"
     r"market intelligence|forecast|overview|report|guide|explained)\s*[.!?]?\s*$", re.IGNORECASE,
@@ -290,9 +297,31 @@ def _snippet_fits(point_text: str, section: dict, inp: PlanInputs) -> bool:
     return len(_vocab(point_text) & _vocab(section_text)) >= 2
 
 
+def heading_problem(heading: str, sop: str, market_name: str, question_texts=()) -> str | None:
+    """Why a NON-question heading is not acceptable, or None when it is."""
+    h = (heading or "").strip()
+    if not h:
+        return "it is empty"
+    if h.endswith("?") or _INTERROGATIVE_RE.match(heading):
+        return "it is a question"
+    if h.lower() in {q.lower() for q in question_texts}:
+        return "it repeats a most-searched question"
+    if len(h.split()) > _HEADING_MAX_WORDS:
+        return "it is too long"
+    if re.search(r"\d", heading):
+        return "it holds a figure"
+    if not _TOPIC_RES[sop].search(heading):
+        return "it does not name its SOP topic"
+    core_tokens = facts._core_tokens(market_name)
+    if core_tokens:
+        heading_stems = {facts._stem(w) for w in re.findall(r"[a-z0-9]+", heading.lower())}
+        if not any(t in heading_stems for t in core_tokens):
+            return "it does not name the market"
+    return None
+
+
 def _fallback_heading(sop: str, market_name: str) -> str:
-    core = _market_core(market_name)
-    return _FALLBACK_HEADINGS[sop].format(core=core)
+    return _FALLBACK_HEADINGS[sop].format(market=market_name)
 
 
 def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
@@ -416,13 +445,19 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             s["heading"] = msq_by_id[s["msq"]]["question"]
         else:
             h = s["heading"]
-            bad = (not h or h.endswith("?") or h.lower() in question_texts or h.lower().rstrip(".") in _BARE_LABELS
-                   or h.lower() in seen_headings)
+            why = heading_problem(h, s["sop"], inp.market_name, question_texts)
+            bad = bool(why) or h.lower() in seen_headings
             if bad:
                 if h:
-                    repair(f"{s['sop']}: heading {h!r} is not a usable plain heading; a plain fallback was used")
+                    repair(f"{s['sop']}: heading {h!r} replaced ({why or 'a duplicate'}) with the plain topic heading")
                 s["heading"] = _fallback_heading(s["sop"], inp.market_name)
         seen_headings.add(s["heading"].lower())
+    for s in sections:            # last resort: an interrogative heading without the question mark becomes a question
+        if s["msq"] or not _INTERROGATIVE_RE.match(s["heading"]) or s["heading"].rstrip().endswith("?"):
+            continue
+        old = s["heading"]
+        s["heading"] = s["heading"].rstrip(" .") + "?"
+        repair(f"{s['sop']}: heading {old!r} reads as a question but carries no question mark and was rewritten as {s['heading']!r}")
 
     # ---- keywords
     used_secondary: list[str] = []
