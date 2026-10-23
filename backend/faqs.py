@@ -164,6 +164,9 @@ def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, lo
         joined = writer.join_bare_pointers([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq"))
         if joined:
             answer = joined[0]["paragraphs"][0]
+        plain = writer.strip_reader_filler([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq"))
+        if plain:
+            answer = plain[0]["paragraphs"][0]
         if not answer:
             logger.info(f"[faq] {qid}: nothing left after stripping unsupported sentences; question dropped")
             continue

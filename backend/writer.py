@@ -32,7 +32,7 @@ _DETAIL_CHARS = 300
 _SHAPES = {
     "report_context": 'One paragraph. It states the market\'s size and where it is heading only as far as the listed facts do.',
     "trends": 'One paragraph string: a single lead-in sentence, then exactly three lines (never two, never four) that each start with "\\n- ", one distinct trend per line (what is changing and what it does to the market, resting on a listed fact where one is given). The lead-in and the three lines are the whole paragraph.',
-    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments" and says how many splits the report uses, in your own words, then one line starting with "\\n- " per split. Each line names the split and its categories, with your own connective words between the categories and one short phrase of yours about what the categories describe for the market — never the report\'s own list wording. Nothing else.',
+    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments" and states the split directly, with the report as its actor, saying how many parts the market falls into, in your own words, then one line starting with "\\n- " per split. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the split lets anyone see or do, or why the split matters. Nothing else.',
     "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: what drives its adoption, where it is used and what it adds to the market, using only the listed facts; where the facts say little, it says little. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Plain prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers where the market is strongest and, where facts allow, the United States, in 100 to 200 words in all; fewer than 100 words is a miss, so carry the region picture with the listed facts plus your own plain sentences about what that picture means for buyers.',
     "key_players": 'Two entries in "paragraphs". First: a short plain passage on how crowded or concentrated the field is. Second: the companies. A company with a listed fact gets one line "- <Company>: <what the fact says>" under a short lead-in clause; companies with no fact are named together in one plain sentence and are never given a detail the facts do not supply.',
@@ -284,6 +284,50 @@ def join_bare_pointers(sections: list[dict], logger: logging.Logger) -> list[dic
     return sections
 
 
+# A trailing clause that only narrates what the reader will see, understand or learn ("..., so readers can see ...",
+# "..., to help buyers understand ...", "..., which helps investors judge ...") adds no information: it announces why
+# the reader is being told the fact instead of stating anything. It is cut, from the comma before it to the end of
+# the sentence; the final punctuation is kept. A consequence clause built on any other verb (a clause that says what
+# actually happens next) is never touched.
+_READER_TAIL_RE = re.compile(
+    r",\s+(?:(?:so|so that)\s+(?:\w+\s+){1,3}?(?:can|could|may|might|will|would|get to)\s+(?:\w+ly\s+)?"
+    r"(?:see|understand|know|grasp|follow|judge|tell|learn|gauge|appreciate|picture|get a (?:sense|feel|picture|view))\b"
+    r"|(?:to help|helping|which helps?|which lets?|letting|which allows?|allowing)\s+(?:\w+\s+){1,3}?"
+    r"(?:see|understand|know|grasp|follow|judge|tell|learn|gauge|appreciate|picture)\b)"
+    r".*",
+    re.IGNORECASE,
+)
+
+
+def strip_reader_filler(sections: list[dict], logger: logging.Logger) -> list[dict]:
+    """Cut the earliest trailing reader-narration clause from each sentence, from the comma before it to the end of
+    the sentence. Only a sentence that keeps at least five words before that comma is touched, and a sentence
+    carrying the sponsor placeholder is never touched."""
+    for s in sections:
+        n, originals = 0, []
+        for pi, p in enumerate(s["paragraphs"]):
+            lines = []
+            for line in p.split("\n"):
+                marker, text = "", line
+                if text.startswith("- ") or text.startswith("• "):
+                    marker, text = text[:2], text[2:]
+                out = []
+                for sent in [x for x in _SENTENCE_SPLIT_RE.split(text) if x.strip()]:
+                    m = _READER_TAIL_RE.search(sent)
+                    if (m and prompts.SPONSOR_TOKEN not in sent and len(sent[:m.start()].split()) >= 5):
+                        originals.append(m.group(0)[:80])
+                        sent = sent[:m.start()].rstrip() + (sent[-1] if sent[-1] in ".!?" else "")
+                        n += 1
+                    out.append(sent)
+                lines.append(marker + " ".join(out) if out else line)
+            s["paragraphs"][pi] = "\n".join(lines)
+        if n:
+            label = s["sop"][0] if s.get("sop") else "the opening"
+            logger.info(f"[write] cut {n} reader-narration clause(s) that only announced what the reader "
+                        f"would do with the fact from {label}: " + " | ".join(originals))
+    return sections
+
+
 def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, sponsor_text: str, logger: logging.Logger) -> list[dict]:
     """An invented or rounded figure ("near 7%" from a 7.3% CAGR) must never print. The write prompt bans
     rounding and the trace check flags a number that no fact-sheet entry, evidence item, guest point, the
@@ -485,6 +529,7 @@ def run_write_v2(
     sections = strip_repeat_figures(sections, inp, logger)
     sections = fix_pointing_determiners(sections, logger)
     sections = join_bare_pointers(sections, logger)
+    sections = strip_reader_filler(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")

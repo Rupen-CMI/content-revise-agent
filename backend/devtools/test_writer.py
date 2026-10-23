@@ -216,6 +216,42 @@ out = writer.join_bare_pointers([{"sop": [], "paragraphs": list(_join_paras)}], 
 check("join: two separate paragraphs of one section stay untouched", out == _join_paras, str(out))
 
 
+# ------------------------------------------------------------------ reader-narration filler tails
+def srf(text: str) -> str:
+    return writer.strip_reader_filler([{"sop": ["trends"], "paragraphs": [text]}], LOG)[0]["paragraphs"][0]
+
+
+filler_change = [
+    ("The report splits the market into three parts, so readers can see which kinds of buyers and products the figures cover.",
+     "The report splits the market into three parts."),
+    ("Vendors bundle support into every plan, to help buyers understand the tiers on offer.",
+     "Vendors bundle support into every plan."),
+    ("Two applications lead the field, which helps investors judge where demand sits.",
+     "Two applications lead the field."),
+    ("The report splits the field into three parts, so readers can get a sense of the boundaries.",
+     "The report splits the field into three parts."),
+]
+for src, want in filler_change:
+    check(f"filler: must cut -> {src[:50]}...", srf(src) == want, srf(src))
+
+filler_stay = [
+    "Vendors bundle support into every plan, so buyers can switch easily.",
+    "Sales rose, so readers can see the trend.",
+    f"A team that relies on {prompts.SPONSOR_TOKEN} every day, so readers can see the workflow.",
+    "Buyers renew their plans each year, so vendors can scale their support teams.",
+]
+for src in filler_stay:
+    check(f"filler: must stay unchanged -> {src[:50]}...", srf(src) == src, srf(src))
+
+check("filler: a bullet line keeps its marker when its tail is cut",
+      writer.strip_reader_filler([{"sop": ["segmentation"], "paragraphs": [
+          "Lead-in sentence.\n- The report splits the field into three parts, so readers can see the boundaries."]}], LOG)
+      [0]["paragraphs"][0] == "Lead-in sentence.\n- The report splits the field into three parts.",
+      writer.strip_reader_filler([{"sop": ["segmentation"], "paragraphs": [
+          "Lead-in sentence.\n- The report splits the field into three parts, so readers can see the boundaries."]}], LOG)
+      [0]["paragraphs"][0])
+
+
 # ------------------------------------------------------------------ assembly
 written = {
     "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
@@ -307,6 +343,23 @@ try:
     para = next(s for s in secs_j if s["sop"] == ["trends"])["paragraphs"][0]
     check("call: a bare pointing sentence in the write output is joined to the sentence before with ', which'",
           "by 2034, which works out to 7.3% a year." in para, para)
+finally:
+    llm.chat_json = orig
+
+# The reader-filler backstop inside the call: a tail that only narrates what the reader will see is cut.
+written_filler = {
+    "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
+    "transition": {"paragraphs": ["Why it matters."]},
+    "sections": [{"sop": "trends", "heading": "model heading",
+                  "paragraphs": ["Vendors bundle support contracts into their subscriptions, so readers can see "
+                                 "which kinds of buyers and products the figures cover."]}],
+}
+llm.chat_json = lambda *a, **k: written_filler
+try:
+    _, _, secs_f, _ = writer.run_write_v2(plan, inp, sponsor, report, LOG)
+    para = next(s for s in secs_f if s["sop"] == ["trends"])["paragraphs"][0]
+    check("call: a reader-narration filler tail in the write output is cut from the returned paragraph",
+          para == "Vendors bundle support contracts into their subscriptions.", para)
 finally:
     llm.chat_json = orig
 

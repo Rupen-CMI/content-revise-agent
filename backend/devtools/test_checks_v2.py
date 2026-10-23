@@ -488,6 +488,47 @@ run = run_v2(TITLE, good_draft(),
 check("jargon: kilobytes inside the retained sponsor paragraph is exempt",
       by_name(run, JARGON_NAME).passed, by_name(run, JARGON_NAME).detail)
 
+# ------------------------------------------------------------------ active voice (soft)
+
+VOICE_NAME = "Active voice: at most 1 sentence in 6 is passive"
+
+run = run_v2(TITLE, good_draft())
+r = by_name(run, VOICE_NAME)
+check("voice: the good draft is judged active and the check is advisory", r.passed and "(soft)" in r.name, r.name)
+
+check("voice: an all-active draft gets no notes",
+      checks.v2_active_voice_notes([{"heading": "", "sop": ["trends"], "paragraphs": [
+          "Vendors sell tools. Buyers compare plans. Demand grows each year."]}]) == [])
+
+_secs_passive = [{"heading": "", "sop": ["trends"], "paragraphs": [
+    "The field is driven by demand. The tools are sold by vendors. The report is written by analysts. "
+    "The rate is set each year. Buyers compare plans."]}]
+notes = checks.v2_active_voice_notes(_secs_passive)
+check("voice: a mostly passive draft gets notes, each a truncated sentence",
+      len(notes) >= 1 and all(len(n) <= 90 for n in notes) and "is driven" in notes[0], str(notes))
+
+check("voice: whitelisted adjectival participles are not counted as passive",
+      checks.v2_active_voice_notes([{"heading": "", "sop": ["trends"], "paragraphs": [
+          "Growth is expected to hold. The index is based on exports. The list is limited to five names. "
+          "The field is fragmented by design."]}]) == [])
+
+d = good_draft()
+# The check's threshold is one passive sentence in six over the whole body, and the filler helper itself
+# emits many short fragments, so a clearly failing draft needs far more passives than five.
+d[2]["paragraphs"].append(
+    "The market is driven by steady demand. The tools are sold by regional vendors. "
+    "The figures are shown in the report. The plan is made once a year. The papers are held in one file. "
+    "The team is led by two owners. The service is run from one office. The rate is set each year. "
+    "The names are taken from the list. The awards are given each spring. The traits are found in most firms. "
+    "The units are brought in each fall. The roots are known to every buyer. The picks are chosen by the panel. "
+    "The hours are spent on review. The notes are kept in one drawer. The wins are counted by the office. "
+    "The lines are built from one template. The leads are found by hand. The fees are paid by the buyer. "
+    "The goods are bought in pairs. The checks are done each week. The trends are seen in every chart.")
+run = run_v2(TITLE, d)
+r = by_name(run, VOICE_NAME)
+check("voice: a draft with mostly passive sentences fails (soft)", not r.passed, r.detail)
+check("voice: the note carries the offending sentences", "The market is driven" in r.detail, r.detail)
+
 # ------------------------------------------------------------------ summary
 
 print()

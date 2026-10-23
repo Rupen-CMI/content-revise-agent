@@ -1363,6 +1363,38 @@ def v2_opening_jargon_notes(sections: list[dict]) -> list[str]:
     return out
 
 
+# Passive voice, measured for the soft active-voice check: a form of be, an optional adverb ending in -ly, then a
+# past participle — a word ending in -ed or -en, or one of the irregular participles listed beside them.
+# Participles that read as plain adjectives (a state, not an agentless passive) are kept out of the count, so
+# ordinary descriptive sentences are not flagged.
+_V2_PASSIVE_ADJ_WORDS = frozenset({
+    "based", "limited", "related", "interested", "concerned", "expected", "estimated", "projected", "forecast",
+    "named", "listed", "called", "located", "focused", "positioned", "fragmented", "mixed", "established",
+    "advanced", "connected", "integrated", "designed",
+})
+_V2_PASSIVE_RE = re.compile(
+    r"\b(?:is|are|was|were|be|been|being)\s+(?:\w+ly\s+)?(?P<part>built|made|done|seen|known|given|held|led|run"
+    r"|set|put|paid|sold|bought|found|shown|taken|chosen|driven|spent|kept|won|lost|brought|\w+(?:ed|en))\b",
+    re.IGNORECASE,
+)
+
+
+def v2_active_voice_notes(sections: list[dict]) -> list[str]:
+    """Soft notes for the active-voice rule: a body sentence is passive when a form of be sits beside a past
+    participle with no actor in the verb group, and at most one sentence in six may be such a sentence. The
+    judgement is grammatical only, so a participle that reads as a plain adjective is not counted, and the
+    retained sponsor paragraph's own wording is blanked the way the other sentence checks blank it. The notes
+    carry the offending sentences so the rate can be tuned against real drafts."""
+    sentences = [s2.strip() for s in sections for p in s.get("paragraphs") or []
+                 for s2 in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, " ")) if s2.strip()]
+    passive = [s2 for s2 in sentences
+               if (m := _V2_PASSIVE_RE.search(s2)) is not None
+               and m.group("part").lower() not in _V2_PASSIVE_ADJ_WORDS]
+    if not sentences or len(passive) <= len(sentences) / 6:
+        return []
+    return [s2[:90] for s2 in passive[:4]]
+
+
 # ===================================================================================================
 # run_checks_v2 — the v2 chain's check list (§3.9): the kept checks from the old run_checks, the new
 # hard checks (the plan's validated structure, block shares and order, placeholder figures, number
@@ -1628,6 +1660,14 @@ def run_checks_v2(
         not long_sentences,
         "; ".join(long_sentences[:5]) + (f" (+{len(long_sentences) - 5} more)" if len(long_sentences) > 5 else "")
         if long_sentences else "",
+    ))
+
+    # ---- soft: active voice — at most one sentence in six is passive (the Actors rule, measured)
+    passive_notes = v2_active_voice_notes(sections)
+    results.append(CheckResult(
+        "Active voice: at most 1 sentence in 6 is passive (soft)",
+        not passive_notes,
+        "; ".join(passive_notes) if passive_notes else "",
     ))
 
     # ---- soft (§3.9): readability — plain prose, Flesch at least the v2 floor

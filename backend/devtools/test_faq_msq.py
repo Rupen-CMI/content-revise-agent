@@ -101,6 +101,17 @@ check("normalize: a bare pointing sentence in an answer is joined to the sentenc
       len(out_j) == 1 and out_j[0]["answer"] == "Demand keeps rising across regions, which makes the field more competitive.",
       str([e.get("answer") for e in out_j]))
 
+# ------------------------------------------------------------------ reader-narration filler tail in the answer
+raw_f = [
+    {"question": by_id["Q3"]["question"],
+     "answer": "The report splits the market into Browser Extension and Cloud Based types, so readers can see "
+               "which kinds of buyers the figures cover."},
+]
+out_f = faqs.normalize_faq(raw_f, plan, inp, "no draft", LOG)
+check("normalize: an answer's filler tail that narrates what the reader will see is removed",
+      len(out_f) == 1 and out_f[0]["answer"] == "The report splits the market into Browser Extension and Cloud Based types.",
+      str([e.get("answer") for e in out_f]))
+
 # ------------------------------------------------------------------ the call (LLM stubbed)
 orig = llm.chat_json
 llm.chat_json = lambda *a, **k: {"faq": raw}
