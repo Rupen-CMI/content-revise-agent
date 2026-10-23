@@ -25,12 +25,12 @@ _HEADERS = {"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"}
 _REQUEST_TIMEOUT_S = 6.0
 _REQUEST_GAP_S = 0.25  # light pacing between autosuggest calls — low volume, but still polite
 
-# Seed patterns, shaped for MARKET questions, not service/product questions. A real failure
-# (Wealth Management Platform Market) harvested seeds like "what is <core>" / "<core> benefits" /
-# "<core> pricing", and Google happily completed them into consumer explainers about the SERVICE
-# ("What are the benefits of wealth management?") or buying-intent round-ups ("What is the best
-# wealth management platform?") — questions a market-analysis article cannot answer with data,
-# whose "evidence" was definition pages and vendor blogs. These seeds instead complete into the
+# Seed patterns, shaped for MARKET questions, not service/product questions. A real failure ran a
+# harvest whose seeds read like "what is <core>" / "<core> benefits" / "<core> pricing", and the
+# search engine happily completed them into consumer explainers about the SERVICE
+# ("What are the benefits of <core>?" where <core> is the service itself, not the market) or
+# buying-intent round-ups ("What is the best <core>?") — questions a market-analysis article cannot
+# answer with data, whose "evidence" was definition pages and vendor blogs. These seeds instead complete into the
 # shapes actual market coverage is written in: growth/size/drivers/forecast/trends of the market,
 # its leading players, and its regional (esp. U.S.) dynamics. Open question-word seeds ("what is")
 # are dropped entirely: autosuggest completes those toward definitions. Seeds starting with a
@@ -77,7 +77,7 @@ _STOPWORDS = frozenset({
 _SIGNAL_WORDS = frozenset({
     # Market-analysis angles only. "benefit(s)", "pricing", "price", "cost(s)" and "compare/-
     # comparison" were REMOVED from the old set: they scored service-level consumer questions
-    # ("What are the benefits of wealth management?") as if they were substantive market angles,
+    # ("What are the benefits of the service itself?") as if they were substantive market angles,
     # which is exactly the failure the seeds were reworked to stop. Added: the frame words'
     # company/landscape/leadership angles and the dynamics verbs real market coverage completes to.
     "challenge", "challenges", "trend", "trends", "growth", "growing", "driver", "drivers",
@@ -162,8 +162,8 @@ def _is_market_question(question: str, core: str) -> bool:
     """The subheading pool's ADMISSION gate, stronger than the score: a candidate must be phrased
     about the MARKET — either it names a market frame word ("market"/"industry"/"sector"), or it
     names the subject's own words PLUS a market-signal angle (growth, drivers, players, regions,
-    challenges, ...). "What are the benefits of wealth management?" shares the subject words("wealth
-    management") and even clears the score threshold on length alone, yet is a service explainer a
+    challenges, ...). "What are the benefits of the service itself?" shares the market subject's
+    own words and even clears the score threshold on length alone, yet is a service explainer a
     market-analysis article cannot answer — this gate is what keeps it out."""
     words = re.findall(r"[a-z0-9']+", question.lower())
     q_words = set(words)

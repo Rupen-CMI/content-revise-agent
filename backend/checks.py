@@ -64,6 +64,23 @@ def _stem(word: str) -> str:
     return word
 
 
+def word_stem(word: str) -> str:
+    """Derivational fold alongside _stem's inflection fold: strips (lowercased, longest suffix
+    first while the remaining stem keeps at least four letters — a strip that would cut below
+    that is skipped and the next shorter suffix applies) the suffixes that turn a base word into
+    its nominal/participial forms, so a keyword's -ation noun and the sentence's verb or plural
+    form land on the same stem ("segmentation", "segments", "segmented" and "segment" all fold
+    to "segment"). A word no suffix applies to keeps its shape ("regional"), so unrelated words
+    that merely share a prefix never collapse into one — no special cases for any word family.
+    Read as an ADDITIONAL way for keyword_words_in_sentence to match; the existing _stem
+    behaviour is untouched."""
+    word = word.lower().strip()
+    for suf in ("ations", "ation", "ments", "ment", "ings", "ing", "ions", "ion", "ied", "ies", "ed", "es", "s", "ly"):
+        if word.endswith(suf) and len(word) - len(suf) >= 4:
+            return word[:-len(suf)]
+    return word
+
+
 def count_keyword_uses(text: str, phrase: str, window: int | None = None) -> int:
     """How many times `phrase`'s meaning appears in `text`: every content word of the phrase
     (stemmed) must appear within a window of `window` words of each other, in any order. Matches
@@ -274,7 +291,9 @@ _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] | None:
     """The loose per-word match the REORDER rule asks the checks to accept: `phrase` is a TOPIC to cover, and
     its content words count as covered when EVERY one of them appears somewhere in ONE sentence of `text`, in
-    any order and in any natural grammatical form (the same _stem folding the tight matcher applies), with
+    any order and in any natural grammatical form (the same _stem folding the tight matcher applies,
+    plus the derivational word_stem fold: a keyword word also matches a sentence word whose word_stem
+    equals its own — segmentation matches segments/segmented — while synonyms still never count), with
     ordinary words of the sentence sitting between them — never across a sentence boundary (the text is split
     with the paragraph's own sentence splitter first). The window between the first and last of the phrase's
     words is max(len(content words) + 8, 12) tokens; synonyms and dropped content words still do not count.
@@ -282,21 +301,24 @@ def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] |
     window), or None when the sentence covers none of the phrase in that loose sense. The tight match still
     wins: where longtail_spans already finds the phrase's words as one light-glued stretch, that occurrence's
     own per-word spans come back."""
-    target = {_stem(w) for w in _keyword_content_words(phrase)}
+    words = _keyword_content_words(phrase)
+    target = {_stem(w) for w in words}
     if not target:
         return None
+    target_stems = {word_stem(w) for w in words}
     offsets = [0] + [m.end() for m in _SENT_SPLIT_RE.finditer(text)]
     for si, sentence in enumerate(_SENT_SPLIT_RE.split(text)):
-        found = _keyword_words_in_one_sentence(sentence, phrase, target)
+        found = _keyword_words_in_one_sentence(sentence, phrase, target, target_stems)
         if found is not None:
             base = offsets[si] if si < len(offsets) else 0
             return [(start + base, end + base) for start, end in found]
     return None
 
 
-def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str]) -> list[tuple[int, int]] | None:
+def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str], target_stems: set[str]) -> list[tuple[int, int]] | None:
     """One sentence's verdict for keyword_words_in_sentence: the tight longtail_spans match first (each of its
-    content words' own span inside the tight stretch), else the loose token window."""
+    content words' own span inside the tight stretch), else the loose token window, where each token matches
+    on _stem or — additionally — on the derivational word_stem fold."""
     for start, end in longtail_spans(sentence, phrase):
         last: dict[str, tuple[int, int]] = {}
         for m in re.finditer(r"[a-z0-9']+", sentence[start:end].lower()):
@@ -307,6 +329,7 @@ def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str])
             return list(last.values())
     tokens = list(re.finditer(r"[a-z0-9']+", sentence.lower()))
     stems = [_stem(m.group(0)) for m in tokens]
+    dstems = [word_stem(m.group(0)) for m in tokens]
     n = len(stems)
     window = max(len(target) + 8, 12)
     i = 0
@@ -315,8 +338,10 @@ def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str])
         for j in range(i, min(i + window, n)):
             if stems[j] in target:
                 seen[stems[j]] = j
-                if len(seen) == len(target):
-                    return [(tokens[pos].start(), tokens[pos].end()) for pos in sorted(seen.values())]
+            elif dstems[j] in target_stems:
+                seen[dstems[j]] = j
+            if len(seen) == len(target):
+                return [(tokens[pos].start(), tokens[pos].end()) for pos in sorted(seen.values())]
         i += 1
     return None
 
@@ -508,17 +533,18 @@ def _title_subject_stems(title: str, market_name: str) -> set[str]:
 
 
 # Capitalized words common enough in business writing that matching ONE alone proves nothing (a
-# first word like "Digital" or "Bank" recurs across unrelated facts/paragraphs) — only a run of
-# TWO OR MORE consecutive capitalized words ("Ping An", "Kinsale Capital") is treated as a real
+# first word like "Global" or "Services" recurs across unrelated facts/paragraphs) — only a run of
+# TWO OR MORE consecutive capitalized words ("Acme Group", "Orbit Holdings") is treated as a real
 # proper-noun signature; a lone generic-sounding capitalized word is excluded entirely rather than
-# risk a coincidental match.
+# risk a coincidental match. Generic English function/structure words and universal company-name
+# suffix words only — no industry nouns, since the same check runs for any market.
 _FACT_GENERIC_CAPS = frozenset({
     "the", "a", "an", "to", "of", "in", "on", "for", "by", "its", "it", "as", "with", "and", "or",
-    "digital", "bank", "banks", "company", "companies", "firm", "firms", "platform", "platforms",
-    "management", "technology", "investment", "investments", "financial", "new", "group", "global",
-    "market", "wealth", "service", "services", "solutions", "solution", "capital", "fund", "funds",
-    "advisory", "advisors", "advisor", "partners", "partnership", "head", "united", "states",
-    "research", "ventures", "holdings", "international", "systems", "custom", "model",
+    "company", "companies", "firm", "firms",
+    "management", "new", "group", "global",
+    "market", "service", "services", "solutions", "solution", "capital",
+    "partners", "partnership", "head", "united", "states",
+    "research", "holdings", "international", "custom", "model",
     # Nationality/region adjectives — common enough that one coincidentally recurring elsewhere
     # proves nothing (found live: "Indian" from a Zomint fact false-matched a draft sentence about
     # a different, unrelated company, "South Indian Bank").
@@ -529,11 +555,11 @@ _FACT_GENERIC_CAPS = frozenset({
 
 def _fact_signature_tokens(fact: str) -> set[str]:
     """Distinctive signatures for one selected-evidence fact: each non-generic capitalized word
-    (company/person name fragments — "Kestrel", "Vanguard", "Paul", "Arnold") plus the first
-    two-word slice of each capitalized run ("ping an", "bny pershing") so a paraphrase that keeps
-    just the entity's own name, without the generic words following it ("Digital Bank", "Group"),
-    still matches — any number/percentage counts too. A single GENERIC capitalized word ("Digital",
-    "Bank", "Group") is excluded even alone, since business prose is full of them and matching one
+    (company/person name fragments — "Kestrel", "Paul", "Arnold") plus the first
+    two-word slice of each capitalized run ("acme group", "orbit holdings") so a paraphrase that keeps
+    just the entity's own name, without the generic words following it ("Global Partners", "Group"),
+    still matches — any number/percentage counts too. A single GENERIC capitalized word ("Global",
+    "Group") is excluded even alone, since business prose is full of them and matching one
     in isolation proved nothing about whether THIS specific fact was used (an earlier version of
     this check false-positived on exactly that)."""
     runs = re.findall(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b", fact)
@@ -550,7 +576,7 @@ def _fact_signature_tokens(fact: str) -> set[str]:
     if sigs:
         return sigs
     # Fallback for a fact with no proper noun and no number at all (e.g. a plain trend statement
-    # like "advisors and record keepers are pushing forward convergence of wealth and retirement")
+    # like "suppliers and distributors keep pushing their work out to outside partners")
     # — found live: such a fact can be genuinely, clearly used (even near-verbatim) in the draft,
     # but with an empty signature set the check always reported it as unused regardless of reality,
     # since "bool(sig) and ..." short-circuits to False whenever sig is empty. Fall back to
@@ -1296,7 +1322,9 @@ def v2_number_trace_problems(sections: list[dict], faq: list[dict], inp, sponsor
 
 def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
     """A figure that came from an outside source (a non-CMI source: a gap-filled fact-sheet headline or a
-    selected news item) names that source in the same sentence and is never credited to CMI (§3.2)."""
+    selected news item) names that source, and is never credited to CMI (§3.2): the unit of naming is one
+    line of a paragraph — the name must appear at that line's first sentence using the source's figure,
+    and a source named earlier in the same line covers the later sentences of that line."""
     out: list[str] = []
     if inp is None:
         return out
@@ -1321,39 +1349,45 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
     for s in sections:
         label = str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro"))
         for p in s["paragraphs"]:
-            for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, " ")):
-                sent_nums = _fact_numbers(sentence)
-                if not sent_nums:
-                    continue
-                low = sentence.lower()
-                # A source named in the sentence keeps the numbers its own facts carry: another fact
-                # sharing those tokens (a "150 million" raised against "150 advisors") is coincidence,
-                # not a figure the writer misattributed. Only true figures cover, never a shared year,
-                # and source-name detection mirrors the complaint branch: the source's 4+ letter words.
-                sent_strong = {n for n in sent_nums if not re.fullmatch(r"(?:19|20)\d\d", n)}
-
-                def _covered(except_fid: str) -> bool:
-                    return any(((src2 not in ("CMI report", "") and _names_source(low, src2))
-                                or (src2 == "CMI report" and _CMI_NAMED_RE.search(sentence)))
-                               and (sent_strong & figs2)
-                               for fid2, src2, figs2 in registry if fid2 != except_fid)
-
-                for fid, source, figs in outside:
-                    hit = sent_nums & figs
-                    if not hit:
+            # The unit of naming is one line of a paragraph (a prose paragraph or one bullet): a source
+            # named in an earlier sentence of the same line covers the later sentences of that line,
+            # and the memory resets at every line — a new line that uses the source's figure names it again.
+            for line in _sponsor_replacement(p, " ").split("\n"):
+                named_line: set[str] = set()    # outside sources named in earlier sentences of this line
+                for sentence in re.split(r"(?<=[.!?])\s+", line):
+                    low = sentence.lower()
+                    named_line |= {src for _, src, _ in outside if _names_source(low, src)}
+                    sent_nums = _fact_numbers(sentence)
+                    if not sent_nums:
                         continue
-                    strong = {n for n in hit if not re.fullmatch(r"(?:19|20)\d\d", n)}
-                    if not strong:
-                        continue    # only the source's year is shared; the year is context (dates the
-                        # figure it sits next to), never the identification of the figure itself
-                    if _covered(fid):
-                        continue
-                    toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]
-                    if toks and not any(t.lower() in low for t in toks):
-                        out.append(f"{label}: the figure {', '.join(sorted(strong or hit))} from {source} ({fid}) sits "
-                                   "in a sentence that does not name that source")
-                    if source.lower() not in ("cmi", "coherent market insights") and _CMI_NAMED_RE.search(sentence):
-                        out.append(f"{label}: figures from {source} ({fid}) sit in a sentence that credits CMI")
+                    # A source named in the sentence keeps the numbers its own facts carry: another fact
+                    # sharing those tokens (a "150 million" raised against "150 advisors") is coincidence,
+                    # not a figure the writer misattributed. Only true figures cover, never a shared year,
+                    # and source-name detection mirrors the complaint branch: the source's 4+ letter words.
+                    sent_strong = {n for n in sent_nums if not re.fullmatch(r"(?:19|20)\d\d", n)}
+
+                    def _covered(except_fid: str) -> bool:
+                        return any(((src2 not in ("CMI report", "") and _names_source(low, src2))
+                                    or (src2 == "CMI report" and _CMI_NAMED_RE.search(sentence)))
+                                   and (sent_strong & figs2)
+                                   for fid2, src2, figs2 in registry if fid2 != except_fid)
+
+                    for fid, source, figs in outside:
+                        hit = sent_nums & figs
+                        if not hit:
+                            continue
+                        strong = {n for n in hit if not re.fullmatch(r"(?:19|20)\d\d", n)}
+                        if not strong:
+                            continue    # only the source's year is shared; the year is context (dates the
+                            # figure it sits next to), never the identification of the figure itself
+                        if _covered(fid):
+                            continue
+                        toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]
+                        if toks and not any(t.lower() in low for t in toks) and source not in named_line:
+                            out.append(f"{label}: the figure {', '.join(sorted(strong or hit))} from {source} ({fid}) sits "
+                                       "in a sentence that does not name that source")
+                        if source.lower() not in ("cmi", "coherent market insights") and _CMI_NAMED_RE.search(sentence):
+                            out.append(f"{label}: figures from {source} ({fid}) sit in a sentence that credits CMI")
     return out
 
 
@@ -1688,7 +1722,7 @@ def run_checks_v2(
     # ---- hard (§3.2): an outside source's figure names that source in the same sentence, never CMI
     attribution_problems = v2_evidence_attribution_problems(sections, inp)
     results.append(CheckResult(
-        "Outside-source figures name their source in the same sentence, never CMI",
+        "Outside-source figures name their source once per paragraph, never CMI",
         not attribution_problems,
         "; ".join(attribution_problems) if attribution_problems else "",
     ))

@@ -1921,11 +1921,12 @@ def _strict_signature(fact: str) -> set[str]:
 
 
 # Capitalised words that name no one in particular; a match on one of these alone proves nothing.
+# Generic English words and universal company-name structure/suffix words only — no industry nouns,
+# since a matching helper cannot know which industry a given run is about.
 _GENERIC_NAME_WORDS = frozenset({
-    "software", "platform", "platforms", "wealth", "management", "capital", "group", "global", "financial", "partners",
-    "advisors", "advisor", "advisory", "investment", "investments", "services", "technologies", "technology", "solutions",
-    "holdings", "bank", "asset", "assets", "market", "markets", "digital", "systems", "company", "companies", "fund",
-    "funds", "life", "line", "first", "new", "data", "cloud", "marketing", "business", "industry", "research",
+    "management", "capital", "group", "global", "partners", "services", "solutions", "holdings",
+    "market", "markets", "company", "companies", "life", "line", "first", "new", "marketing",
+    "business", "industry", "research",
 })
 
 
@@ -1934,7 +1935,7 @@ _ENTITY_RE = re.compile(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b")
 
 def _fact_entities(fact: str) -> list[tuple[list[str], str]]:
     """Named things in a fact: (specific words, whole phrase) for each capitalised run that names someone in
-    particular. Generic words (wealth, platform), month names and sentence-opening filler are not "specific"."""
+    particular. Generic words (Group, Global), month names and sentence-opening filler are not "specific"."""
     out = []
     for run in _ENTITY_RE.findall(fact):
         words = [w.strip(".'-") for w in run.split()]
@@ -1952,7 +1953,7 @@ def _evidence_used_ids(text: str, items: list[dict]) -> set[str]:
     """Ids of evidence items that really appear in `text`. An item is used when one of its named entities does (a
     single-word name as a word; a longer name as its whole phrase, or all of its specific words when there are two
     or more), or when at least two of its figures do. A lone common word that happens to sit inside a name
-    ("Network" in "Network Wealth") must NOT count: the first version of this matcher did, and reported 16 of 36
+    ("Group" in "Acme Group") must NOT count: the first version of this matcher did, and reported 16 of 36
     items used when a hand read of the draft found 9."""
     tokens, low = checks._market_tokens(text), text.lower()
     used = set()

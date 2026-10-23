@@ -51,9 +51,11 @@ def _fact_text(item: dict) -> str:
             line += f"\n    detail: {item['detail'][:_DETAIL_CHARS]}"
         return line
     if item["source"] not in ("CMI report", ""):
-        return (f"- [{item['id']}] {item['text']} (source: {item['source']}, NOT CMI: each of this figure's sentences "
-                f"repeats the name {item['source']}, and never with \u201cthe same source\u201d or \u201cthat source\u201d; "
-                f"never credit the figure to CMI){note}")
+        return (f"- [{item['id']}] {item['text']} (source: {item['source']}, NOT CMI: the paragraph carrying this "
+                f"figure names {item['source']} once, in its first sentence that uses a figure of this source, and "
+                f"its following sentences give further figures of this source without repeating the name — a new "
+                f"paragraph that uses a figure of this source names it again; never with "
+                f"\u201cthe same source\u201d or \u201cthat source\u201d; never credit the figure to CMI){note}")
     return f"- [{item['id']}] {item['text']} (CMI report){note}"
 
 
@@ -426,8 +428,10 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
     four replay rounds still returned conclusions that reprint a non-CMI figure unnamed — which is exactly
     what the attribution check flags (§3.2). Those sentences are removed in code, like strip_meta_sentences:
     a sentence that repeats a figure already printed in an earlier sentence and does not name its source
-    goes; a sentence that carries the source's name stays. Years never count; a figure's repeat only covers
-    when the sentence names the figure's own source."""
+    goes; a sentence that carries the source's name stays, and so does one whose source an earlier sentence
+    of the same line named (the unit of naming is one line of a paragraph; the memory resets at every
+    line, so a new line that repeats the figure names the source again). Years never count; a figure's
+    repeat only covers when the sentence (or an earlier sentence of its line) names the figure's own source."""
     if inp is None:
         return sections
     import checks
@@ -451,17 +455,19 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
             lines: list[str] = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
+                named_line: set[str] = set()    # outside sources named in earlier sentences of this line
                 good, gone = [], []
                 for sent in kept:
+                    low = sent.lower()
                     strong = [n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)]
                     repeats = sorted(n for n in strong if n in printed)
                     if repeats:
-                        low = sent.lower()
                         srcs = {owned[n] for n in repeats}
-                        if not all(checks._names_source(low, src) for src in srcs):
+                        if not all(checks._names_source(low, src) or src in named_line for src in srcs):
                             gone.append(sent)
                             continue
                     good.append(sent)
+                    named_line |= {src for src in set(owned.values()) if checks._names_source(low, src)}
                     printed.update(n for n in strong if n in owned)
                 if gone:
                     logged = "; ".join(f"{n} ({owned[n]} printed earlier)" for n in
@@ -493,9 +499,10 @@ def evidence_citations(sections: list[dict], inp: planning.PlanInputs) -> list[d
 
 def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
     """A sentence that carries a figure from an outside source must name that source itself (never CMI). The writer
-    sometimes names the source in one sentence and gives its second figure in the next. Where exactly one outside
-    source owns the sentence's figures and the sentence does not name it, the source's name is appended before the
-    closing punctuation. Nothing else is rewritten; an ambiguous sentence is left for the check to report."""
+    sometimes names the source in one sentence and gives its second figure in the next: the unit of naming is one
+    line of a paragraph, so where exactly one outside source owns the sentence's figures and neither the sentence
+    nor an earlier sentence of the same line named it, the source's name is appended before the closing punctuation.
+    Nothing else is rewritten; an ambiguous sentence is left for the check to report."""
     if inp is None:
         return sections
     import checks
@@ -517,16 +524,20 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
         for p in s["paragraphs"]:
             lines = []
             for line in p.split("\n"):
+                named: set[str] = set()     # outside sources named in earlier sentences of this line
                 out = []
                 for sent in [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]:
                     nums = {n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)}
                     owners = {(name, full) for name, full, figs in outside if nums & figs}
                     low = sent.lower()
                     if owners and not any(checks._names_source(low, full) for _, full in owners) and len({n for n, _ in owners}) == 1:
-                        name = next(iter(owners))[0]
-                        m = end_re.search(sent.rstrip())
-                        sent = (sent.rstrip()[:m.start()] + f", per {name}" + sent.rstrip()[m.start():]) if m else sent.rstrip() + f", per {name}"
-                        fixed += 1
+                        name, full = next(iter(owners))
+                        if not any(o_full in named for _, o_full in owners):
+                            m = end_re.search(sent.rstrip())
+                            sent = (sent.rstrip()[:m.start()] + f", per {name}" + sent.rstrip()[m.start():]) if m else sent.rstrip() + f", per {name}"
+                            named.add(full)
+                            fixed += 1
+                    named |= {o_full for _, o_full, _figs in outside if checks._names_source(low, o_full)}
                     out.append(sent)
                 if out:
                     lines.append(" ".join(out))

@@ -304,6 +304,37 @@ run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_
 check("attribution: crediting CMI for an outside figure fails",
       not by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
 
+# the unit of naming is one line of a paragraph: a source named once covers the line's later sentences
+inp2.items["W3"]["detail"] = "Usage reaches 2.1 million users."
+inp2.items["W5"] = {"id": "W5", "kind": "evidence", "tags": ["context"],
+                    "text": "Vendor adoption stands at 8.4 percent of firms.", "detail": "",
+                    "source": "Tech Journal", "historical": False, "sections": {"report_context"}}
+
+d = good_draft()
+d[2]["paragraphs"][1] = (pad(50, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds.",
+                                  "Usage reaches 2.1 million users in the same report."]) + " " + filler(80))
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: a later sentence of the same line needs no repeat of the source's name",
+      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = (pad(50, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds."])
+                         + "\nUsage reaches 2.1 million users on its own line.")
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: the same second sentence on a new line needs the source's name again",
+      not by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = (pad(50, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds.",
+                                  "Vendor adoption stands at 8.4% of firms."]) + " " + filler(80))
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: a different outside source's figure in that line still needs its own name",
+      not by_name(run, "Outside-source").passed and "Tech Journal" in by_name(run, "Outside-source").detail,
+      by_name(run, "Outside-source").detail)
+
 # ------------------------------------------------------------------ placeholders
 
 d = good_draft()
@@ -620,6 +651,29 @@ check("loose: a tight light-glued stretch still wins and is returned as per-word
       tight_spans is not None and sorted(TIGHT_SENT[s:e].lower() for s, e in tight_spans) ==
       ["models", "pricing", "widget", "zorb"], str(tight_spans))
 
+# ------------------------------------------------------------------ derivational stem fold (checks.word_stem)
+
+STEM_GROUP = ("segmentation", "segments", "segmented", "segment")
+check("word_stem: the -ation noun, its verb, participle and base reduce to one stem",
+      {checks.word_stem(w) for w in STEM_GROUP} == {"segment"},
+      str({w: checks.word_stem(w) for w in STEM_GROUP}))
+check("word_stem: lowercased and whitespace-trimmed",
+      checks.word_stem("  Segments ") == "segment")
+check("word_stem: the plural folds, the adjective stands alone (equivalence only where the algorithm yields it)",
+      checks.word_stem("regions") == "region" and checks.word_stem("regional") == "regional"
+      and checks.word_stem("region") == "region")
+STEM_PHRASE = "zorb widget pricing segmentation"
+check("stem fold: an -ation keyword word is satisfied by a sentence using the verb form",
+      checks.keyword_words_in_sentence("The zorb desk segments widget pricing.", STEM_PHRASE) is not None)
+check("stem fold: an -ation keyword word is satisfied by a sentence using the participle form",
+      checks.keyword_words_in_sentence("The zorb desk segmented widget pricing.", STEM_PHRASE) is not None)
+check("stem fold: the -ation keyword word's own noun form still matches as before",
+      checks.keyword_words_in_sentence("Pricing and widget segmentation on the zorb desk.", STEM_PHRASE) is not None)
+check("stem fold: unrelated words sharing a prefix are not matched (market/marked)",
+      checks.keyword_words_in_sentence("The zorb marked pricing widget models.", "zorb widget market pricing models") is None)
+check("stem fold: unrelated words sharing a prefix are not matched (regional/regions)",
+      checks.keyword_words_in_sentence("Widget pricing across the zorb regions.", "regional widget pricing") is None)
+
 # ------------------------------------------------------------------ secondary keyword: loose verdict keeps the anchor rule
 
 check("secondary loose: a spread use inside one sentence passes while the market name anchors the paragraph",
@@ -631,6 +685,11 @@ check("secondary loose: with the market anchor absent from the paragraph the key
       checks.secondary_keyword_in_paragraph(
           "Vendors price zorb widgets so many services keep pricing parts apart.",
           MARKET, "zorb widget services pricing") is False)
+check("secondary loose: a suffix -ation word is satisfied by the sentence's verb form (word_stem fold)",
+      checks.secondary_keyword_in_paragraph(
+          "The Zzz Widget Services Market keeps changing. "
+          "Vendors segment zorb widget pricing by tier.",
+          MARKET, "zorb widget pricing segmentation") is True)
 
 # ------------------------------------------------------------------ loose long-tail matching in run_checks_v2
 

@@ -83,13 +83,40 @@ secs_src = [{"heading": "t", "sop": ["trends"], "paragraphs": [
     "- This bullet names blog.apify.com for 66.2% already.",
     "A sentence with no figure stays as it is."]}]
 fixed = writer.name_outside_sources(secs_src, inp_src, LOG)[0]["paragraphs"]
-check("source naming: a figure sentence that lacks its source gets it appended before the full stop",
-      fixed[0].endswith("AI-assisted tools, per blog.apify.com."), fixed[0])
+check("source naming: a figure sentence whose source an earlier sentence of the same line named needs no repeat of the name",
+      fixed[0] == secs_src[0]["paragraphs"][0], fixed[0])
 check("source naming: a sentence that already names the source, and one without a figure, are untouched",
-      fixed[1] == "- This bullet names blog.apify.com for 66.2% already." and fixed[2] == "A sentence with no figure stays as it is.")
+      fixed[1] == "- This bullet names blog.apify.com for 66.2% already." and fixed[2] == "A sentence with no figure stays as it is.",
+      str(fixed))
 check("source naming: report (CMI) figures are never touched",
       writer.name_outside_sources([{"heading": "", "sop": ["report_context"], "paragraphs": ["Robo advisory opens room to grow, CMI says."]}], inp_src, LOG)[0]["paragraphs"]
       == ["Robo advisory opens room to grow, CMI says."])
+
+# a second figure of a source named earlier in the same line needs no repeat of the name
+inp_src.items["W2"]["detail"] = "Usage spans 12.5 million users."
+inp_src.items["W4"] = {"id": "W4", "kind": "evidence", "tags": ["context"],
+                       "text": "Adoption stands at 8.4 percent of firms.", "detail": "",
+                       "source": "Field Report", "historical": False, "sections": {"trends"}}
+same_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "The metered model tracks 66.2% of respondents, a report at Apify finds. Adoption then reaches 12.5 million users."]}]
+fixed = writer.name_outside_sources(same_line, inp_src, LOG)[0]["paragraphs"]
+check("source naming: a later sentence of the same line carrying another figure of the named source is untouched",
+      fixed[0] == "The metered model tracks 66.2% of respondents, a report at Apify finds. Adoption then reaches 12.5 million users.",
+      str(fixed))
+new_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "The metered model tracks 66.2% of respondents, a report at Apify finds.",
+    "Adoption then reaches 12.5 million users.",
+    "- Usage widens to 12.5 million users in the metered model."]}]
+fixed = "\n".join(writer.name_outside_sources(new_line, inp_src, LOG)[0]["paragraphs"]).split("\n")
+check("source naming: a new line (prose or bullet) that carries the source's figure names the source again",
+      fixed[1] == "Adoption then reaches 12.5 million users, per blog.apify.com."
+      and fixed[2] == "- Usage widens to 12.5 million users in the metered model, per blog.apify.com.", str(fixed))
+mixed = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "The metered model tracks 66.2% of respondents, Apify's January tally finds. Adoption stands at 8.4% of firms."]}]
+fixed = writer.name_outside_sources(mixed, inp_src, LOG)[0]["paragraphs"]
+check("source naming: a second outside source's figure still needs its own name in that line",
+      fixed[0] == "The metered model tracks 66.2% of respondents, Apify's January tally finds. Adoption stands at 8.4% of firms, per Field Report.",
+      str(fixed))
 
 # ------------------------------------------------------------------ leading pointing words become 'The + noun'
 out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
