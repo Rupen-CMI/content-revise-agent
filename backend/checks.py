@@ -1096,9 +1096,30 @@ def v2_keyword_problems(sections: list[dict], plan: dict, market_name: str) -> l
         for n, p in enumerate(s["paragraphs"], 1):
             low = _sponsor_replacement(p, " ").lower()
             found = [k for k in dict.fromkeys(assigned) if secondary_keyword_in_paragraph(low, market_name, k)]
-            if len(found) >= 2:
+            if len(found) >= _KEYWORD_STUFFING_AT:
                 out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries '
-                           f'{len(found)} secondary keywords ({", ".join(found)}); at most one per paragraph')
+                           f'{len(found)} secondary keywords ({", ".join(found)}); that is keyword stuffing')
+    return out
+
+
+# Everyday words such as "size" and "forecast" sit beside the market's name in any paragraph that states its figures, so a
+# keyword assigned to another section turns up there by plain writing. That is not stuffing; three or more in one
+# paragraph is (hard). Two is reported as a soft note, so the reader of the checks still sees it.
+_KEYWORD_STUFFING_AT = 3
+
+
+def v2_keyword_overlap_notes(sections: list[dict], plan: dict, market_name: str) -> list[str]:
+    assigned = [p["secondary"] for p in plan["sections"] if p.get("secondary")]
+    out: list[str] = []
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        for n, p in enumerate(s["paragraphs"], 1):
+            low = _sponsor_replacement(p, " ").lower()
+            found = [k for k in dict.fromkeys(assigned) if secondary_keyword_in_paragraph(low, market_name, k)]
+            if len(found) == _KEYWORD_STUFFING_AT - 1:
+                out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries 2 secondary keywords '
+                           f'({", ".join(found)})')
     return out
 
 
@@ -1343,9 +1364,15 @@ def run_checks_v2(
     # ---- hard (§3.7): secondary keywords — 4-6 assigned, each used in its section, one per paragraph
     keyword_problems = v2_keyword_problems(sections, plan, market_name)
     results.append(CheckResult(
-        "Secondary keywords: 4-6, each in its section, at most one per paragraph",
+        "Secondary keywords: 4-6 assigned, each used in its own section, no paragraph stuffed with them",
         not keyword_problems,
         "; ".join(keyword_problems) if keyword_problems else "",
+    ))
+    overlap_notes = v2_keyword_overlap_notes(sections, plan, market_name)
+    results.append(CheckResult(
+        "No paragraph carries two assigned secondary keywords (soft)",
+        not overlap_notes,
+        "; ".join(overlap_notes) if overlap_notes else "",
     ))
 
     # ---- hard (§3.6b): intro -> transition -> market, with no switches back to the publisher's topic

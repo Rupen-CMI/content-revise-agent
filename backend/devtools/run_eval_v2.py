@@ -48,13 +48,14 @@ def run_one(fixture_path: Path) -> None:
         inp = planning.build_inputs(
             chain["report"].name, chain["fact_sheet"], chain["evidence_items"], chain["demand"],
             chain["publisher"], _word_count(chain["sponsor"].text))
-        if "plan" in fixture:
+        if n == 1 and "plan" in fixture:
             plan = fixture["plan"]
             logger.info("[eval] replay 1: the fixture's cached plan")
         else:
-            plan = planning.run_plan(inp, logger)
-            fixture["plan"] = plan
-            Path(fixture_path).write_text(json.dumps(fixture, indent=2, ensure_ascii=False), encoding="utf-8")
+            plan = planning.run_plan(inp, logger)      # replays 2 and 3 plan afresh, so planner variance is measured too
+            if "plan" not in fixture:
+                fixture["plan"] = plan
+                Path(fixture_path).write_text(json.dumps(fixture, indent=2, ensure_ascii=False), encoding="utf-8")
         if plan.get("repairs"):
             logger.warning("[eval] plan repairs: " + "; ".join(plan["repairs"]))
 

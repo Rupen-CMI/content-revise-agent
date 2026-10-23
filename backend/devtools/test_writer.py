@@ -56,6 +56,23 @@ cites = writer.evidence_citations(sections, inp)
 check("citations: a market paragraph that uses a news item is cited, the opening and unrelated paragraphs are not",
       [c["id"] for c in cites] == ["W1"] and cites[0]["paragraph"].startswith("Acme launched a new product this year"), str(cites))
 
+# ------------------------------------------------------------------ outside sources named in the sentence that carries their figure
+inp_src = make_inputs()
+inp_src.items["W2"]["source"] = "blog.apify.com, 2026-01"
+inp_src.items["W2"]["text"] = "66.2 percent of respondents plan to try AI tools."
+secs_src = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "Apify reported in January 2026 that many do not use AI. Even so, 66.2% plan to try AI-assisted tools.",
+    "- This bullet names blog.apify.com for 66.2% already.",
+    "A sentence with no figure stays as it is."]}]
+fixed = writer.name_outside_sources(secs_src, inp_src, LOG)[0]["paragraphs"]
+check("source naming: a figure sentence that lacks its source gets it appended before the full stop",
+      fixed[0].endswith("AI-assisted tools, per blog.apify.com."), fixed[0])
+check("source naming: a sentence that already names the source, and one without a figure, are untouched",
+      fixed[1] == "- This bullet names blog.apify.com for 66.2% already." and fixed[2] == "A sentence with no figure stays as it is.")
+check("source naming: report (CMI) figures are never touched",
+      writer.name_outside_sources([{"heading": "", "sop": ["report_context"], "paragraphs": ["Robo advisory opens room to grow, CMI says."]}], inp_src, LOG)[0]["paragraphs"]
+      == ["Robo advisory opens room to grow, CMI says."])
+
 # ------------------------------------------------------------------ assembly
 written = {
     "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},

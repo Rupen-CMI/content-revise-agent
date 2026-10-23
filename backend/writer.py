@@ -37,7 +37,7 @@ _SHAPES = {
     "country_us": 'Plain prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers where the market is strongest and, where facts allow, the United States, in 100 to 200 words in all; fewer than 100 words is a miss, so carry the region picture with the listed facts plus your own plain sentences about what that picture means for buyers.',
     "key_players": 'Two entries in "paragraphs". First: a short plain passage on how crowded or concentrated the field is. Second: the companies. A company with a listed fact gets one line "- <Company>: <what the fact says>" under a short lead-in clause; companies with no fact are named together in one plain sentence and are never given a detail the facts do not supply.',
     "key_players_names_only": 'Two entries in "paragraphs", both plain prose with no bullets. First: a short passage on how crowded or concentrated the field is, using only what the listed facts say. Second: one or two sentences naming the companies together; never give a company a detail the facts do not supply.',
-    "conclusion": 'One paragraph that pulls the post together using only points already made. Its last sentence is the CMI analyst\'s view.',
+    "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, steady growth, a modest pace). It still uses the market\'s full name once. Its last sentence is the CMI analyst\'s view.',
 }
 
 
@@ -61,7 +61,7 @@ def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
     lines = []
     core = _market_core(inp.market_name)
     if s["secondary"]:
-        lines.append(f'  - Secondary keyword: "{s["secondary"]}". The words "{s["secondary"]}", "{core}" and "market" must all appear together in one sentence of this section. Those keyword words belong to this section alone: they sit in exactly one paragraph here (never spread over two), and another section\'s keywords are expressed in different words when they come up in your prose.')
+        lines.append(f'  - REQUIRED secondary keyword: one sentence of this section must contain all three words "{s["secondary"]}", "{core}" and "market" (reorder them as the sentence needs). A synonym does not count: an "opening" is not "opportunities", "how big" is not "size", and a sentence that says "the main drivers" without naming the market does not carry the keyword. Put that sentence in one paragraph only.')
     if s["longtail"]:
         lt = next(x for x in inp.longtails if x["id"] == s["longtail"])
         lines.append(f'  - Long-tail search: "{lt["keyword"]}" (rests on {lt["fact"]}).')
@@ -281,6 +281,53 @@ def evidence_citations(sections: list[dict], inp: planning.PlanInputs) -> list[d
     return out
 
 
+def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
+    """A sentence that carries a figure from an outside source must name that source itself (never CMI). The writer
+    sometimes names the source in one sentence and gives its second figure in the next. Where exactly one outside
+    source owns the sentence's figures and the sentence does not name it, the source's name is appended before the
+    closing punctuation. Nothing else is rewritten; an ambiguous sentence is left for the check to report."""
+    if inp is None:
+        return sections
+    import checks
+    outside = []
+    for i in inp.items.values():
+        if i["kind"] in ("size", "forecast", "cagr", "evidence") and i.get("source") not in ("", "CMI report", None):
+            figs = {n for n in checks._fact_numbers(i["text"]) | checks._fact_numbers(i.get("detail", ""))
+                    if not re.fullmatch(r"(?:19|20)\d\d", n)}
+            if figs:
+                outside.append((re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", i["source"]).strip(), i["source"], figs))
+    if not outside:
+        return sections
+    end_re = re.compile(r"([.!?][\"')\]]*)$")
+    for s in sections:
+        if not s.get("sop") or s["sop"][0] not in planning.ORDER:
+            continue
+        label, fixed = s["sop"][0], 0
+        paragraphs = []
+        for p in s["paragraphs"]:
+            lines = []
+            for line in p.split("\n"):
+                out = []
+                for sent in [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]:
+                    nums = {n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+                    owners = {(name, full) for name, full, figs in outside if nums & figs}
+                    low = sent.lower()
+                    if owners and not any(checks._names_source(low, full) for _, full in owners) and len({n for n, _ in owners}) == 1:
+                        name = next(iter(owners))[0]
+                        m = end_re.search(sent.rstrip())
+                        sent = (sent.rstrip()[:m.start()] + f", per {name}" + sent.rstrip()[m.start():]) if m else sent.rstrip() + f", per {name}"
+                        fixed += 1
+                    out.append(sent)
+                if out:
+                    lines.append(" ".join(out))
+            if lines:
+                paragraphs.append("\n".join(lines))
+        if fixed:
+            logger.info(f"[write] named the source in {fixed} sentence(s) of {label} that carried its figure without it")
+        s["paragraphs"] = paragraphs
+    return sections
+
+
 # ------------------------------------------------------------------------------------------------- assembly
 
 def assemble_sections(written: dict, plan: dict, logger: logging.Logger) -> list[dict]:
@@ -320,6 +367,7 @@ def run_write_v2(
     sections = strip_meta_sentences(assemble_sections(written, plan, logger), logger)
     sections = strip_untraced_figures(sections, inp, sponsor.text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
+    sections = name_outside_sources(sections, inp, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")
     title = _plain(plan["title"])

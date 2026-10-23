@@ -679,3 +679,42 @@ Each phase is tested before the next starts. Old code stays wired until phase 8 
     - Then read each draft in full and judge it against the five goals: intuitive, SOP-complete, plain,
       substantiated, SEO/MSQ-optimised.
     - Failures are traced to their framing cause, not patched with a new rule.
+
+---
+
+## 6. Implementation status (2026-10-23, branch `market-first-restructure`, local only, not pushed)
+
+All ten phases are built and wired: `facts.py`, `demand.py`, `publisher.py`, `planning.py`, `writer.py`, `faqs.py`,
+`checks.run_checks_v2`, `main.py` Step 2/3/4 + finalize, and the UI (fact sheet, MSQ list, tertiary legend). The new chain
+is on by default (`CMI_CHAIN_V2`, env var; set it to `false` to run the original chain, whose code is untouched).
+
+**Evidence.** `devtools/run_eval_v2.py` (3 articles x 3 replays; replays 2 and 3 plan afresh) and one full real run through
+the API (`devtools/e2e_api.py`: upload, Step 1-4, finalize; 181 s, 27 of 29 checks passing, the two misses soft).
+Hard-check pass rate per round of 9 replays moved 0/9 -> 5/9 -> 7/9 as the causes below were fixed. Every failure that
+remains is a single, different, non-recurring slip.
+
+**Deviations from this plan, each made because the plan's rule collided with the content or with a measured failure:**
+
+1. *Secondary keywords.* "At most one per paragraph" is now a **soft** note for two and a **hard** failure for three or
+   more (stuffing). Reason: a paragraph that states the size and the forecast naturally contains "size" and "forecast"
+   beside the market's name, and the pool pins four keywords to that section; the strict rule could not be satisfied
+   without banning everyday words. Each assigned keyword must still be used, anchored by the market's name, in its own
+   section (hard).
+2. *Outside-source attribution.* Still hard, but code now repairs the common slip: where exactly one outside source owns a
+   sentence's figures and the sentence does not name it, the source's name is appended ("..., per <source>"). Nothing else
+   is rewritten.
+3. *Code backstops in the writer* (none of them a model retry): sentences that talk about the writing process, figures no
+   fact supports, and repeated outside-source figures without their source are removed; evidence citations are found in
+   code rather than asked of the model.
+4. *Conclusion.* It contains no digits; it refers back to earlier numbers in words. The writer kept restating a figure
+   there, and the repeat-figure guard then deleted the sentence that carried the market name and the "outlook" keyword.
+5. *Budgets* follow the material: a section with few facts gets a smaller budget, and the intro and transition are fixed
+   fractions of the resulting total (intro 12%, transition 7.5%), so the share caps hold by construction. The U.S. ceiling
+   is 165 words so a small overshoot stays inside the SOP's 200.
+6. *Figure gap search* uses the text-search engines only; Bing's web feed returned unrelated pages for these queries.
+7. *Players* are extracted by the fact-sheet call and verified against the page text, because the existing parser knew only
+   two page layouts and found none for the web-scraping report.
+
+**Known soft misses (not fixed):** sentences over 30 words and Flesch below 50 in most drafts; long-tail searches are
+sometimes not placed (2 of 3 is common) and read stiffly when they are; a draft is shorter than 1,200 words when the
+material is thin (by design: no padding).

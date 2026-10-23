@@ -244,7 +244,14 @@ check("block shares: the good draft sits in all three bands", by_name(run, "Bloc
 d = good_draft()
 d[3]["paragraphs"][0] = pad(30, [f"What is changing the {MARKET} first shows in its trends and its size."])
 run = run_v2(TITLE, d)
-check("keywords: two assigned keywords in one paragraph fail",
+check("keywords: two assigned keywords in one paragraph pass the hard check but are noted (soft)",
+      by_name(run, "Secondary keywords").passed and not by_name(run, "No paragraph carries two").passed,
+      by_name(run, "Secondary keywords").detail)
+
+d = good_draft()
+d[3]["paragraphs"][0] = pad(30, [f"What is changing the {MARKET} first shows in its trends, its size and its segmentation."])
+run = run_v2(TITLE, d)
+check("keywords: three assigned keywords piled into one paragraph fail (stuffing)",
       not by_name(run, "Secondary keywords").passed, by_name(run, "Secondary keywords").detail)
 
 d = good_draft()

@@ -41,7 +41,7 @@ _SECTION_WEIGHTS = {"report_context": 110, "trends": 190, "segmentation": 70, "s
                     "country_us": 150, "key_players": 150, "conclusion": 100}
 _FACTS_FOR_FULL_BUDGET = {"report_context": 3, "trends": 5, "segmentation": 3, "subsegment": 4, "country_us": 4, "key_players": 4}
 _MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
-_SECTION_BOUNDS = {"country_us": (110, 190)}  # the U.S. SOP is 100-200 words
+_SECTION_BOUNDS = {"country_us": (110, 165)}  # the U.S. SOP is 100-200 words; the writer overshoots a budget a little
 _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sections run short of their SOP shapes
 
 # Which sections a report fact may sit in; headline figures live in report_context only so each is stated once.
