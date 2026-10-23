@@ -120,11 +120,14 @@ def normalize_terms(raw, market_name: str, logger: logging.Logger) -> list[str]:
     return out
 
 
-def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: logging.Logger) -> list[dict]:
+def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: logging.Logger,
+                        market_core: str | None = None) -> list[dict]:
     """Informational long-tail searches, shaped like the older long-tail records ({keyword, intent, why}) so the keyword
     highlighting and checks that already read them keep working. Each must rest on a real fact id, be 3-8 words and hold
     at least two words beyond the market's own name. The phrases are noun-phrase style searches: they fit inside a
-    statement, so a question-shaped phrase (one whose first word is an interrogative) is never kept."""
+    statement, so a question-shaped phrase (one whose first word is an interrogative) is never kept. The market's core
+    phrase (`market_core` may be the full market name or the stripped core; it counts as ONE noun unit when the
+    keyword-stack check measures runs, because a multi-word market name is not a pile by itself)."""
     fact_ids = {f["id"] for f in flat_facts}
     core_words = set(re.findall(r"[a-z0-9]+", _market_core(market_name))) | {"market", "global", "the", "of", "in", "for", "and"}
     out: list[dict] = []
@@ -149,17 +152,32 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
         if kw.split() and kw.split()[0] in ("what", "why", "how", "who", "whom", "whose", "where", "when", "which"):
             logger.info(f"[demand] dropped long-tail (read as a question, and a long-tail must fit inside a statement): {kw!r}")
             continue
-        # and it must read as ONE phrase: a run of four or more consecutive words with no joining word (an article,
-        # a preposition, a conjunction, is/are, like) is a keyword stack, not a phrase a person would say
+        # and it must read as ONE phrase: a run of five or more consecutive words with no joining word (an article,
+        # a preposition, a conjunction, is/are, like) is a keyword stack, not a phrase a person would say. The market's
+        # own core phrase is one compound noun, so each occurrence inside the phrase collapses to a single unit first —
+        # a 3-word market core plus two surrounding nouns is a natural phrase, not a pile.
+        core_units = re.findall(r"[a-z]+", _market_core(market_core)) if market_core else None
+        units = re.findall(r"[a-z]+", kw)
+        if core_units:
+            collapsed: list[str] = []
+            i = 0
+            while i < len(units):
+                if units[i:i + len(core_units)] == core_units:
+                    collapsed.append("coreunit")
+                    i += len(core_units)
+                else:
+                    collapsed.append(units[i])
+                    i += 1
+            units = collapsed
         run = 0
         piled = False
-        for w in re.findall(r"[a-z]+", kw):
+        for w in units:
             run = 0 if w in _LONGTAIL_GLUE_WORDS else run + 1
-            if run >= 4:
+            if run >= 5:
                 piled = True
                 break
         if piled:
-            logger.info(f"[demand] dropped long-tail (four or more words in a row with no joining word, so it reads "
+            logger.info(f"[demand] dropped long-tail (five or more words in a row with no joining word, so it reads "
                         f"as a stack of keywords, not a phrase): {kw!r}")
             continue
         n = len(kw.split())
@@ -201,7 +219,7 @@ def run_search_demand(market_name: str, fs: dict, logger: logging.Logger) -> dic
     return {
         "questions": questions,
         "terms": normalize_terms(raw.get("terms"), market_name, logger),
-        "long_tail": normalize_longtails(raw.get("long_tail"), flat, market_name, logger),
+        "long_tail": normalize_longtails(raw.get("long_tail"), flat, market_name, logger, market_core=market_name),
     }
 
 

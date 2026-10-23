@@ -110,11 +110,11 @@ check("long-tail: a repeating word or a question-shaped start is dropped; natura
                                       "cloud versus on premises in wealth management platforms"], str([x["keyword"] for x in lt2]))
 
 stack = demand.normalize_longtails([
-    {"keyword": "cloud based widget services marketplace pricing", "fact": "fs.segments.0", "why": "x"},   # four words in a row with no joining word
+    {"keyword": "cloud based widget services marketplace pricing", "fact": "fs.segments.0", "why": "x"},   # six words in a row with no joining word
     {"keyword": "widget services for cloud based teams", "fact": "fs.segments.0", "why": "x"},             # the same idea, joined
     {"keyword": "top companies widgets and services market", "fact": "fs.segments.0", "why": "x"},         # a join inside the run saves it
 ], FLAT, MARKET, LOG)
-check("long-tail: a run of four or more words with no joining word is rejected; a joined phrase is kept",
+check("long-tail: a run of five or more words with no joining word is rejected; a joined phrase is kept",
       [x["keyword"] for x in stack] == ["widget services for cloud based teams", "top companies widgets and services market"],
       str([x["keyword"] for x in stack]))
 
@@ -126,6 +126,24 @@ lt3 = demand.normalize_longtails([
 ], FLAT, MARKET, LOG)
 check("long-tail: any phrase that opens with an interrogative word is dropped; a noun-phrase search is kept",
       [x["keyword"] for x in lt3] == ["software for small teams"], str([x["keyword"] for x in lt3]))
+
+CORE_MARKET = "Global Widget Management Platform Market"
+CORE = "widget management platform"
+lt4 = demand.normalize_longtails([
+    {"keyword": "widget management platform used by banks", "fact": "fs.regions.leader", "why": "buyers"},
+    {"keyword": "cost of maintaining widget management platform", "fact": "fs.segments.0", "why": "costs"},
+    {"keyword": "widget management platform size in north america", "fact": "fs.regions.leader", "why": "regions"},
+    {"keyword": "high net worth clients digital widget management platform us", "fact": "fs.segments.0", "why": "x"},
+    {"keyword": "cloud vendors enterprise adoption today", "fact": "fs.segments.0", "why": "x"},
+    {"keyword": "enterprise adoption rates forecast by region", "fact": "fs.segments.0", "why": "adoption"},
+], FLAT, CORE_MARKET, LOG, market_core=CORE_MARKET)
+check("long-tail: the market's core phrase is ONE noun unit, so phrases built on it are kept while a five-word pile "
+      "(with or without the core) is rejected and a four-word run without the core is kept",
+      [x["keyword"] for x in lt4] == ["widget management platform used by banks",
+                                      "cost of maintaining widget management platform",
+                                      "widget management platform size in north america",
+                                      "enterprise adoption rates forecast by region"],
+      str([x["keyword"] for x in lt4]))
 
 # ------------------------------------------------------------------ answerability
 def fs_with(**fields):
