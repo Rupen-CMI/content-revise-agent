@@ -179,6 +179,28 @@ fixed = writer.name_outside_sources(amb_line, inp_share, LOG)[0]["paragraphs"]
 check("source naming: a sentence carrying only a token two facts tie on stays untouched",
       fixed[0] == amb_line[0]["paragraphs"][0], str(fixed))
 
+# Two outside facts share one figure token ("50") but the sentence keeps only one fact's own wording:
+# the wording tie-break (most distinct content words shared with the fact's text + detail) names that
+# fact's source, never the other's — with the wording overlapping equally the sentence stays unnamed.
+inp_word = make_inputs()
+inp_word.items["W13"] = {"id": "W13", "kind": "evidence", "tags": ["context"],
+                         "text": "A survey found 50% of those surveyed expanded their staff.", "detail": "",
+                         "source": "Alpha Desk, 2026-01", "historical": False, "sections": {"trends"}}
+inp_word.items["W14"] = {"id": "W14", "kind": "evidence", "tags": ["context"],
+                         "text": "Vendor outlined a framework called the Rule of 50 combining growth and margin.",
+                         "detail": "", "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
+word_secs = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "The vendor has outlined a framework named the Rule of 50 that combines growth and margin."]}]
+fixed = writer.name_outside_sources(word_secs, inp_word, LOG)[0]["paragraphs"]
+check("source naming: a shared figure token whose sentence keeps one fact's wording names only that fact's source",
+      fixed[0] == "The vendor has outlined a framework named the Rule of 50 that combines growth and margin, per Beta Desk.",
+      str(fixed))
+tie_secs = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "The checklist keeps one mark pinned at 50 while the notes stay quiet there."]}]
+fixed = writer.name_outside_sources(tie_secs, inp_word, LOG)[0]["paragraphs"]
+check("source naming: an equal wording overlap over a shared figure token stays unnamed",
+      fixed[0] == tie_secs[0]["paragraphs"][0], str(fixed))
+
 # The unit of ownership is digits only: a fact whose only number is spelled in words ("two") owns no figure,
 # so a drafted "$2 trillion" (owned by a fact carrying the digits) gets ", per" that fact's source, and the
 # spelled-out facts never have their sources appended to it.
@@ -494,6 +516,26 @@ check("shapes: the segmentation lead-in must state how many segment types the re
 check("shapes: the trends lead-in must name the market itself, never 'this market'",
       'names the market by its full name (never "this market")' in writer._SHAPES["trends"],
       writer._SHAPES["trends"])
+
+# A list-shaped section's REQUIRED secondary keyword must be covered in the lead-in sentence (the "\n- "
+# lines are reserved for the listed facts); non-list sections get no such instruction.
+points = {p["id"]: p["text"] for p in inp.points}
+LEAD_IN = "in the LEAD-IN sentence"
+RESERVED = "bullet lines are reserved for the listed facts"
+_list_sec = next(s for s in plan["sections"] if s["sop"] in writer._LIST_SHAPED and s["secondary"])
+_nonlist_sec = next(s for s in plan["sections"] if s["sop"] not in writer._LIST_SHAPED and s["secondary"])
+block_list = writer._section_block(1, _list_sec, inp, points)
+block_nonlist = writer._section_block(2, _nonlist_sec, inp, points)
+block_plain = writer._section_block(3, {**_list_sec, "secondary": None}, inp, points)
+check("prompt: a list-shaped section with a secondary keyword carries the lead-in instruction",
+      LEAD_IN in block_list and RESERVED in block_list and writer._LIST_SHAPED == {"trends", "segmentation"},
+      str([l for l in block_list.splitlines() if "REQUIRED" in l]))
+check("prompt: a non-list section with a secondary keyword carries no lead-in instruction",
+      LEAD_IN not in block_nonlist and RESERVED not in block_nonlist,
+      str([l for l in block_nonlist.splitlines() if "REQUIRED" in l]))
+check("prompt: a list-shaped section without a secondary keyword has neither line",
+      "REQUIRED secondary keyword" not in block_plain and LEAD_IN not in block_plain
+      and RESERVED not in block_plain, block_plain)
 check("prompt: the list lead-in rule no longer primes the word 'split'",
       "states the split" not in prompts.WRITE_USER and "between the split" not in prompts.WRITE_USER,
       str([l for l in prompts.WRITE_USER.splitlines() if "split" in l and "split it" not in l and "is split" not in l]))

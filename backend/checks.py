@@ -1338,6 +1338,28 @@ def v2_number_trace_problems(sections: list[dict], faq: list[dict], inp, sponsor
     return out
 
 
+# Everyday function words no sentence can avoid: excluded from the wording-overlap tie-break below, so
+# a shared one proves nothing about which fact a sentence belongs to.
+_WORDING_STOPWORDS = frozenset({
+    "that", "this", "these", "those", "they", "them", "their", "there", "here", "what", "which", "when",
+    "where", "while", "with", "from", "into", "onto", "upon", "over", "than", "then", "only", "also",
+    "very", "such", "same", "each", "both", "more", "most", "some", "will", "would", "could", "should",
+    "have", "been", "were", "does", "done", "about", "between", "through", "because", "since",
+})
+
+
+def _wording_overlap(sentence: str, fact_text: str, fact_detail: str = "") -> int:
+    """How many DISTINCT content words (lowercase alphabetic words of 4+ letters, minus
+    _WORDING_STOPWORDS) a sentence shares with one fact's own text plus detail — the second tie-break
+    for figure ownership: when two outside facts tie on the figures they share with a sentence, the fact
+    whose own wording the sentence keeps is the one the sentence belongs to. Shared with the writer's
+    source-naming backstop (called as checks._wording_overlap there), so both judge the same tie."""
+    sent_words = {w for w in re.findall(r"[a-z]+", sentence.lower()) if len(w) >= 4} - _WORDING_STOPWORDS
+    fact_words = {w for w in re.findall(r"[a-z]+", f"{fact_text} {fact_detail}".lower())
+                  if len(w) >= 4} - _WORDING_STOPWORDS
+    return len(sent_words & fact_words)
+
+
 def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
     """A figure that came from an outside source (a non-CMI source: a gap-filled fact-sheet headline or a
     selected news item) names that source, and is never credited to CMI (§3.2): the unit of naming is one
@@ -1358,6 +1380,8 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
         figs = _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", ""))
         if figs:
             registry.append((i["id"], i.get("source") or "CMI report", figs))
+    # The fact's own wording (text + detail) for the tie-break below, keyed by its id.
+    fact_wording = {i["id"]: (i["text"], i.get("detail", "") or "") for i in inp.items.values()}
     # Headline gap-fills always count; a news item counts through its own numbers, which is how its
     # fact reaches the draft.
     relevant_kinds = ("size", "forecast", "cagr", "evidence")
@@ -1401,9 +1425,19 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
                              for fid, source, figs in outside]
                     cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands if strong]
                     top = max((len(strong) for _, _, _, strong in cands), default=0)
+                    cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands
+                             if len(strong) == top]
+                    # A second tie-break, applied only when candidates from more than one distinct
+                    # source still stand after the figure-overlap rule: the fact whose own wording
+                    # (text + detail) the sentence keeps — the most distinct content words shared —
+                    # owns the sentence. A wording overlap that is itself tied behaves exactly as the
+                    # old rule did: every tied candidate is reported.
+                    if len({source for _, source, _, _ in cands}) > 1:
+                        best_wording = max(_wording_overlap(sentence, *fact_wording[fid])
+                                           for fid, _, _, _ in cands)
+                        cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands
+                                 if _wording_overlap(sentence, *fact_wording[fid]) == best_wording]
                     for fid, source, figs, strong in cands:
-                        if len(strong) < top:
-                            continue    # a weaker half-claim; the sentence belongs to the top-overlap fact
                         hit = sent_nums & figs   # kept for the report text's fallback (strong is never empty here)
                         if _covered(fid):
                             continue

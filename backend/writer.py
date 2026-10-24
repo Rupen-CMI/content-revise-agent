@@ -40,6 +40,11 @@ _SHAPES = {
     "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, steady growth, a modest pace). It still uses the market\'s full name once. Its last sentence is the CMI analyst\'s view.',
 }
 
+# SOPs whose SHAPE text asks for one lead-in sentence followed by "\n- " bullet lines: the bullet lines
+# are reserved for the section's listed facts, so a REQUIRED secondary keyword can only be covered
+# inside the lead-in sentence (see the extra instruction _keyword_lines appends for these sections).
+_LIST_SHAPED = frozenset({"trends", "segmentation"})
+
 
 # ------------------------------------------------------------------------------------------------- prompt
 
@@ -69,6 +74,10 @@ def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
                      'put its words in different parts of the sentence, and never string them together in the listed '
                      'order unless that reads naturally. No synonyms and no dropped words, and the sentence still names '
                      'the market. Put that sentence in one paragraph only.')
+        if s["sop"] in _LIST_SHAPED:
+            lines.append('  - This section is a list-shaped one: its bullet lines are reserved for the listed facts '
+                         'alone, so put the keyword\'s words in the LEAD-IN sentence, together with the market\'s own '
+                         'name — the bullets never carry them.')
     if s["longtail"]:
         lt = next(x for x in inp.longtails if x["id"] == s["longtail"])
         lines.append(f'  - REQUIRED long-tail search: the section must cover this keyword — every content word of '
@@ -542,6 +551,7 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
         return sections
     import checks
     outside = []
+    wording_by_source: dict[str, tuple[str, str]] = {}   # full source -> (fact text, fact detail)
     for i in inp.items.values():
         if i["kind"] in ("size", "forecast", "cagr", "evidence") and i.get("source") not in ("", "CMI report", None):
             # Ownership uses digits only: a spelled small number ("two") is prose, not an identifying figure.
@@ -549,6 +559,8 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
                     if not re.fullmatch(r"(?:19|20)\d\d", n)}
             if figs:
                 outside.append((re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", i["source"]).strip(), i["source"], figs))
+                prev = wording_by_source.setdefault(i["source"], ("", ""))
+                wording_by_source[i["source"]] = (f"{prev[0]} {i['text']}", f"{prev[1]} {i.get('detail', '') or ''}")
     if not outside:
         return sections
     end_re = re.compile(r"([.!?][\"')\]]*)$")
@@ -570,6 +582,15 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
                     best = max((len(nums & figs) for _, _, figs in outside if nums & figs), default=0)
                     owners = {(name, full) for name, full, figs in outside
                               if nums & figs and len(nums & figs) == best}
+                    # A second tie-break, only when candidates from more than one distinct source still
+                    # stand: the fact whose own wording the sentence keeps — the same content-word overlap
+                    # checks.v2_evidence_attribution_problems applies — owns the sentence; a wording tie
+                    # keeps the old behaviour (an ambiguous sentence is left for the check to report).
+                    if len({full for _, full in owners}) > 1:
+                        best_wording = max((checks._wording_overlap(sent, *wording_by_source[full])
+                                            for _, full in owners), default=0)
+                        owners = {(name, full) for name, full in owners
+                                  if checks._wording_overlap(sent, *wording_by_source[full]) == best_wording}
                     low = sent.lower()
                     if owners and not any(checks._names_source(low, full) for _, full in owners) and len({n for n, _ in owners}) == 1:
                         name, full = next(iter(owners))

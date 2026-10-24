@@ -439,6 +439,42 @@ check("attribution: an unnamed digit figure is blamed only on the fact that owns
       not r.passed and "Delta Desk" in r.detail and "Alpha Desk" not in r.detail
       and "Beta Desk" not in r.detail and "Gamma Desk" not in r.detail, r.detail)
 
+# Two outside facts share one figure token ("50") but only one fact's wording sits in the sentence: the
+# wording tie-break (the most distinct content words shared with the fact's text + detail) picks that
+# fact alone for the report; a wording overlap that is itself tied keeps both facts reported.
+inp_tie = test_planning.make_inputs()
+inp_tie.items["W13"] = {"id": "W13", "kind": "evidence", "tags": ["context"],
+                        "text": "A survey found 50% of those surveyed expanded their staff.", "detail": "",
+                        "source": "Alpha Desk, 2026-01", "historical": False, "sections": {"trends"}}
+inp_tie.items["W14"] = {"id": "W14", "kind": "evidence", "tags": ["context"],
+                        "text": "Vendor outlined a framework called the Rule of 50 combining growth and margin.",
+                        "detail": "", "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["The vendor has outlined a framework named the Rule of 50 that combines "
+                                 "growth and margin."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_tie, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: a shared figure token whose sentence keeps one fact's wording is reported only for that fact",
+      not r.passed and "Beta Desk" in r.detail and "Alpha Desk" not in r.detail, r.detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["The vendor has outlined a framework named the Rule of 50 that combines "
+                                 "growth and margin, per Beta Desk."]) + " " + filler(70)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_tie, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: the wording-owned figure sentence that names its source passes",
+      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["The checklist keeps one mark pinned at 50 while the notes stay quiet there."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_tie, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: an equal wording overlap over a shared figure token keeps both facts reported",
+      not r.passed and "Alpha Desk" in r.detail and "Beta Desk" in r.detail, r.detail)
+
 # ------------------------------------------------------------------ placeholders
 
 d = good_draft()
