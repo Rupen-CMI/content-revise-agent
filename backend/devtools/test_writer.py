@@ -15,6 +15,7 @@ import prompts  # noqa: E402
 import reports  # noqa: E402
 import writer  # noqa: E402
 from docx_io import Link, Paragraph  # noqa: E402
+from pipeline import _sponsor_problems  # noqa: E402
 from test_planning import good_plan, make_inputs  # noqa: E402
 
 FAILURES: list[str] = []
@@ -439,6 +440,51 @@ check("filler: a bullet line keeps its marker when its tail is cut",
           "Lead-in sentence.\n- The report splits the field into three parts, so readers can see the boundaries."]}], LOG)
       [0]["paragraphs"][0])
 
+# ------------------------------------------------------------------ sponsor placement repair
+SPONSOR_PROSE = "Teams hand routine reporting to Zeta Services, the guest author's data practice, each quarter."
+
+
+def rep(paragraphs: list[str]) -> list[list[str]]:
+    secs = [{"heading": "", "sop": [], "paragraphs": list(paragraphs)}]
+    return [s["paragraphs"] for s in writer.repair_sponsor_placement(secs, LOG, SPONSOR_PROSE)]
+
+
+_tok_bad = ["Lead-in paragraph with the report link.",
+            "Alpha sentence one. Beta sentence is what [[SPONSOR_PARAGRAPH]] gamma continues here, and ends. Delta sentence."]
+out = rep(_tok_bad)
+check("repair: a mid-sentence placeholder drops the garbled sentence and gains the next paragraph",
+      out == [["Lead-in paragraph with the report link.", "Alpha sentence one. Delta sentence.", prompts.SPONSOR_TOKEN]],
+      str(out))
+check("repair: the token ends up exactly once in the section list",
+      sum(x.count(prompts.SPONSOR_TOKEN) for ps in out for x in ps) == 1, str(out))
+repaired_secs = [{"heading": "", "sop": [], "paragraphs": out[0]}]
+check("repair: the repaired output passes _sponsor_problems standalone with no placement problem",
+      _sponsor_problems(repaired_secs, SPONSOR_PROSE) == [], str(_sponsor_problems(repaired_secs, SPONSOR_PROSE)))
+ok_inline = ["Alpha sentence one. [[SPONSOR_PARAGRAPH]] Delta sentence."]
+check("repair: a placeholder sitting between complete sentences is untouched byte for byte",
+      rep(ok_inline) == [ok_inline], str(rep(ok_inline)))
+solo = ["[[SPONSOR_PARAGRAPH]]"]
+check("repair: a paragraph that is only the placeholder is untouched", rep(solo) == [solo], str(rep(solo)))
+own = ["Alpha sentence one.", prompts.SPONSOR_TOKEN, "Delta sentence."]
+check("repair: the placeholder as its own paragraph is untouched", rep(own) == [own], str(rep(own)))
+out = rep(["Beta sentence is what [[SPONSOR_PARAGRAPH]] gamma continues, and ends."])
+check("repair: a garbled sentence that leaves no other text leaves the placeholder as the whole paragraph",
+      out == [[prompts.SPONSOR_TOKEN]], str(out))
+out = rep(["[[SPONSOR_PARAGRAPH]] beta continues here. Delta sentence."])
+check("repair: a placeholder that starts a sentence and continues it lowercase is moved too",
+      out == [["Delta sentence.", prompts.SPONSOR_TOKEN]], str(out))
+market = [{"heading": "Market heading", "sop": ["trends"], "paragraphs": [
+    "Alpha sentence one. Beta sentence is what [[SPONSOR_PARAGRAPH]] gamma continues here, and ends."]}]
+check("repair: a section with a SOP tag is never touched",
+      writer.repair_sponsor_placement(market, LOG, SPONSOR_PROSE)[0]["paragraphs"] == market[0]["paragraphs"])
+phrase = [{"heading": "", "sop": [], "paragraphs": [
+    "Alpha sentence one. Beta sentence is what [[SPONSOR_PARAGRAPH]] gamma continues here, and ends."]}]
+check("repair: a phrase sponsor's required inline placement is untouched",
+      writer.repair_sponsor_placement(phrase, LOG, "Managed data platforms")[0]["paragraphs"] == phrase[0]["paragraphs"])
+out = rep([_tok_bad[1], f"Second token here {prompts.SPONSOR_TOKEN} mid."])
+check("repair: only the first token is repaired, an extra token is left alone",
+      out == [["Alpha sentence one. Delta sentence.", prompts.SPONSOR_TOKEN,
+               f"Second token here {prompts.SPONSOR_TOKEN} mid."]], str(out))
 
 # ------------------------------------------------------------------ assembly
 written = {
@@ -602,6 +648,25 @@ try:
     para = next(s for s in secs_f if s["sop"] == ["trends"])["paragraphs"][0]
     check("call: a reader-narration filler tail in the write output is cut from the returned paragraph",
           para == "Vendors bundle support contracts into their subscriptions.", para)
+finally:
+    llm.chat_json = orig
+
+# The placement repair inside the call: a PROSE sponsor's mid-sentence placeholder is moved to its own paragraph.
+written_repair = {
+    "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].",
+                             "Alpha sentence one. Beta sentence is what [[SPONSOR_PARAGRAPH]] gamma continues here, "
+                             "and ends. Delta sentence."]},
+    "transition": {"paragraphs": ["Why it matters."]},
+    "sections": [{"sop": "report_context", "heading": "model heading",
+                  "paragraphs": ["Plain prose with no figures stays untouched."]}],
+}
+llm.chat_json = lambda *a, **k: written_repair
+try:
+    _, _, secs_r, _ = writer.run_write_v2(plan, inp, sponsor, report, LOG)
+    intro = secs_r[0]["paragraphs"]
+    check("call: a mid-sentence placeholder in the write output is repaired inside the call",
+          intro == ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].",
+                    "Alpha sentence one. Delta sentence.", prompts.SPONSOR_TOKEN], str(intro))
 finally:
     llm.chat_json = orig
 

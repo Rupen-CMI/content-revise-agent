@@ -22,7 +22,7 @@ import prompts
 from docx_io import Paragraph
 from pipeline import (
     _clean_sections, _evidence_used_ids, _force_sponsor_placeholder, _link_placement_problems, _market_core, _plain,
-    _sponsor_location_problem, _sponsor_problems, _sponsor_rule, sponsor_mode,
+    _sponsor_location_problem, _sponsor_problems, _sponsor_rule, _starts_sentence, sponsor_mode,
 )
 from pipeline_log import section
 import reports
@@ -228,6 +228,49 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
                 paragraphs.append("\n".join(lines))
         s["paragraphs"] = paragraphs
     return [s for s in sections if s["paragraphs"]]
+
+
+# The sentence-end bar `_sponsor_problems` applies to the text before an inline placeholder: trailing
+# closing quotes and brackets after . ! ? still count as a complete sentence ending.
+_ENDS_SENTENCE_RE = re.compile(r"[.!?][\"'”’)\]]*\s*$")
+
+
+def repair_sponsor_placement(sections: list[dict], logger: logging.Logger, sponsor_text: str = "") -> list[dict]:
+    """Move the retained paragraph's placeholder out of a sentence it was written into. There is no
+    retry: `_sponsor_problems` reports a mid-sentence placement after the call, but nothing fixes it,
+    and straight substitution (checks._sponsor_replacement) then garbles the sentence it was spliced
+    into. So the sentence holding the token is dropped here (its words cannot be salvaged
+    mechanically) and the token becomes its own paragraph — a placement the write prompt explicitly
+    allows ("the placeholder alone and nothing else"). Only the untagged opening sections are
+    touched, only the first token occurrence is repaired (extras are left where they are), and valid
+    placements come back byte for byte. A PHRASE sponsor is exempt entirely: there the prompt
+    REQUIRES the token inside a sentence, so an inline placement is correct, not a fault."""
+    if sponsor_text and sponsor_mode(sponsor_text) == "phrase":
+        return sections
+    for s in sections:
+        if s.get("sop"):        # only the untagged opening (the intro) may hold the token
+            continue
+        for pi, p in enumerate(s["paragraphs"]):
+            if prompts.SPONSOR_TOKEN not in p:
+                continue
+            if p.strip() == prompts.SPONSOR_TOKEN:
+                return sections     # valid: the token is the whole paragraph
+            cut = p.index(prompts.SPONSOR_TOKEN)
+            before, after = p[:cut], p[cut + len(prompts.SPONSOR_TOKEN):]
+            before_ok = not before.strip() or bool(_ENDS_SENTENCE_RE.search(before))
+            if before_ok and (not after.strip() or _starts_sentence(after)):
+                return sections     # valid: the token sits between two complete sentences
+            # invalid (mid-sentence): the whole sentence that holds the token goes, the other
+            # sentences keep their order, and the token gets its own paragraph right after them.
+            sents = [x for x in _SENTENCE_SPLIT_RE.split(p) if x.strip()]
+            hi = next(i for i, x in enumerate(sents) if prompts.SPONSOR_TOKEN in x)
+            remaining = " ".join(x for i, x in enumerate(sents) if i != hi)
+            logger.info(f"[write] moved the sponsor placeholder out of a sentence to its own paragraph: {sents[hi][:80]}")
+            s["paragraphs"][pi] = remaining if remaining else prompts.SPONSOR_TOKEN
+            if remaining:
+                s["paragraphs"].insert(pi + 1, prompts.SPONSOR_TOKEN)
+            return sections
+    return sections
 
 
 # A sentence that opens with a pointing word nearly always points straight at a noun that already names the thing
@@ -648,6 +691,8 @@ def run_write_v2(
     prompt = build_write_prompt(plan, inp, sponsor, report)
     written = llm.chat_json(prompts.WRITE_SYSTEM, prompt, temperature=0.3, call_name="write", logger=logger, max_tokens=7000)
     sections = strip_meta_sentences(assemble_sections(written, plan, logger), logger)
+    # the placement repair runs before the other strips so they all see the token in the shape the checks expect
+    sections = repair_sponsor_placement(sections, logger, sponsor.text)
     sections = strip_untraced_figures(sections, inp, sponsor.text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
     sections = fix_pointing_determiners(sections, logger)
