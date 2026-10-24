@@ -31,8 +31,8 @@ LINK_WORDS = 100        # the SOP wants the report link inside the first 100 wor
 _DETAIL_CHARS = 300
 _SHAPES = {
     "report_context": 'One paragraph. It states the market\'s size and where it is heading only as far as the listed facts do.',
-    "trends": 'One paragraph string: a single lead-in sentence, then exactly three lines (never two, never four) that each start with "\\n- ", one distinct trend per line (what is changing and what it does to the market, resting on a listed fact where one is given). The lead-in and the three lines are the whole paragraph.',
-    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the split divides, and states the split directly, with the report as its actor, saying how many parts the market falls into, in your own words, then one line starting with "\\n- " per split. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the split lets anyone see or do, or why the split matters. Nothing else.',
+    "trends": 'One paragraph string: a single lead-in sentence, then exactly three lines (never two, never four) that each start with "\\n- ", one distinct trend per line (what is changing and what it does to the market, resting on a listed fact where one is given). The lead-in sentence names the market by its full name (never "this market"). The lead-in and the three lines are the whole paragraph.',
+    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the segmentation lets anyone see or do, or why the segmentation matters. Nothing else.',
     "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: what drives its adoption, where it is used and what it adds to the market, using only the listed facts; where the facts say little, it says little. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Plain prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers where the market is strongest and, where facts allow, the United States, in 100 to 200 words in all; fewer than 100 words is a miss, so carry the region picture with the listed facts plus your own plain sentences about what that picture means for buyers.',
     "key_players": 'Two entries in "paragraphs", both plain prose with no bullet lines. First: a short plain passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
@@ -425,11 +425,11 @@ def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, spons
     import checks
     allowed: set[str] = set()
     for i in inp.items.values():
-        allowed |= checks._fact_numbers(i["text"]) | checks._fact_numbers(i.get("detail", ""))
-        allowed |= checks._fact_numbers(i.get("source", ""))
+        allowed |= checks._fact_numbers_with_words(i["text"]) | checks._fact_numbers_with_words(i.get("detail", ""))
+        allowed |= checks._fact_numbers_with_words(i.get("source", ""))
         for pt in inp.points:
-            allowed |= checks._fact_numbers(pt["text"])
-        allowed |= checks._fact_numbers(sponsor_text) | checks._fact_numbers(inp.market_name)
+            allowed |= checks._fact_numbers_with_words(pt["text"])
+        allowed |= checks._fact_numbers_with_words(sponsor_text) | checks._fact_numbers_with_words(inp.market_name)
     for s in sections:
         label = s["sop"][0] if s.get("sop") else "the opening"
         paragraphs: list[str] = []
@@ -474,6 +474,7 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
         if i["kind"] not in ("size", "forecast", "cagr", "evidence") or i.get("source") in ("", "CMI report"):
             continue
         src = i.get("source") or ""
+        # Ownership uses digits only: a spelled small number ("two") is prose, not an identifying figure.
         for n in checks._fact_numbers(i["text"]) | checks._fact_numbers(i.get("detail", "")):
             if not re.fullmatch(r"(?:19|20)\d\d", n):
                 owned.setdefault(n, src)
@@ -543,6 +544,7 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
     outside = []
     for i in inp.items.values():
         if i["kind"] in ("size", "forecast", "cagr", "evidence") and i.get("source") not in ("", "CMI report", None):
+            # Ownership uses digits only: a spelled small number ("two") is prose, not an identifying figure.
             figs = {n for n in checks._fact_numbers(i["text"]) | checks._fact_numbers(i.get("detail", ""))
                     if not re.fullmatch(r"(?:19|20)\d\d", n)}
             if figs:

@@ -118,6 +118,46 @@ check("source naming: a second outside source's figure still needs its own name 
       fixed[0] == "The metered model tracks 66.2% of respondents, Apify's January tally finds. Adoption stands at 8.4% of firms, per Field Report.",
       str(fixed))
 
+# A domain-style source with no 4+ letter word ("zz8020.com") was never seen as named by `_names_source`, so
+# a line whose first sentence already named the site still carried ", per ..." on its later figure sentence
+inp_dom = make_inputs()
+inp_dom.items["W2"]["source"] = "zz8020.com, 2026-01"
+inp_dom.items["W2"]["text"] = "55.1 percent of tracked firms plan to adopt the tool."
+inp_dom.items["W2"]["detail"] = "Usage reaches 3.2 million users."
+dom_name = "The tracker at zz8020.com reported in January 2026 that many firms adopt the tool."
+dom_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [dom_name + " Usage reaches 3.2 million users."]}]
+fixed = writer.name_outside_sources(dom_line, inp_dom, LOG)[0]["paragraphs"]
+check("source naming: a domain-style source named in the first sentence of a line is not appended again on its later figure sentence",
+      fixed[0] == dom_line[0]["paragraphs"][0], str(fixed))
+dom_new = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    dom_name,
+    "Usage reaches 3.2 million users.",
+    "- Another 55.1% of tracked firms sit behind the plan."]}]
+fixed = "\n".join(writer.name_outside_sources(dom_new, inp_dom, LOG)[0]["paragraphs"]).split("\n")
+check("source naming: a new line that carries a domain-style source's figure names the source again",
+      fixed[1] == "Usage reaches 3.2 million users, per zz8020.com."
+      and fixed[2] == "- Another 55.1% of tracked firms sit behind the plan, per zz8020.com.", str(fixed))
+dom_solo = [{"heading": "t", "sop": ["trends"], "paragraphs": ["Usage reaches 3.2 million users."]}]
+fixed = writer.name_outside_sources(dom_solo, inp_dom, LOG)[0]["paragraphs"]
+check("source naming: an unnamed domain-style source's figure sentence still gets ', per its name' appended",
+      fixed[0] == "Usage reaches 3.2 million users, per zz8020.com.", str(fixed))
+
+# ------------------------------------------------------------------ untraced-figure stripper (fact-side word tracing)
+# A fact that spells its figure out in words ("Sixty-three percent") has no digit in its text, so a writer
+# sentence rendering it as digits ("63%") would once have been judged untraced and deleted.
+inp_spell = make_inputs()
+inp_spell.items["W1"]["text"] = "Sixty-three percent of households use the service, double the share in 2024."
+spell_secs = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "Households lean on the service everywhere; 63% now keep it in daily use.",
+    "A tracked share sits at 48.9%, a number no fact carries.",
+    "Three trends shape the adoption path."]}]
+spell_out = writer.strip_untraced_figures(spell_secs, inp_spell, "", LOG)[0]["paragraphs"]
+check("untraced: a digit rendering of a fact's spelled-out figure survives the stripper",
+      spell_out[0] == "Households lean on the service everywhere; 63% now keep it in daily use.", str(spell_out))
+check("untraced: a digit figure appearing in no fact is still removed", len(spell_out) == 2, str(spell_out))
+check("untraced: a sentence carrying only a spelled number word is untouched",
+      spell_out[1] == "Three trends shape the adoption path.", str(spell_out))
+
 # a token two outside facts share ("9" owned by both) neither blocks the naming nor names the wrong source:
 # the fact with the most figures in common with the sentence is its owner, the rest are coincidence
 inp_share = make_inputs()
@@ -138,6 +178,32 @@ amb_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
 fixed = writer.name_outside_sources(amb_line, inp_share, LOG)[0]["paragraphs"]
 check("source naming: a sentence carrying only a token two facts tie on stays untouched",
       fixed[0] == amb_line[0]["paragraphs"][0], str(fixed))
+
+# The unit of ownership is digits only: a fact whose only number is spelled in words ("two") owns no figure,
+# so a drafted "$2 trillion" (owned by a fact carrying the digits) gets ", per" that fact's source, and the
+# spelled-out facts never have their sources appended to it.
+inp_per = make_inputs()
+inp_per.items["W9"] = {"id": "W9", "kind": "evidence", "tags": ["context"],
+                       "text": "Adoption rose 7 percent across the tracked firms.",
+                       "detail": "", "source": "Alpha Desk, 2026-01",
+                       "historical": False, "sections": {"trends"}}
+inp_per.items["W10"] = {"id": "W10", "kind": "evidence", "tags": ["context"],
+                        "text": "Deal activity kept its pace through the whole year.",
+                        "detail": "The wave produced two acquisitions.",
+                        "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
+inp_per.items["W11"] = {"id": "W11", "kind": "evidence", "tags": ["context"],
+                        "text": "Vendors keep joining hands across the field.",
+                        "detail": "The joining runs through two platforms.",
+                        "source": "Gamma Desk, 2026-03", "historical": False, "sections": {"trends"}}
+inp_per.items["W12"] = {"id": "W12", "kind": "evidence", "tags": ["context"],
+                        "text": "Combined holdings top $2 trillion in assets.",
+                        "detail": "", "source": "Delta Desk, 2026-04",
+                        "historical": False, "sections": {"trends"}}
+per_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "Combined holdings now pass more than $2 trillion in assets."]}]
+fixed = writer.name_outside_sources(per_line, inp_per, LOG)[0]["paragraphs"]
+check("source naming: an unnamed digit figure gets ', per' its own source only, never the spelled-'two' facts",
+      fixed[0] == "Combined holdings now pass more than $2 trillion in assets, per Delta Desk.", str(fixed))
 
 # ------------------------------------------------------------------ leading pointing words become 'The + noun'
 out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
@@ -418,9 +484,19 @@ check("prompt: a required keyword is written out in one sentence, in the require
 check("prompt: a list lead-in with a required keyword still carries the keyword's words and the market name",
       "that lead-in sentence still carries every content word of the keyword and the market's own name" in text,
       str([l for l in text.splitlines() if l.startswith("- No filler:")]))
-check("shapes: the segmentation lead-in must name the market in the same sentence as its split",
-      'names the market in that same sentence as the thing the split divides' in writer._SHAPES["segmentation"],
+check("shapes: the segmentation lead-in must name the market in the same sentence as its segmentation",
+      'names the market in that same sentence as the thing the segmentation divides' in writer._SHAPES["segmentation"],
       writer._SHAPES["segmentation"])
+check("shapes: the segmentation shape never calls the division a split",
+      "split" not in writer._SHAPES["segmentation"], writer._SHAPES["segmentation"])
+check("shapes: the segmentation lead-in must state how many segment types the report uses",
+      "how many segment types" in writer._SHAPES["segmentation"], writer._SHAPES["segmentation"])
+check("shapes: the trends lead-in must name the market itself, never 'this market'",
+      'names the market by its full name (never "this market")' in writer._SHAPES["trends"],
+      writer._SHAPES["trends"])
+check("prompt: the list lead-in rule no longer primes the word 'split'",
+      "states the split" not in prompts.WRITE_USER and "between the split" not in prompts.WRITE_USER,
+      str([l for l in prompts.WRITE_USER.splitlines() if "split" in l and "split it" not in l and "is split" not in l]))
 check("prompt: a phrase sponsor's own words are shown too, still building without a KeyError",
       f'Its words are: "{phrase_sponsor.text}"' in text_phrase)
 

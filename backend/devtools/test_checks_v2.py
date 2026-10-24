@@ -370,6 +370,75 @@ r = by_name(run, "Outside-source")
 check("attribution: naming the stronger owner's source in the carrying line still clears it",
       r.passed, r.detail)
 
+# A domain-style source ("zz8020.com, 2026-01") has no 4+ letter word for the token matcher, so its name is
+# detected through the normalised full name instead: a figure from it is flagged only when the sentence (or an
+# earlier sentence of the same line) carries the site's name itself
+inp_dom = test_planning.make_inputs()
+inp_dom.items["W8"] = {"id": "W8", "kind": "evidence", "tags": ["context"],
+                       "text": "Tool adoption reaches 6.6 percent of tracked firms.",
+                       "detail": "Usage spans 2.5 million users.",
+                       "source": "zz8020.com, 2026-01", "historical": False, "sections": {"report_context"}}
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["Tool adoption reaches 6.6% of tracked firms this year."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_dom, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: a domain-source figure sentence that names no site is flagged",
+      not r.passed and "zz8020.com" in r.detail, r.detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["Tool adoption reaches 6.6% of tracked firms, the count at zz8020.com finds."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_dom, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: a sentence that names the domain-style site clears its figure",
+      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = (pad(50, ["Tool adoption sits at 6.6% of tracked firms, tracked by zz8020.com.",
+                                  "Usage widens to 2.5 million users on the same count."]) + " " + filler(80))
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_dom, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: a later sentence of a line that named the domain-style site earlier needs no repeat",
+      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
+
+# A fact whose only number is spelled in words ("two acquisitions") owns no figure: attribution reads digits
+# only, so a drafted "$2 trillion" (owned by a different fact) is never blamed on the spelled-out facts —
+# with the word-aware registry this exact draft was flagged for each of them.
+inp_two_words = test_planning.make_inputs()
+inp_two_words.items["W9"] = {"id": "W9", "kind": "evidence", "tags": ["context"],
+                             "text": "Adoption rose 7 percent across the tracked firms.",
+                             "detail": "", "source": "Alpha Desk, 2026-01",
+                             "historical": False, "sections": {"trends"}}
+inp_two_words.items["W10"] = {"id": "W10", "kind": "evidence", "tags": ["context"],
+                              "text": "Deal activity kept its pace through the whole year.",
+                              "detail": "The wave produced two acquisitions.",
+                              "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
+inp_two_words.items["W11"] = {"id": "W11", "kind": "evidence", "tags": ["context"],
+                              "text": "Vendors keep joining hands across the field.",
+                              "detail": "The joining runs through two platforms.",
+                              "source": "Gamma Desk, 2026-03", "historical": False, "sections": {"trends"}}
+inp_two_words.items["W12"] = {"id": "W12", "kind": "evidence", "tags": ["context"],
+                              "text": "Combined holdings top $2 trillion in assets.",
+                              "detail": "", "source": "Delta Desk, 2026-04",
+                              "historical": False, "sections": {"trends"}}
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["The combined holdings pass more than $2 trillion in assets, Delta Desk reported."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_two_words, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+check("attribution: a drafted digit figure is never blamed on facts that only spell 'two'",
+      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["Combined holdings now pass more than $2 trillion in assets."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_two_words, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: an unnamed digit figure is blamed only on the fact that owns the digits",
+      not r.passed and "Delta Desk" in r.detail and "Alpha Desk" not in r.detail
+      and "Beta Desk" not in r.detail and "Gamma Desk" not in r.detail, r.detail)
+
 # ------------------------------------------------------------------ placeholders
 
 d = good_draft()

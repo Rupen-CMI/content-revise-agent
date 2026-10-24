@@ -58,6 +58,81 @@ def _numbers(text: str) -> set[str]:
     return {m.replace(",", "").rstrip(".") for m in _NUM_RE.findall(text or "")}
 
 
+_UNIT_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+               "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+               "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19}
+_TENS_WORDS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80,
+               "ninety": 90}
+_SCALE_WORDS = {"hundred": 100, "thousand": 1_000, "million": 1_000_000, "billion": 1_000_000_000,
+                "trillion": 1_000_000_000_000}
+_NUM_WORDS = frozenset(_UNIT_WORDS) | frozenset(_TENS_WORDS) | frozenset(_SCALE_WORDS)
+
+
+def spelled_numbers(text: str) -> set[str]:
+    """Digit forms of the cardinals a text states in words ('sixty-three' -> '63', 'two hundred' -> '200'), built
+    for the FACT side of figure tracing: a writer renders such a figure in digits, and the digits must be judged
+    against what the fact says in words. Covers zero..nineteen, the tens, and hundred/thousand/million/billion/
+    trillion as multipliers of a preceding number word or compound; the big scales also return their bare
+    coefficient ('three million' -> {'3', '3000000'}, the two ways a draft writes it). Matched on whole words only
+    ('money', 'often' hold none). A bare 'one' is a pronoun, not a figure ('one of the', 'no one') unless it builds
+    a larger number ('twenty-one', 'one hundred') or directly precedes 'percent' or 'in' + a number ('one in ten').
+    Unsure shapes return nothing: a missed token only strips the sentence as before, an invented token would
+    wrongly save an untraced figure."""
+    toks = re.findall(r"[a-z0-9]+", (text or "").lower().replace("-", " "))
+    out: set[str] = set()
+    i = 0
+    while i < len(toks):
+        if toks[i] in _NUM_WORDS:
+            j = i
+            while j < len(toks) and toks[j] in _NUM_WORDS:
+                j += 1
+            out |= _spelled_run(toks[i:j], toks[j:j + 2])
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _spelled_run(run: list[str], after: list[str]) -> set[str]:
+    """Digit forms of one maximal run of number words, with the two tokens that follow it. A multiplier with no
+    value before it ('a hundred') and a unit that cannot extend the value before it ('seven, seven') leaves the
+    run unconverted."""
+    if run == ["one"]:      # a lone 'one' is a pronoun; 'one percent' / 'one in ten' still states a share
+        nxt = after[0] if after else ""
+        after_nxt = after[1] if len(after) > 1 else ""
+        if nxt == "percent" or (nxt == "in" and (after_nxt.isdigit() or after_nxt in _NUM_WORDS)):
+            return {"1"}
+        return set()
+    total, current, coef = 0, 0, 0
+    for w in run:
+        if w in _SCALE_WORDS:
+            if current == 0:
+                return set()
+            if w == "hundred":
+                current *= 100     # stays pending, so the run's own tail keeps building the same value
+            else:
+                total += current * _SCALE_WORDS[w]
+                coef = current
+                current = 0
+        elif current == 0:
+            current = _UNIT_WORDS.get(w) or _TENS_WORDS.get(w, 0)
+        elif w in _UNIT_WORDS and 20 <= current < 100 and current % 10 == 0:
+            current += _UNIT_WORDS[w]     # a tens-and-units compound ('sixty three' -> 63)
+        else:
+            return set()
+    figure = total + current
+    if not figure:
+        return set()
+    return {str(figure), str(coef)} if coef else {str(figure)}
+
+
+def fact_numbers(text: str) -> set[str]:
+    """`_numbers` plus the cardinals the text spells in words ('Sixty-three percent' carries '63'), the set for
+    every place a FACT's own text/detail/source builds the reference a stated figure traces to. Never applied to
+    a draft's sentences (a draft's 'three trends' is prose, not a figure), questions, titles or headings."""
+    return _numbers(text) | spelled_numbers(text)
+
+
 def _years(text: str) -> list[int]:
     return [int(y) for y in _YEAR_RE.findall(text or "")]
 

@@ -1136,6 +1136,15 @@ def _fact_numbers(text: str) -> set[str]:
     return set(facts._numbers(text))
 
 
+def _fact_numbers_with_words(text: str) -> set[str]:
+    """`_fact_numbers` plus the cardinals a fact spells in words ("Sixty-three percent" carries "63"), for every
+    place a FACT's own text/detail/source builds the reference set. Never applied to a draft sentence: a draft's
+    spelled "three trends" is prose, not a figure it must trace."""
+    import facts
+    text = re.sub(r"\b\d{1,2}, 20\d{2}\b", " ", text or "")
+    return set(facts.fact_numbers(text))
+
+
 def _v2_block_words(sections: list[dict], sponsor_text: str = "") -> dict:
     """Words per block, measured on the real text with the sponsor paragraph substituted in (§3.6b):
     {intro, transition, market, per_section, total}."""
@@ -1307,11 +1316,11 @@ def v2_number_trace_problems(sections: list[dict], faq: list[dict], inp, sponsor
     allowed: set[str] = set()
     if inp is not None:
         for i in inp.items.values():
-            allowed |= _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", ""))
-            allowed |= _fact_numbers(i.get("source", ""))  # a source domain can carry digits ("gtm8020.com")
+            allowed |= _fact_numbers_with_words(i["text"]) | _fact_numbers_with_words(i.get("detail", ""))
+            allowed |= _fact_numbers_with_words(i.get("source", ""))  # a source domain can carry digits ("zz8020.com")
         for pt in inp.points:
-            allowed |= _fact_numbers(pt["text"])
-        allowed |= _fact_numbers(sponsor_text) | _fact_numbers(inp.market_name)
+            allowed |= _fact_numbers_with_words(pt["text"])
+        allowed |= _fact_numbers_with_words(sponsor_text) | _fact_numbers_with_words(inp.market_name)
     drafts: list[tuple[str, str]] = [
         (str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")), p)
         for s in sections for p in s["paragraphs"]
@@ -1344,6 +1353,8 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
     # source keep its numbers even when another fact shares those tokens.
     registry: list[tuple[str, str, set[str]]] = []
     for i in inp.items.values():
+        # Attribution uses digits only: a spelled small number ("two") is prose, not an identifying figure,
+        # so a fact whose detail says "two acquisitions" must not be blamed for a drafted "$2 trillion".
         figs = _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", ""))
         if figs:
             registry.append((i["id"], i.get("source") or "CMI report", figs))
@@ -1372,7 +1383,7 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
                     # A source named in the sentence keeps the numbers its own facts carry: another fact
                     # sharing those tokens (a "150 million" raised against "150 advisors") is coincidence,
                     # not a figure the writer misattributed. Only true figures cover, never a shared year,
-                    # and source-name detection mirrors the complaint branch: the source's 4+ letter words.
+                    # and source-name detection mirrors the complaint branch (the same _names_source).
                     sent_strong = {n for n in sent_nums if not re.fullmatch(r"(?:19|20)\d\d", n)}
 
                     def _covered(except_fid: str) -> bool:
@@ -1396,8 +1407,9 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
                         hit = sent_nums & figs   # kept for the report text's fallback (strong is never empty here)
                         if _covered(fid):
                             continue
-                        toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]
-                        if toks and not any(t.lower() in low for t in toks) and source not in named_line:
+                        # The 'is it named' test is the same _names_source the covering branches use, so a
+                        # source without 4+ letter words (a domain) is no longer skipped wholesale.
+                        if not _names_source(low, source) and source not in named_line:
                             out.append(f"{label}: the figure {', '.join(sorted(strong or hit))} from {source} ({fid}) sits "
                                        "in a sentence that does not name that source")
                         if source.lower() not in ("cmi", "coherent market insights") and _CMI_NAMED_RE.search(sentence):
@@ -1407,10 +1419,13 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
 
 def _names_source(low_sentence: str, source: str) -> bool:
     """Does a sentence (lowercased) carry a source's name? Same detection the complaint branch uses:
-    the source's 4+ letter words, or a short brand contained whole ("MSN")."""
+    the source's 4+ letter words, or a short brand contained whole ("MSN"). A name the word finder fits
+    nothing to (a domain such as "zz8020.com" holds no 4+ letter run) counts as named when its full
+    lowercase name — the trailing ", YYYY-MM"/", undated" date suffix stripped — appears in the sentence."""
     toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]
     if not toks:
-        return source.lower() in low_sentence
+        name = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", source.lower()).strip()
+        return name in low_sentence
     return any(t.lower() in low_sentence for t in toks)
 
 
@@ -1438,8 +1453,8 @@ def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict]) -> l
             continue
         src_nums: set[str] = set()
         for i in faqs.sources_for_question(q, inp):
-            src_nums |= _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", ""))
-            src_nums |= _fact_numbers(i.get("source", ""))  # a source domain can carry digits ("gtm8020.com")
+            src_nums |= _fact_numbers_with_words(i["text"]) | _fact_numbers_with_words(i.get("detail", ""))
+            src_nums |= _fact_numbers_with_words(i.get("source", ""))  # a source domain can carry digits ("zz8020.com")
         for n in sorted(_fact_numbers(str(qa.get("answer") or ""))):
             if re.fullmatch(r"(?:19|20)\d\d", n):
                 continue

@@ -245,6 +245,39 @@ try:
 finally:
     llm.chat_json = orig
 
+# ------------------------------------------------------------------ figures a fact spells in words
+check("spelled: hyphenated and spaced compounds both give digits",
+      facts.spelled_numbers("Sixty-three percent of firms are using the tool, double the share in 2024") == {"63"},
+      str(facts.spelled_numbers("Sixty-three percent of firms are using the tool, double the share in 2024")))
+check("spelled: other compound shapes",
+      facts.spelled_numbers("Forty-five teams, ninety nine seats, twelve thousand records") == {"45", "99", "12", "12000"},
+      str(facts.spelled_numbers("Forty-five teams, ninety nine seats, twelve thousand records")))
+check("spelled: hundred builds the full product",
+      facts.spelled_numbers("two hundred firms, one hundred and none to spare") == {"200", "100"},
+      str(facts.spelled_numbers("two hundred firms, one hundred and none to spare")))
+check("spelled: big scales return the coefficient and the product",
+      facts.spelled_numbers("three million units, two billion orders, one trillion rows")
+      == {"3", "3000000", "2", "2000000000", "1", "1000000000000"},
+      str(facts.spelled_numbers("three million units, two billion orders, one trillion rows")))
+check("spelled: a bare one is excluded", facts.spelled_numbers("no one, the one, one another, each one, one of the") == set(),
+      str(facts.spelled_numbers("no one, the one, one another, each one, one of the")))
+check("spelled: one counts when it builds a larger number",
+      facts.spelled_numbers("twenty-one users, one hundred seats, one million rows") == {"21", "100", "1", "1000000"},
+      str(facts.spelled_numbers("twenty-one users, one hundred seats, one million rows")))
+check("spelled: one before percent or in + a number states a share",
+      facts.spelled_numbers("one percent of users, one in ten firms, one in 4 teams") == {"1", "10"},
+      str(facts.spelled_numbers("one percent of users, one in ten firms, one in 4 teams")))
+check("spelled: a bare multiplier with no value before it converts to nothing",
+      facts.spelled_numbers("a hundred scattered entries") == set(), str(facts.spelled_numbers("a hundred scattered entries")))
+
+check("spelled: whole words only — no match inside another word",
+      facts.spelled_numbers("someone, none, money, stone, often, tent, intent, seventyfold") == set(),
+      str(facts.spelled_numbers("someone, none, money, stone, often, tent, intent, seventyfold")))
+check("fact_numbers: digits plus spelled cardinals",
+      facts.fact_numbers("Sixty-three percent of firms are using the tool, double the share in 2024.")
+      == {"63", "2024"},
+      str(facts.fact_numbers("Sixty-three percent of firms are using the tool, double the share in 2024.")))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
