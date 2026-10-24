@@ -32,7 +32,7 @@ _DETAIL_CHARS = 300
 _SHAPES = {
     "report_context": 'One paragraph. It states the market\'s size and where it is heading only as far as the listed facts do.',
     "trends": 'One paragraph string: a single lead-in sentence, then exactly three lines (never two, never four) that each start with "\\n- ", one distinct trend per line (what is changing and what it does to the market, resting on a listed fact where one is given). The lead-in and the three lines are the whole paragraph.',
-    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments" and states the split directly, with the report as its actor, saying how many parts the market falls into, in your own words, then one line starting with "\\n- " per split. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the split lets anyone see or do, or why the split matters. Nothing else.',
+    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the split divides, and states the split directly, with the report as its actor, saying how many parts the market falls into, in your own words, then one line starting with "\\n- " per split. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the split lets anyone see or do, or why the split matters. Nothing else.',
     "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: what drives its adoption, where it is used and what it adds to the market, using only the listed facts; where the facts say little, it says little. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Plain prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers where the market is strongest and, where facts allow, the United States, in 100 to 200 words in all; fewer than 100 words is a miss, so carry the region picture with the listed facts plus your own plain sentences about what that picture means for buyers.',
     "key_players": 'Two entries in "paragraphs", both plain prose with no bullet lines. First: a short plain passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
@@ -239,17 +239,47 @@ _NOT_A_NOUN = frozenset({
 })
 _TIME_WORDS = frozenset({"year", "years", "month", "months", "week", "weeks", "day", "days", "time", "times",
                          "morning", "evening", "quarter", "decade", "season", "way", "moment", "point"})
+_ED_NOUNS = frozenset({
+    "bed", "beds", "breed", "breeds", "creed", "creeds", "deed", "deeds", "feed", "feeds", "greed", "greeds",
+    "need", "needs", "seed", "seeds", "shed", "sheds", "speed", "speeds", "steed", "steeds", "weed", "weeds",
+})
 _IRREGULAR_PAST = frozenset({"led", "made", "meant", "kept", "gave", "came", "went", "took", "saw", "got", "set",
                              "put", "ran", "began", "grew", "drove", "rose", "fell", "held", "left", "brought",
                              "became", "was", "were", "had", "did", "said", "told", "found", "thought", "knew",
                              "felt", "seemed"})
+# These/Those before a number word or a small quantifier are followed by a plural noun one word further on,
+# so the word right after the demonstrative is no longer the one that decides: the pair quantifier + plural
+# noun does ("Those two figures", "These few buyers"). Same lead/captures as _DEMONSTRATIVE_RE.
+_DEMONSTRATIVE_QUANT_RE = re.compile(
+    r"^(?P<lead>[\"'\u201c\u2018(\s]*)(?P<dem>These|Those)(?P<gap>\s+)(?P<quant>[A-Za-z0-9][A-Za-z0-9'-]*)(?P<gap2>\s+)(?P<next>[A-Za-z][A-Za-z'-]*)",
+    re.IGNORECASE)
+_QUANTIFIER_WORDS = frozenset({"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                               "both", "several", "few", "many", "other", "same", "first", "last", "main", "key"})
+
+
+def _quantified_plural_follows(quant: str, nxt: str) -> bool:
+    """True when the word after a quantified demonstrative opener is a plural noun-shaped word (ends in s,
+    not ss, and not one of the verbs/antecedents _NOT_A_NOUN holds), so 'Those two figures' may become
+    'The two figures'. Bare openers never reach here: a number word or quantifier is required."""
+    if not (quant.isdigit() or quant.lower() in _QUANTIFIER_WORDS):
+        return False
+    w = nxt.lower()
+    return w.endswith("s") and not w.endswith("ss") and w not in _NOT_A_NOUN
 
 
 def _noun_follows(dem: str, nxt: str) -> bool:
     """Decide, by grammar shape alone, whether the word after a leading demonstrative is a noun/adjective
     (so 'That skill' may become 'The skill') or a verb ('That changes' stays). A mangled sentence is worse
-    than the pointing word, so anything not clearly noun-shaped is left alone."""
+    than the pointing word, so anything not clearly noun-shaped is left alone. A small set of nouns whose
+    shape ends in "ed" (need, speed, deed...) passes before the -ed test, branch by branch: a singular
+    noun goes with This/That, its plural with These/Those, so the verb reading ("That feeds...") keeps."""
     w, d = nxt.lower(), dem.lower()
+    if w in _ED_NOUNS:
+        if d in ("this", "that"):
+            return not w.endswith("s") or w.endswith(("ss", "sis", "us"))
+        if d in ("these", "those"):
+            return w.endswith("s") and not w.endswith("ss")
+        return False
     if w in _NOT_A_NOUN or w in _TIME_WORDS or w in _IRREGULAR_PAST or w.endswith("ed"):
         return False
     if d in ("this", "that"):  # a singular verb ends in -s, so noun/adjective only without -s (or ss/sis/us)
@@ -272,10 +302,14 @@ def fix_pointing_determiners(sections: list[dict], logger: logging.Logger) -> li
                 out = []
                 for sent in [x for x in _SENTENCE_SPLIT_RE.split(text) if x.strip()]:
                     m = _DEMONSTRATIVE_RE.match(sent)
-                    if (m and _noun_follows(m.group("dem"), m.group("next")) and prompts.SPONSOR_TOKEN not in sent
+                    mq = _DEMONSTRATIVE_QUANT_RE.match(sent)
+                    noun_plain = m and _noun_follows(m.group("dem"), m.group("next"))
+                    noun_after = noun_plain or (mq and _quantified_plural_follows(mq.group("quant"), mq.group("next")))
+                    if (noun_after and prompts.SPONSOR_TOKEN not in sent
                             and len(sent.split()) >= 4):
+                        opener = m if noun_plain else mq
                         originals.append(sent[:80])
-                        sent = sent[:m.start("dem")] + "The" + sent[m.end("dem"):]
+                        sent = sent[:opener.start("dem")] + "The" + sent[opener.end("dem"):]
                         n += 1
                     out.append(sent)
                 lines.append(marker + " ".join(out) if out else line)
@@ -528,7 +562,12 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
                 out = []
                 for sent in [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]:
                     nums = {n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)}
-                    owners = {(name, full) for name, full, figs in outside if nums & figs}
+                    # A token shared by two outside facts gives the weaker one a half-claim on the sentence
+                    # ("9" owned by {9, 150} and {9, 40} alike): the fact with the MOST figures in common
+                    # with the sentence is the real owner, the rest are coincidence.
+                    best = max((len(nums & figs) for _, _, figs in outside if nums & figs), default=0)
+                    owners = {(name, full) for name, full, figs in outside
+                              if nums & figs and len(nums & figs) == best}
                     low = sent.lower()
                     if owners and not any(checks._names_source(low, full) for _, full in owners) and len({n for n, _ in owners}) == 1:
                         name, full = next(iter(owners))

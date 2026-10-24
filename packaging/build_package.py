@@ -162,6 +162,22 @@ def stage_root() -> None:
     log("staging frontend/ + start.bat ...")
     shutil.copytree(REPO / "frontend", STAGE / "frontend")
 
+    (STAGE / "HOW TO RUN.txt").write_text(
+        "CMI Blog Revamp Agent\r\n"
+        "=====================\r\n"
+        "How to run:\r\n"
+        "  1. Extract this whole folder to anywhere on the PC (e.g. Desktop). Keep all files together.\r\n"
+        "  2. Double-click  start.bat\r\n"
+        "  3. The app opens in your browser at http://127.0.0.1:8000\r\n"
+        "\r\n"
+        "Notes:\r\n"
+        "  - The FIRST run installs some components (needs internet) and can take a few minutes.\r\n"
+        "  - Every later run starts in seconds.\r\n"
+        "  - Closing the browser tab shuts the app down after a few seconds.\r\n"
+        "  - Run start.bat again any time to start a fresh copy.\r\n",
+        encoding="utf-8",
+    )
+
     bat = (REPO / "start.bat").read_text(encoding="utf-8", errors="replace")
     marker = (
         'if not exist "%~dp0.env" (\n'

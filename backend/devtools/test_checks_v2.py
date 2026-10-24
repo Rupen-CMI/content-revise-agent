@@ -335,6 +335,41 @@ check("attribution: a different outside source's figure in that line still needs
       not by_name(run, "Outside-source").passed and "Tech Journal" in by_name(run, "Outside-source").detail,
       by_name(run, "Outside-source").detail)
 
+# Two outside facts sharing one token: the sentence belongs to the fact with the most figures in common,
+# the weaker half-claim is coincidence and is never reported
+inp3 = test_planning.make_inputs()
+inp3.items["W6"] = {"id": "W6", "kind": "evidence", "tags": ["context"],
+                    "text": "Adoption reaches 9 units among 150 teams.", "detail": "",
+                    "source": "Alpha Post", "historical": False, "sections": {"trends"}}
+inp3.items["W7"] = {"id": "W7", "kind": "evidence", "tags": ["context"],
+                    "text": "Usage stands at 9 units, while 40 firms lag.", "detail": "",
+                    "source": "Beta Desk", "historical": False, "sections": {"trends"}}
+d = good_draft()
+d[2]["paragraphs"][1] = pad(50, ["Adoption reaches 9 units among the tracked firms, while 40 firms lag behind."]) + " " + filler(80)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp3, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: a token shared by two facts is blamed only on the fact with the most figures in common",
+      not r.passed and "Beta Desk" in r.detail and "Alpha Post" not in r.detail, r.detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = (pad(50, ["Usage reaches 9 units, the beta desk finds.",
+                                  "Adoption stands at 9 of 150 teams in the same tally."]) + " " + filler(80))
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp3, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: a fact whose every figure the line's stronger owner does not share keeps its own naming duty",
+      not r.passed and "Alpha Post" in r.detail and "Beta Desk" not in r.detail, r.detail)
+
+d = good_draft()
+d[2]["paragraphs"][1] = pad(60, ["Adoption reaches 9 units among the tracked firms, and the report at Beta Desk finds ",
+                                 "40 firms lag behind."]) + " " + filler(70)
+run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp3, faq=GOOD_FAQ, sponsor_brand_terms=[],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+r = by_name(run, "Outside-source")
+check("attribution: naming the stronger owner's source in the carrying line still clears it",
+      r.passed, r.detail)
+
 # ------------------------------------------------------------------ placeholders
 
 d = good_draft()
@@ -673,6 +708,31 @@ check("stem fold: unrelated words sharing a prefix are not matched (market/marke
       checks.keyword_words_in_sentence("The zorb marked pricing widget models.", "zorb widget market pricing models") is None)
 check("stem fold: unrelated words sharing a prefix are not matched (regional/regions)",
       checks.keyword_words_in_sentence("Widget pricing across the zorb regions.", "regional widget pricing") is None)
+
+# The derivational fold is a switch: the keyword-stuffing count needs the exact word shapes, so it runs
+# the same matcher with use_stems=False while the used-in-its-section tests keep the fold on by default.
+check("stem fold off: a keyword word matched only through the fold no longer matches",
+      checks.keyword_words_in_sentence("The zorb desk segments widget pricing.", STEM_PHRASE, use_stems=False) is None)
+check("stem fold off: the -ation keyword word's own noun form still matches",
+      checks.keyword_words_in_sentence(
+          "Pricing and widget segmentation on the zorb desk.", STEM_PHRASE, use_stems=False) is not None)
+check("stem fold off: the participle form no longer matches",
+      checks.keyword_words_in_sentence("The zorb desk segmented widget pricing.", STEM_PHRASE, use_stems=False) is None)
+check("secondary loose: with the fold off, the sentence's verb form no longer satisfies the -ation keyword",
+      checks.secondary_keyword_in_paragraph(
+          "The Zzz Widget Services Market keeps changing. "
+          "Vendors segment zorb widget pricing by tier.",
+          MARKET, "zorb widget pricing segmentation", use_stems=False) is False)
+
+# Stuffing counts exact words only: an inflected keyword word ("segments" for "segmentation") counted
+# through the fold would stuff-count a paragraph that merely uses the topic's plural, so a paragraph
+# with two exact keyword uses plus one fold-only use passes the hard check (a soft 2-keyword note is fine).
+d = good_draft()
+d[3]["paragraphs"][0] = pad(30, [f"What is changing the {MARKET} first shows in its trends, its size "
+                                 "and how its segments divide the field."])
+run = run_v2(TITLE, d)
+check("keywords: a fold-only keyword word does not tip a paragraph into stuffing",
+      by_name(run, "Secondary keywords").passed, by_name(run, "Secondary keywords").detail)
 
 # ------------------------------------------------------------------ secondary keyword: loose verdict keeps the anchor rule
 

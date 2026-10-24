@@ -128,7 +128,8 @@ def _market_name_in_text(text: str, market_name: str) -> bool:
     return bool(words) and all(_stem(w) in stems for w in words)
 
 
-def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix: str) -> bool:
+def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix: str,
+                                   use_stems: bool = True) -> bool:
     """A secondary keyword is built as "<market core> market <suffix>" (e.g. "Wealth Management
     Platform Market size"). count_keyword_uses' fixed word-window (~12-14 words for a keyword this
     long) is too narrow for how real analysis writing actually reads: a paragraph often names the
@@ -152,7 +153,8 @@ def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix
     # anchor rule's own standard and must not change), and keyword_words_in_sentence's loose verdict is
     # accepted on top of it — a keyword whose content words all sit in one sentence, in any order and any
     # natural inflection with ordinary words between them, is a use however the sentence was reworded.
-    if keyword_words_in_sentence(paragraph_text, suffix) is not None:
+    # use_stems also gates the derivational word_stem fold below (off for the stuffing count, on by default).
+    if keyword_words_in_sentence(paragraph_text, suffix, use_stems=use_stems) is not None:
         return True
     return all(_stem(w) in text_stems for w in suffix_words)
 
@@ -288,7 +290,7 @@ def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
-def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] | None:
+def keyword_words_in_sentence(text: str, phrase: str, use_stems: bool = True) -> list[tuple[int, int]] | None:
     """The loose per-word match the REORDER rule asks the checks to accept: `phrase` is a TOPIC to cover, and
     its content words count as covered when EVERY one of them appears somewhere in ONE sentence of `text`, in
     any order and in any natural grammatical form (the same _stem folding the tight matcher applies,
@@ -297,6 +299,9 @@ def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] |
     ordinary words of the sentence sitting between them — never across a sentence boundary (the text is split
     with the paragraph's own sentence splitter first). The window between the first and last of the phrase's
     words is max(len(content words) + 8, 12) tokens; synonyms and dropped content words still do not count.
+    use_stems=False turns the derivational word_stem fold off (the inflectional _stem fold stays on), so
+    only the phrase's own word shapes count — the keyword-stuffing count needs the exact words, not every
+    form the topic folds to.
     Returns the character span of ONE occurrence of each content word (its last occurrence inside the matched
     window), or None when the sentence covers none of the phrase in that loose sense. The tight match still
     wins: where longtail_spans already finds the phrase's words as one light-glued stretch, that occurrence's
@@ -305,7 +310,7 @@ def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] |
     target = {_stem(w) for w in words}
     if not target:
         return None
-    target_stems = {word_stem(w) for w in words}
+    target_stems = {word_stem(w) for w in words} if use_stems else set()
     offsets = [0] + [m.end() for m in _SENT_SPLIT_RE.finditer(text)]
     for si, sentence in enumerate(_SENT_SPLIT_RE.split(text)):
         found = _keyword_words_in_one_sentence(sentence, phrase, target, target_stems)
@@ -318,7 +323,7 @@ def keyword_words_in_sentence(text: str, phrase: str) -> list[tuple[int, int]] |
 def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str], target_stems: set[str]) -> list[tuple[int, int]] | None:
     """One sentence's verdict for keyword_words_in_sentence: the tight longtail_spans match first (each of its
     content words' own span inside the tight stretch), else the loose token window, where each token matches
-    on _stem or — additionally — on the derivational word_stem fold."""
+    on _stem or — additionally — on the derivational word_stem fold (an empty target_stems turns the fold off)."""
     for start, end in longtail_spans(sentence, phrase):
         last: dict[str, tuple[int, int]] = {}
         for m in re.finditer(r"[a-z0-9']+", sentence[start:end].lower()):
@@ -1245,7 +1250,11 @@ def v2_keyword_problems(sections: list[dict], plan: dict, market_name: str) -> l
             continue
         for n, p in enumerate(s["paragraphs"], 1):
             low = _sponsor_replacement(p, " ").lower()
-            found = [k for k in dict.fromkeys(assigned) if secondary_keyword_in_paragraph(low, market_name, k)]
+            # The stuffing count matches on the exact word shapes only (no derivational fold): a paragraph
+            # that merely says "the segments show ..." is not carrying the keyword "segmentation" for this
+            # test — the topic's own words piling up is what stuffing means here.
+            found = [k for k in dict.fromkeys(assigned)
+                     if secondary_keyword_in_paragraph(low, market_name, k, use_stems=False)]
             if len(found) >= _KEYWORD_STUFFING_AT:
                 out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries '
                            f'{len(found)} secondary keywords ({", ".join(found)}); that is keyword stuffing')
@@ -1372,14 +1381,19 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
                                    and (sent_strong & figs2)
                                    for fid2, src2, figs2 in registry if fid2 != except_fid)
 
-                    for fid, source, figs in outside:
-                        hit = sent_nums & figs
-                        if not hit:
-                            continue
-                        strong = {n for n in hit if not re.fullmatch(r"(?:19|20)\d\d", n)}
-                        if not strong:
-                            continue    # only the source's year is shared; the year is context (dates the
-                            # figure it sits next to), never the identification of the figure itself
+                    # A token shared by two outside facts gives the weaker one a half-claim on the
+                    # sentence, and reporting it would blame the wrong fact: only the fact(s) with the
+                    # MOST figures in common with the sentence are owners, the rest are coincidence
+                    # (the overlap never counts a shared year).
+                    cands = [(fid, source, figs, {n for n in sent_nums & figs
+                                                  if not re.fullmatch(r"(?:19|20)\d\d", n)})
+                             for fid, source, figs in outside]
+                    cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands if strong]
+                    top = max((len(strong) for _, _, _, strong in cands), default=0)
+                    for fid, source, figs, strong in cands:
+                        if len(strong) < top:
+                            continue    # a weaker half-claim; the sentence belongs to the top-overlap fact
+                        hit = sent_nums & figs   # kept for the report text's fallback (strong is never empty here)
                         if _covered(fid):
                             continue
                         toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]

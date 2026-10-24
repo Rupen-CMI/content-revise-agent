@@ -118,6 +118,27 @@ check("source naming: a second outside source's figure still needs its own name 
       fixed[0] == "The metered model tracks 66.2% of respondents, Apify's January tally finds. Adoption stands at 8.4% of firms, per Field Report.",
       str(fixed))
 
+# a token two outside facts share ("9" owned by both) neither blocks the naming nor names the wrong source:
+# the fact with the most figures in common with the sentence is its owner, the rest are coincidence
+inp_share = make_inputs()
+inp_share.items["W6"] = {"id": "W6", "kind": "evidence", "tags": ["context"],
+                         "text": "Adoption reaches 9 units among 150 teams.", "detail": "",
+                         "source": "Alpha Post", "historical": False, "sections": {"trends"}}
+inp_share.items["W7"] = {"id": "W7", "kind": "evidence", "tags": ["context"],
+                         "text": "Usage stands at 9 units, while 40 firms lag.", "detail": "",
+                         "source": "Beta Desk", "historical": False, "sections": {"trends"}}
+share_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "Adoption reaches 9 units among the tracked firms, while 40 firms lag behind."]}]
+fixed = writer.name_outside_sources(share_line, inp_share, LOG)[0]["paragraphs"]
+check("source naming: a token shared by two facts does not block the naming of the stronger owner",
+      fixed[0] == "Adoption reaches 9 units among the tracked firms, while 40 firms lag behind, per Beta Desk.",
+      str(fixed))
+amb_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
+    "Adoption reaches 9 units among the tracked firms."]}]
+fixed = writer.name_outside_sources(amb_line, inp_share, LOG)[0]["paragraphs"]
+check("source naming: a sentence carrying only a token two facts tie on stays untouched",
+      fixed[0] == amb_line[0]["paragraphs"][0], str(fixed))
+
 # ------------------------------------------------------------------ leading pointing words become 'The + noun'
 out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
     "That skill matters because collecting data has become routine."]}], LOG)
@@ -200,6 +221,40 @@ _noun_follows_cases = [("That", "skill", True), ("That", "changes", False), ("Th
 for dem, nxt, want in _noun_follows_cases:
     check(f"pointing: _noun_follows({dem!r}, {nxt!r}) is {want}",
           writer._noun_follows(dem, nxt) == want)
+
+# Nouns whose shape ends in "ed" are nouns, not past-tense verbs; real past-tense forms stay verbs.
+_ed_noun_cases = [("That", "need", True), ("That", "speed", True), ("That", "shed", True),
+                  ("That", "feeds", False), ("These", "needs", True), ("That", "worked", False),
+                  ("That", "agreed", False), ("That", "kept", False)]
+for dem, nxt, want in _ed_noun_cases:
+    check(f"pointing: _noun_follows({dem!r}, {nxt!r}) is {want}",
+          writer._noun_follows(dem, nxt) == want)
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
+    "That need ties the platform to each buyer's daily routine."]}], LOG)
+check("pointing: 'That + ed-noun' is rewritten to 'The + noun'",
+      out[0]["paragraphs"] == ["The need ties the platform to each buyer's daily routine."], out[0]["paragraphs"])
+
+# A number word or small quantifier between the demonstrative and a plural noun does not keep the fix away.
+_quant_cases = [("two", "figures", True), ("2", "factors", True), ("seven", "names", True),
+                ("both", "sides", True), ("few", "buyers", True), ("key", "names", True),
+                ("two", "figure", False), ("two", "allows", False), ("buyer", "names", False),
+                ("two", "cross", False)]
+for quant, nxt, want in _quant_cases:
+    check(f"pointing: _quantified_plural_follows({quant!r}, {nxt!r}) is {want}",
+          writer._quantified_plural_follows(quant, nxt) == want)
+quant_change = ["Those two figures explain why buyers sign longer contracts today.",
+                "These three factors shape what buyers ask for first.",
+                "Those 2 factors matter to every team on a budget.",
+                "These few buyers pay for a managed plan from day one."]
+out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": list(quant_change)}], LOG)[0]["paragraphs"]
+for src, got in zip(quant_change, out):
+    check(f"pointing: quantified plural must change -> {src}",
+          got == "The " + src.split(" ", 1)[1], got)
+quant_stay = ["These buyer names change from one year to the next.",
+              "Those same three answers arrived later."]
+out = writer.fix_pointing_determiners([{"heading": "", "sop": [], "paragraphs": list(quant_stay)}], LOG)[0]["paragraphs"]
+for src in quant_stay:
+    check(f"pointing: quantified plural must stay unchanged -> {src}", src in out, out)
 
 
 # ------------------------------------------------------------------ bare pointing sentences joined with ', which'
@@ -354,6 +409,18 @@ check("prompt: the placeholder token is still shown for placement and no unforma
       prompts.SPONSOR_TOKEN in text and "{sponsor_text}" not in text)
 check("prompt: the new voice rules are present and the writer persona lives in the system prompt",
       "Clear reference" in text and "Actors" in text and "highly trained content writer" in prompts.WRITE_SYSTEM)
+check("prompt: the keyword rule never lets a REQUIRED keyword be skipped as covered by meaning",
+      "A keyword a section is REQUIRED to carry" in text and "no synonym and no dropped word" in text
+      and "cannot sit naturally" not in text,
+      str([l for l in text.splitlines() if l.startswith("- Keywords:")]))
+check("prompt: a required keyword is written out in one sentence, in the required-keyword line too",
+      "the section must cover this keyword — every content word of " in text)
+check("prompt: a list lead-in with a required keyword still carries the keyword's words and the market name",
+      "that lead-in sentence still carries every content word of the keyword and the market's own name" in text,
+      str([l for l in text.splitlines() if l.startswith("- No filler:")]))
+check("shapes: the segmentation lead-in must name the market in the same sentence as its split",
+      'names the market in that same sentence as the thing the split divides' in writer._SHAPES["segmentation"],
+      writer._SHAPES["segmentation"])
 check("prompt: a phrase sponsor's own words are shown too, still building without a KeyError",
       f'Its words are: "{phrase_sponsor.text}"' in text_phrase)
 
