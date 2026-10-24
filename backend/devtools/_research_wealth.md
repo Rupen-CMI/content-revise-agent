@@ -1,0 +1,123 @@
+# Research Report: root causes D1–D5 (log `backend/logs/20261023_135426_run.log`, eval drafts `backend/devtools/eval_v2/wealth_*.txt`)
+
+All findings verified against the code and the latest wealth run. Line numbers refer to the current working tree.
+
+---
+
+## D1 — Heading "Report Context for the Wealth Management Platform Market" on the size section
+
+**Root cause (three-layer chain, confirmed in the log):**
+
+1. The planner *did* plan the size MSQ as the heading (log line 2360: `"sop": "report_context", "heading": "How big is the wealth management platform market?", "msq": "Q1"`), but it assigned questions to **5 sections** (report_context, trends, country_us, key_players, conclusion), exceeding the cap.
+2. The >3 cap drops by fact count, with nothing protecting the size question on the size section — `planning.py:438-439`:
+   > `ranked = sorted(heading_sections, key=lambda s: (-len(s["facts"]), ORDER.index(s["sop"])))`
+
+   Log line 2531: *"report_context: more than 3 question headings; Q1 moves to the FAQ"* — the size MSQ was cut although a size MSQ's only possible host section is `report_context` (`demand.py:23`: `"size": "report_context"`).
+3. Once the MSQ was dropped, the leftover question-text heading failed `heading_problem` ("it is a question", log line 2533) and was replaced by the fallback template, which **is literally the bad string** — `planning.py:62-63`:
+   > `_FALLBACK_HEADINGS = { "report_context": "Report Context for the {market}", ...`
+
+   The validator accepts it because `planning.py:72` `_TOPIC_RES["report_context"]` matches *any* occurrence of `report|overview|context|intelligence` (checked at `planning.py:313`: `if not _TOPIC_RES[sop].search(heading): return ...`). The prompt also invites label-style headings: `prompts.py:1281` (PLAN_USER rule 3) lists the SOP topics as *"Market Trends; Market Intelligence Report Context; Market Segmentation; …"* and `prompts.py:1270` names report_context's job as *"the market's size and where it is heading"* — the planner (and the regex) never learn that a plain *topic phrase about size/growth*, not a "report context" label, is wanted. (Same failure in `marketing_2.txt:11` — general, not market-specific.)
+
+In short: **the size MSQ existed and was initially used; the cap-drop destroyed it, and the fallback ladder then manufactured exactly the heading the owner saw.**
+
+**Proposed change (generic, no industry words):**
+- `planning.py` `_FALLBACK_HEADINGS`: change `"report_context"` to a plain topic phrase, e.g. `"{market}: Size and Growth"` (or `"{market} Size and Growth"`).
+- `planning.py` `_TOPIC_RES["report_context"]`: accept the topic words instead of the label words (match `size|growth|outlook` — and stop matching a heading that merely copies the SOP label). Add a `heading_problem` rule: a non-question heading that starts with the section's SOP label words (`"Report Context"`, `"Market Intelligence"` etc.) is rejected.
+- `planning.py` `validate_plan` cap trim (lines 438–454): when over the cap, never drop the question that can head `report_context` (intent `size`/`growth` per `demand.INTENT_SECTION`; that mapping is already in the codebase and is generic) — drop from the other sections instead; keep the existing promote-to-minimum logic below it unchanged.
+- `prompts.py` PLAN_USER: rule 2 gets one added sentence telling the planner that when the size/growth question exists and the facts answer it strongly, it is the first heading chosen (it states the article's headline figures); rule 3's SOP-topic list is reworded so the non-question heading is described as *"a short topic phrase naming what the section covers"* instead of printing the label names `Market Intelligence Report Context` etc. as strings the planner can echo.
+
+**Risk:** low. The trim change reduces the FAQ's supply of the size question (it stays a heading instead), which marginally changes FAQ content; the heading-regex loosening must stay tight enough that the `checks.question_heading_problems` path (`checks.py:318`) keeps agreeing with `heading_problem` — both call/derive from the same pattern family, so they must be changed together.
+
+---
+
+## D2 — Key-players section lists vendor news (awards, executives leaving, minority stake) as "Name: did X" fragments
+
+**Root cause:**
+
+1. **Nothing bans awards/rankings/personnel moves anywhere in selection.** `prompts.py:278-291` (SELECT_USER tests 3–4) require "something that HAPPENED or a specific figure", credibility, and ask *"would this specific fact … strengthen the Market Trends, U.S. analysis, or Key Players section"*. Awards ("Morgan Stanley was named the 2026 … Platform of the Year"), executive moves (W3: *"CircleBlack named Vikram Chugh … as its new CEO"*; W20: *"Pershing is unwinding its Wove platform, with executives … among recent leavers"*) and minority stakes (W18) are concrete, dated, named-publication news — they pass all four tests by construction. There is no positive criterion either: no prompt says the intent of the Key Players section is *how companies change the market* (launches, partnerships, acquisitions, integrations, expansions).
+2. **Everything downstream then forces these items in.** The evidence group label (`pipeline.py:1656`): `("players", "KEY PLAYERS (give each named company one concrete detail from here)")`; the plan prompt (`prompts.py:1283`): *"key_players: name the companies together; give a company a detail only where a fact in the list supplies one"* — direction-less about what kind of move matters; and the deterministic minimum `pipeline.py:1796-1799` `_SECTION_EVIDENCE_NEEDS` requires ≥3 key-players items *used*, so once SELECT admits them, `_evidence_problems` pushes them into the draft.
+3. **The "Name: …" fragment format is prescribed by the writer shape** — `writer.py:38`:
+   > `"key_players": 'Two entries in "paragraphs". First: … Second: the companies. A company with a listed fact gets one line "- <Company>: <what the fact says>" under a short lead-in clause; …'`
+
+   (and the names-only variant `writer.py:39`, selected at `writer.py:92-93`). The draft's `- Morgan Stanley: named the 2026 … Platform of the Year, FT Markets reported…` lines are the shape executed literally.
+
+**Proposed change:**
+- `prompts.py` SELECT_USER: add to test 3 (or extend test 4 for the players tag): a fact labelled for the Key Players section must show the company changing or competing in the market through its own actions — a launch, a partnership, an acquisition or integration, an expansion into the market — and must *not* be a recognition (award, ranking, honour, "platform of the year") or a personnel change (appointments, exits, leadership reshuffles).
+- `pipeline.py`: add a deterministic pass (site of precedent: `_drop_market_sizing_facts`, `pipeline.py:1600-1612`) run in `run_select` after `_normalize_selection_tags`: an item whose only usable tag is `players` (or whose fact is award/personnel-shaped) loses its `players` tag when its fact matches a conservative pattern list — recognition nouns (*award, ranked/named among, honour, trophy, of the year, certification*) and personnel nouns (*chief executive/technology/information officer, CEO, hired, stepping down, leaving, appointed as*) — with the removal logged. Items are demoted, not deleted (they may still be `trends`/`us`).
+- `pipeline.py:1656`: reword the group label to say each named company's entry explains how its move changes what buyers or competitors face — not "one concrete detail".
+- `writer.py` `_SHAPES["key_players"]` and `_SHAPES["key_players_names_only"]` (`writer.py:38-39`): replace the `- <Company>: <detail>` prescription with full-sentence, prose paragraphs: each company gets one or two complete sentences naming the company and saying what it did and what it changes for buyers/the market; the reference shapes in the log prompts (which the model copies) must also change at the same time, since `writer.py:2657`'s log shows the model renders the shape verbatim. Also update `prompts.py:1283` (PLAN_USER rule 4 key_players note) to echo the same intent in one clause.
+
+**Why "executives leaving" and awards got through, precisely:** they satisfy test 1 (on-market), test 2 (named trade-press publication), test 3 ("something that HAPPENED") and test 4 (cited by name they do "strengthen" a Key Players section in the prompt's own words), there is *no exclusion list*, and the shape + evidence minimums guarantee they print.
+
+**Risk:** the code filter is wordslist-based and will have false negatives (wordings unseen so far) — its role is a backstop, the prompt rule is primary. The shape change interacts with any downstream check that counts `- Company:` lines; I found no such counter (`checks.count_items_in`, `checks.py:281`, counts bullets only), so risk is low, but the eval suite `run_eval_v2` should be re-run to confirm 4-company detail still lands.
+
+---
+
+## D3 — Sentence advertising a study without any finding ("Cerulli's … tracks how firms decide to buy, build or rent these systems")
+
+**Root cause:**
+
+1. **SELECT admits coverage-only facts.** The item came in as `pipeline._EVIDENCE_GROUPS["us"]`: log line 2146 — `- (W26) [us] Cerulli's State of U.S. Wealth Management Technology 2026 report examines how broker/dealers … decide to buy, build or rent WealthTech. (source: cerulli.com, undated)`. `prompts.py:281-284` (test 3) rejects *"anything that DEFINES or EXPLAINS a concept"*, but it frames that as definitions/glossary pages; it never says an evidence item must state a **finding** (a figure, a dated event, a claim). "A named report examines X" is attributed and concrete-sounding, so it passes. The instruction for the selected fact (`prompts.py:294-295`) asks the model to state *"only what the result says"* — which is exactly a coverage description, faithfully written.
+2. **The writer's only code strip doesn't cover it.** `writer.py:140-149` `_META_RE` strips process language ("the listed facts", "the plan", "the report does not state…"); `strip_meta_sentences` (`writer.py:153-171`) has no rule for "a publication is the subject of a coverage-only sentence". The result went straight into `country_us` (log line 2757).
+3. Routing made it host-specific: W26's single tag `us` (UNDATED ⇒ trends removed at `pipeline.py:1635-1637`) routed it solely to country_us, where the 4-bullet/development-bullet shape gave it a slot.
+
+**Proposed change:**
+- **Prompt:** `prompts.py` SELECT_USER test 3 gets a general clause (no sample sentences): an item must report a finding — a figure, a named event, or a specific claim someone made — not merely what a study, survey, report or site covers; reject an item whose fact would still stand if the publication's name and subject were swapped for another study's.
+- **Code:** `writer.py`, extend the strip pass in `strip_meta_sentences` (which already removes matching *sentences* and logs them — precedent matches the owner's ask precisely). Add a second predicate `_COVERAGE_RE`: a sentence whose text names a publication-type subject (`report|study|survey|research|publication|analysis|website|magazine`, typically within the first few words or as a possessive `"X's study"`) **and** whose verb is a coverage verb (`tracks|examines|studies|covers|looks at|explores|analyses|analyzes|surveys|charts|maps`), **and** which carries no figure (`checks._fact_numbers`) and no finding verb (`found|reported|showed|said|estimates|projects`) in the same sentence — is removed. The no-figure condition is what makes "advertises a publication without a finding" precise.
+
+**Risk:** the subject/verb heuristic is regex-only (no POS); sentences legitimately *about* a study's finding but phrased with a coverage verb plus a figure are protected by the no-figure condition, so false-positive exposure is small; leftover risk is a coverage verb sentence that does contain a figure — that is not in scope (it carries a finding). I could not construct a counterexample against the no-figure guard from the actual logs.
+
+---
+
+## D4 — Outside figure that only restates overall market size used in the sub-segment section
+
+**Root cause (both the model AND the code backstop, confirmed):**
+
+- SELECT violated its own rule and picked W9: log line 1866 — `"W9" "fact": "DashDevs reports that Spherical Insights estimates the wealth platform market at $4.59 billion in 2023 with continued growth through the next decade."` tagged `use_for: ["context"]`, despite `prompts.py:285-287`: *"Market sizing is not evidence either: reject any result whose fact is the size, forecast, growth rate or share of a market or industry, whoever states it — … a second figure for the same market would contradict it."*
+- The deterministic backstop missed it: `pipeline.py:1589-1593` `_MARKET_SIZING_RE` requires a sizing verb **after** the word market (`\b(market|…)\b[^.;]{0,90}\b(valued|worth|..|estimated (at|to)|to reach|to grow)\b`). In "estimates the … market **at** $4.59 billion" the verb `estimates` sits *before* "market" and `at` is not in the verb list — no match. W10 was only dropped (log line 2115) because its wording contained "CAGR", matching the first alternative `\bcagr\b`.
+- Routing then made it available to the sub-segment section: tag `context` → `_EVIDENCE_TAG_SECTIONS["context"]` (`planning.py:58`) includes `subsegment`; the plan prompt shows W9 "suits: … subsegment …" (log line 2270); the writer then used it (log lines 3527/3602: *"DashDevs reports that Spherical Insights estimated the wealth platform market at $4.59 billion in 2023…"* in the Robo Advisory sub-segment paragraph). Note `facts.run_figure_gap_search`/`run_figure_backing` (`facts.py:301, 331`) are **not** involved — they only run on a headline *gap*; this figure came through the ordinary news-SELECT path.
+
+**Proposed change:**
+- **Prompt (small):** `prompts.py:285-287` — add two words of generality: the ban covers *"any year, including an earlier one, and any other firm's own estimate"* (the rule exists; the wording just lets an "earlier year's figure" look like harmless historical context).
+- **Code (the real fix), `pipeline.py`:**
+  1. Extend `_MARKET_SIZING_RE` with the "verb before market" shape: e.g. `\b(estimates?|estimated|valued|values|puts|sized|sizes|forecasts?|projects?)\b[^.;]{0,60}\b(market|industry|sector|segment)\b\s*(?:at|for|near)\s*(?:US)?\$?\d` plus a bare `\b(market|industry|sector)\b\s+at\s+(?:US)?\$?\d` alternative. This deterministically drops W10- and W9-shaped facts at `_drop_market_sizing_facts` (`pipeline.py:1600-1612`), which already runs on every selection — no new stage needed. Apply the same check to claim/question/report-claim backing facts where `_is_market_sizing` is already called (`pipeline.py:1523`).
+  2. Add the fact-sheet cross-check the owner asked for: give `run_select` an optional `headline_figures: dict | None = None` (size/forecast/cagr **values** from `fs`, numbers normalised by `pipeline._figures`/float compare) and, inside `_drop_market_sizing_facts`, drop an item whose fact is about this market (names the market or its core) and **every** non-year figure of which is in `headline_figures` or absent — i.e. its only numeric content duplicates the headline figures. Call site: `main.py:966` `_step3_v2` holds `run.fact_sheet` (`facts.run_fact_sheet` at `main.py:816`), so passing it is trivial; keep the parameter optional so the six devtools/compare callers (`devtools/build_chain.py:50`, `capture_fixture.py:75`, `compare/claims_check.py:42`, `compare/layout_check.py:163`, `compare/run_compare.py:78`, old-chain `main.py:1008`) keep working unchanged.
+
+**Risk:** regex extension can over-match genuine qualitative facts that happen to say "X estimates the market's need for Y at $Z" where that is a buyer-side quantity — rare, and dropping a wrongly-classyfied item just costs one evidence item, so blast radius is low. The fs-figure cross-check is exact-number based and will rarely fire alone (a different firm usually uses different numbers); it is a belt to the regex's braces, so both should ship together.
+
+---
+
+## D5 — Conclusion dangling comparison; long-tail keyword pasted as a noun-pile subject
+
+**Root cause (the noun pile is *assigned* and then legislated into a sentence):**
+
+1. **The keyword itself arrives as a keyword stack.** Log line 2639: `Long-tail search: "high net worth clients digital wealth platforms us" (rests on fs.us.0)`. `demand.normalize_longtails` (`demand.py:117-162`) checks digits, repeats, placeholders, interrogative first word, length 3–8, ≥2 extra words — but **nothing checks that the phrase reads as a grammatical noun phrase**. The prompt asks for it (`prompts.py:1200`, SEARCH_DEMAND_USER part 3: *"Each must read as a grammatical phrase a person would say, with ordinary words (of, in, for, by, to) joining its nouns, never a stack of keywords"*), and that is prompt-only: no code validates it.
+2. **The writer is forced to put every content word of the stack in one sentence.** `writer.py:67-69` (`_keyword_lines`): *"REQUIRED long-tail search: one sentence of this section must contain every content word of …"*; and `prompts.py:1356` (WRITE_USER): *"…one of its sentences contains every content word of it … the phrase is never the subject of a sentence about itself, never a label…"* — the "never the subject of a sentence **about itself**" wording only bans self-referential subjects, not a keyword stack used as the sentence's ordinary singular subject. The model pasted the listed order as the subject: *"High net worth clients digital wealth platforms in the US now treat a clean app…"* (log line 2757). The phrase-usage checker that let it pass, `checks.longtail_spans` (`checks.py:215-246`), verifies word adjacency and glue words only — a noun pile with `in the` between two nouns satisfies it.
+3. **The dangling conclusion comparison.** `WRITE_SYSTEM`/`WRITE_USER` language-quality instructions (`prompts.py:1344-1351`) cover voice, actors, reference and figures but say nothing about sentences whose second half hangs off an unfinished contrast; the conclusion's analyst-opinion rule (`prompts.py:1358`: *"a judgement a reader could disagree with, built only from facts already in the post"*) gives no completeness criterion. Result: *"…the winners will likely be the platforms that make AI useful to advisers rather than merely present, since strategy and leadership, not the tools, remain the real hurdle."* No code pass touches it (the writer passes strip_meta/strip_reader_filler etc., none relevant).
+
+Note also that in the market-first v2 chain there is **no revise pass** — `main.py:1027-1032` runs plan → write → FAQ directly; the heavy grammar overhaul prompt `REVISE_USER` (`prompts.py:942-976`, with its subject–verb-distance rule) belongs to the old chain, so改进 the WRITE prompt itself must carry the language-quality bar, or code must strip.
+
+**Proposed change (generic framing, no sample sentences):**
+- `prompts.py` WRITE_USER rules block (lines 1344-1351): add two general clauses. (a) Completeness: every sentence is one grammatical sentence — its subject is a noun phrase with exactly one head noun, introduced by an article or another determiner or set up by the previous clause, and its main verb comes within a few words of that head noun; when a subject names several things, the sentence names how they relate (with prepositions or a verb), and if grouping them would bury the verb, the sentence is split. (b) For keywords/long-tail: the assigned phrase's words may only be placed where an ordinary sentence of the section already has a slot (object of a verb, object of a preposition, or a subject whose head noun is one of the phrase's own nouns with the other words as modifiers); when the phrase cannot be placed that way, the phrase is not used in that sentence, and the section carries a note that its keyword check will flag it — do not paste the listed order. (c) In the conclusion/analyst-opinion rule (line 1358): the judgement is stated so its comparison is complete — both sides of any contrast within it are actions or properties of the same kind, or the contrast is dropped.
+- `demand.py` `normalize_longtails`: add a cheap structural filter (function-word list already exists as `checks._LONGTAIL_GLUE_WORDS`, `checks.py:209`): reject a phrase with a run of **≥4** consecutive words none of which is a function word (article/preposition/conjunction/"is/are") — `high net worth clients digital wealth platforms us` fails immediately. This is search-quality-positive, not an industry rule.
+- `writer.py` (or `checks.py`) code backstop — *realistic heuristic, deliberately conservative:* for each sentence whose long-tail span is found by `checks.longtail_spans`, flag (log soft, not strip) when the span begins the sentence and the first word after the span is the sentence's main verb while the span holds ≥5 content words with fewer than two function words inside it. Ship it as an eval/log signal first (`run_eval_v2` reports it), and only auto-strip after the signal is measured, because without POS data precision is unproven — I state this uncertainty explicitly rather than promising a reliable auto-strip.
+
+**Risk:** the demand-side ≥4-word filter may reject some valid search phrases — acceptable (the pool is 6–8 phrases; losing one stack phrase is a gain). The prompt additions are worded as laws, not examples, per the owner's constraint; the risk is verbosity in a 7k-token prompt, mitigated by placing (a) inside the existing VOICE rule and (b) inside the existing long-tail rule rather than new sections.
+
+---
+
+## Recommended implementation order & file ownership (parallelisation)
+
+Order driven by dependency (D1 and D4 change selection/heading *inputs*; D2/D3/D5 change prompts the earlier fixes also touch) and by file conflict risk. `prompts.py` and `writer.py` are contended by several fixes — assign **regions of one file to one agent at a time**.
+
+| Order | Fix | Files touched | Parallel-safe with |
+|---|---|---|---|
+| 1 | **D1** (heading) | `planning.py` (fallback map, `_TOPIC_RES`, `heading_problem`, cap trim) + `prompts.py` (PLAN_USER block only, ~lines 1242–1313) | 2 (DISTINCT prompt region) |
+| 1 | **D4** (sizing filter) | `pipeline.py` (`_MARKET_SIZING_RE`, `_drop_market_sizing_facts`, `run_select` param) + `main.py:966` plumbing + `prompts.py` (SELECT_USER block only, ~lines 222–347) | 1 (DISTINCT prompt region) |
+| 2 | **D2** (players) | `prompts.py` (SELECT_USER, by the D4 owner) + `pipeline.py` (tag filter, group label) + `writer.py` `_SHAPES[38-39,92-93]` + `prompts.py:1283` — **sequenced**: prompts/pipeline edits can ride with D4's agent; the writer.py shape edit goes with the D3/D5 agent's writer.py edit | 3, 4, 5 |
+| 3 | **D3** (coverage sentences) | `prompts.py` (SELECT_USER, same owner as D2/D4) + `writer.py` `strip_meta_sentences`/new `_COVERAGE_RE` | 2 (same writer.py edit pass) |
+| 4 | **D5** (grammar) | `prompts.py` (WRITE_USER rules block, lines 1344–1360) + `demand.py` `normalize_longtails` + `checks.py` soft signal + `writer.py` (strip hook — piggyback on the D3 edit pass) | 2–4 (WRITE_USER region untouched by others) |
+
+Two practical workstreams suffice: **Agent A: D1 + D5** (positions: `planning.py`, `prompts.py` PLAN/WRITE regions, `demand.py`, `checks.py`, plus the writer shape edit from D2). **Agent B: D2 + D3 + D4** (`pipeline.py`, `prompts.py` SELECT region, `main.py`, final `writer.py` strip functions). The only true collision point is `writer.py` (D2 shape vs D3 strip vs D5 strip) and `prompts.py` blocks that no two agents share — schedule the `writer.py` pass in one sequence (D2 shape, then D3+D5 strips) even if agents A and B otherwise run concurrently. Each fix must end with a re-run of `backend/devtools/run_eval_v2.py` (it replays plans and writes and prints the eval CHECKS) to measure regression in one report.
+
+**Stated uncertainties:** (1) D1's cap-trim rule is deterministic but shifts which MSQs land in the FAQ for borderline markets — wording of PLAN rule 2 must be validated on 2–3 more replay runs. (2) D2's award/personnel wordlist will miss future phrasings — it is a backstop; treat prompt wording as primary. (3) D5's code check cannot reliably detect noun piles without POS tooling (the repo has heavyweight NLP deps installed — `backend/venv` — but adding a POS dependency for one flag is not justified); the demand-side filter plus prompt framing carry most of the fix, and the code check ships as a logged signal before it ever strips. (4) All five fixes were traced from one run log plus three eval drafts; behaviour on other markets (scraping/marketing eval folders exists) should be spot-checked by re-running the eval set after each fix.

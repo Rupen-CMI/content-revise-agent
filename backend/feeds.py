@@ -8,6 +8,11 @@ requests, and repeated Bing failures trip a circuit breaker so the run falls bac
 hammering a throttled endpoint. Sources come from source_registry.json (built and verified by
 devtools/source_probe/); a site that blocks automated access (HTTP 403) is skipped, never worked around.
 """
+# Deferred annotations: `_Bing.run` annotates `list[search.SearchHit]` AFTER the
+# class defines a method also named `search`, which would otherwise resolve the
+# annotation to that method (CPython class-body scoping), not the module — an
+# import-time AttributeError only on modules importing feeds later in the chain.
+from __future__ import annotations
 import codecs
 import json
 import logging

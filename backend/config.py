@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 # the working directory the server process was launched from.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-DB_URL = os.environ["DB_URL"]
+# DB_URL is only needed by dev/export scripts (reembed_catalog.py, export_catalog_sqlite.py);
+# the packaged backend ships catalog.sqlite instead and never touches Postgres.
+DB_URL = os.getenv("DB_URL", "")
 
 # DeepSeek is the only supported model: no provider/model overrides and no fallback. If it is
 # unreachable or errors, the pipeline surfaces an LLMError instead of trying anything else.

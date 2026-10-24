@@ -2,17 +2,18 @@ import logging
 import os
 import json
 import re
+import sqlite3
+import struct
 from contextlib import closing
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 import httpx
-import psycopg2
-import psycopg2.extras
 import trafilatura
 from bs4 import BeautifulSoup
 
-from config import CMI_SITE, DB_URL
+from config import CMI_SITE
 import freshness
 
 
@@ -22,6 +23,11 @@ _null_logger.propagate = False
 
 _EMBED_MODEL_NAME = "BAAI/bge-large-en-v1.5"
 _embedder = None  # lazy singleton — loading the model (~7s) only happens if semantic match is used
+
+# The shipped report catalog (built by backend/scripts/export_catalog_sqlite.py from the
+# Postgres copy) — read-only, no server needed. embeddings are float32 BLOBs; cosine
+# similarity is computed here instead of pgvector's <=> operator.
+CATALOG_DB = Path(__file__).parent / "catalog.sqlite"
 
 _STOPWORDS = frozenset({
     "market", "markets", "global", "industry", "the", "and", "of", "for", "by",
@@ -78,8 +84,8 @@ def report_url(news_id: int, slug: str, fmt: int) -> str:
     return f"{CMI_SITE}/industry-reports/{slug}"
 
 
-def _connect():
-    return closing(psycopg2.connect(DB_URL))
+def _sqlite():
+    return closing(sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True))
 
 
 def _tokens(text: str) -> frozenset[str]:
@@ -111,27 +117,26 @@ def html_to_text(html: str | None) -> str:
 @lru_cache(maxsize=1)
 def catalog() -> tuple[CatalogEntry, ...]:
     try:
-        with _connect() as conn, conn.cursor() as cur:
-            cur.execute("""
-                SELECT r."newsId", r.keyword, r."CustomName", r."isNewFormat",
-                       EXISTS (SELECT 1 FROM cmi_reportsummery s WHERE s.nid = r."newsId")
-                FROM cmi_reports r
-                WHERE r."IsActive" = 1 AND r.keyword IS NOT NULL AND r."CustomName" IS NOT NULL
-            """)
-            return tuple(CatalogEntry(*row) for row in cur.fetchall())
-    except psycopg2.Error:
-        logging.getLogger(__name__).error("failed to load the report catalog from the database", exc_info=True)
+        with _sqlite() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT news_id, keyword, name, fmt, has_summary FROM reports")
+            rows = cur.fetchall()
+        return tuple(CatalogEntry(*row) for row in rows)
+    except sqlite3.Error:
+        logging.getLogger(__name__).error("failed to load the report catalog from catalog.sqlite", exc_info=True)
         raise
 
 
 @lru_cache(maxsize=1)
 def categories() -> tuple[str, ...]:
     try:
-        with _connect() as conn, conn.cursor() as cur:
-            cur.execute("""SELECT "catName" FROM cmi_category WHERE "IsActive" = '1' AND "catName" NOT LIKE 'Category %%' ORDER BY sort""")
-            return tuple(r[0] for r in cur.fetchall())
-    except psycopg2.Error:
-        logging.getLogger(__name__).error("failed to load report categories from the database", exc_info=True)
+        with _sqlite() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT cat_name FROM categories")
+            rows = cur.fetchall()
+        return tuple(r[0] for r in rows)
+    except sqlite3.Error:
+        logging.getLogger(__name__).error("failed to load report categories from catalog.sqlite", exc_info=True)
         raise
 
 
@@ -205,30 +210,72 @@ def _get_embedder():
         except Exception:
             ensure_embedding_model()
             _embedder = SentenceTransformer(_EMBED_MODEL_NAME, local_files_only=True)
+        # fp16 on CPU: halves the resident weights (~0.66 GB vs ~1.3 GB fp32, measured on the
+        # 8 GB-RAM end-user class hardware), since only a handful of names get encoded per run.
+        # Query vectors are cast back to fp32 for the cosine math against the catalog.
+        try:
+            _embedder.half()
+        except Exception:
+            logging.getLogger(__name__).warning("fp16 half() unavailable — keeping the fp32 embedder")
     return _embedder
 
 
 def match_markets_semantic_grouped(names: list[str], per_name: int = 3) -> list[list[tuple[float, CatalogEntry]]]:
-    """Embedding matches grouped per query name, groups in input order, similarity-desc."""
+    """Embedding matches grouped per query name, groups in input order, similarity-desc.
+    The model stays resident after the first load (fp16 -> ~half the fp32 RAM)."""
     if not names:
         return []
     model = _get_embedder()
     vecs = model.encode(names)
+    return _semantic_groups(vecs, per_name)
 
+
+def match_markets_semantic_all(
+    names: list[str], keywords: list[str], per_name: int = 3, kw_limit: int = 12
+) -> tuple[list[list[tuple[float, CatalogEntry]]], list[CatalogEntry]]:
+    """One encode session for both the orient name-matching and the keyword pool, so the
+    model (resident once loaded) encodes both lists in a single pass. Returns
+    (name_groups, keyword_matches)."""
+    names_or_kw = bool(names) or bool(keywords)
+    model = _get_embedder() if names_or_kw else None
+    vecs = list(model.encode(list(names) + list(keywords))) if names_or_kw else []
+    name_vecs = vecs[:len(names)]
+    kw_vecs = vecs[len(names):]
+    name_groups = _semantic_groups(name_vecs, per_name)
+    merged: dict[int, float] = {}
+    for per_vector in _semantic_groups(kw_vecs if kw_vecs else [], per_name):
+        for sim, entry in per_vector:
+            if entry.news_id not in merged or sim > merged[entry.news_id]:
+                merged[entry.news_id] = sim
+    ranked = sorted(merged.items(), key=lambda x: x[1], reverse=True)[:kw_limit]
+    by_id = {e.news_id: e for e in catalog()}
+    keyword_matches = [by_id[nid] for nid, _ in ranked if nid in by_id]
+    return name_groups, keyword_matches
+
+
+def _semantic_groups(vecs, per_name: int) -> list[list[tuple[float, CatalogEntry]]]:
+    """Cosine-similarity top-per_name over the catalog embeddings, grouped per vector."""
+    if len(vecs) == 0:
+        return []
     by_id: dict[int, CatalogEntry] = {e.news_id: e for e in catalog()}
-    groups: list[list[tuple[float, CatalogEntry]]] = []
+    import numpy as np  # sentence-transformers always ships numpy as a torch dep
     try:
-        with _connect() as conn, conn.cursor() as cur:
-            for vec in vecs:
-                cur.execute("""
-                    SELECT r."newsId", 1 - (r.embedding <=> %s::vector) AS similarity
-                    FROM cmi_reports r
-                    WHERE r.embedding IS NOT NULL AND r."IsActive" = 1
-                    ORDER BY r.embedding <=> %s::vector
-                    LIMIT %s
-                """, (vec.tolist(), vec.tolist(), per_name))
-                groups.append([(sim, by_id[nid]) for nid, sim in cur.fetchall() if nid in by_id])
-    except psycopg2.Error:
+        with _sqlite() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT news_id, embedding FROM reports WHERE embedding IS NOT NULL")
+            rows = cur.fetchall()
+        if not rows:
+            raise RuntimeError("catalog.sqlite has no stored embeddings — re-run the export script")
+        emb = np.vstack([np.frombuffer(blob, dtype="<f4") for _, blob in rows])
+        emb_ids = [nid for nid, _ in rows]
+        emb_norm = np.linalg.norm(emb, axis=1)
+        groups: list[list[tuple[float, CatalogEntry]]] = []
+        for vec in vecs:
+            v = np.asarray(vec, dtype=emb.dtype)
+            sims = (emb @ v) / np.maximum(emb_norm * np.linalg.norm(v), 1e-9)
+            top = np.argsort(-sims)[:per_name]
+            groups.append([(float(sims[i]), by_id[emb_ids[i]]) for i in top if emb_ids[i] in by_id])
+    except sqlite3.Error:
         logging.getLogger(__name__).error("semantic report match failed", exc_info=True)
         raise
     return groups
@@ -376,17 +423,20 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
     never used as a content source — a live-fetch failure raises LiveFetchError instead of
     silently falling back to that stale data (see LiveFetchError)."""
     try:
-        with _connect() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT "newsId", keyword, "newsSubject", "CustomName", "isNewFormat", segmentation
-                FROM cmi_reports WHERE "newsId" = %s
-            """, (news_id,))
+        with _sqlite() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT news_id, keyword, subject, name, fmt, segmentation FROM reports WHERE news_id = ?",
+                (news_id,),
+            )
             r = cur.fetchone()
             if r is None:
-                raise LookupError(f"report {news_id} not found in cmi_reports")
-    except psycopg2.Error as e:
+                raise LookupError(f"report {news_id} not found in catalog.sqlite")
+    except sqlite3.Error as e:
         logger.error(f"[reports] database error fetching report {news_id}: {e!r}", exc_info=True)
         raise
+
+    r = dict(zip(("newsId", "keyword", "newsSubject", "CustomName", "isNewFormat", "segmentation"), r))
 
     url = report_url(r["newsId"], r["CustomName"], r["isNewFormat"])
     segmentation = html_to_text(r["segmentation"])

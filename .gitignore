@@ -1,5 +1,7 @@
 .env
 venv/
+packaging/_build/
+dist/
 __pycache__/
 *.pyc
 backend/logs/
@@ -8,6 +10,7 @@ backend/.search_cache/
 node_modules/
 .claude
 input_docs/
+backend/catalog.sqlite
 
 *.json
 !backend/source_registry.json

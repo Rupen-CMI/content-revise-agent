@@ -31,7 +31,9 @@ Run with (from this directory)::
 
     uvicorn main:app --port 8000
 
-Requires the root ``.env`` (``DB_URL`` plus optional ``LLM_*`` settings).
+Requires the root ``.env`` (``DEEPSEEK_API_KEY`` plus optional ``LLM_*`` settings).
+The report catalog comes from ``catalog.sqlite`` alongside the code (built from
+Postgres by ``scripts/export_catalog_sqlite.py``) — no live database needed.
 """
 
 import json
@@ -40,6 +42,7 @@ import os
 import re
 import secrets
 import signal
+import sqlite3
 import threading
 import time
 from contextlib import contextmanager, nullcontext
@@ -49,7 +52,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
-import psycopg2
+import sqlite3
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -415,7 +418,7 @@ def _classify_failure(exc: Exception) -> tuple[str, str]:
         if "timed out" in str(exc):
             return "llm_timeout", "The writing model took too long to respond. Please try this step again."
         return "llm_error", "The writing model returned an error or an unusable response. Please try this step again."
-    if isinstance(exc, psycopg2.Error):
+    if isinstance(exc, sqlite3.Error):
         return "database_error", "Couldn't reach the report database. Please try again shortly."
     if isinstance(exc, PipelineError):
         if "No CMI report matched" in str(exc):

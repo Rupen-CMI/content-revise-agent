@@ -314,18 +314,17 @@ def run_match_catalog(
         logger.info(f"text-match guess #{i + 1} {names[i]!r}: "
                     + ", ".join(f"{e.news_id}:{e.keyword} ({s:.2f})" for s, e in group))
     try:
-        name_groups = reports.match_markets_semantic_grouped(names, per_name=PER_GUESS) if names else []
+        # Single model session for both matchers (each would otherwise load the
+        # ~1.8 GB embedder separately — see match_markets_semantic_all).
+        name_groups, keyword_matches = reports.match_markets_semantic_all(names, keywords, per_name=PER_GUESS)
         for i, group in enumerate(name_groups):
             logger.info(f"name semantic-match guess #{i + 1}: "
                         + ", ".join(f"{e.news_id}:{e.keyword} ({s:.3f})" for s, e in group))
+        if keyword_matches:
+            logger.info("keyword semantic-match reports: " + ", ".join(f"{c.news_id}:{c.keyword}" for c in keyword_matches))
     except Exception:
-        logger.warning("name semantic match failed", exc_info=True)
+        logger.warning("semantic report match failed", exc_info=True)
         name_groups = [[] for _ in names]
-    try:
-        keyword_matches = reports.match_markets_semantic(keywords, limit=12) if keywords else []
-        logger.info("keyword semantic-match reports: " + ", ".join(f"{c.news_id}:{c.keyword}" for c in keyword_matches))
-    except Exception:
-        logger.warning("keyword semantic match failed", exc_info=True)
         keyword_matches = []
 
     # (score + rank bonus, entry) for every text/semantic hit across every guess position, plus
