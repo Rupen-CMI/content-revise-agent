@@ -73,6 +73,7 @@ import prompts
 import publisher
 import reports
 import search
+import telemetry
 import writer
 from docx_io import OUTPUT_DIR, Link, Paragraph, SourceArticle, read_docx
 from llm import LLMError
@@ -98,6 +99,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fire-and-forget usage telemetry (see telemetry.py): one app_started per server launch, plus
+# a run_completed at the end of every /finalize. Silent no-op unless MONITOR_URL is configured;
+# configured from env or the baked bpk module, exactly like the DeepSeek key.
+telemetry.emit_app_started()
+telemetry.flush_outbox_on_start()
 
 
 # ---------------------------------------------------------------- auto-shutdown when the browser tab closes
@@ -440,6 +447,35 @@ def _pipeline_failure(logger: logging.Logger, where: str, exc: Exception) -> HTT
         "where": where,
         "technical": str(exc) or repr(exc),
     })
+
+
+def _draft_word_count(sections: list[dict] | None) -> int:
+    """Words in a draft's paragraphs (same counting the pipeline's own checks use)."""
+    return sum(pipeline._word_count(p) for s in (sections or []) for p in (s.get("paragraphs") or []))
+
+
+def _emit_run_completed(run: RunState, run_token: str, status: str, started: float,
+                        title: str, sections: list[dict] | None,
+                        totals: dict | None = None) -> None:
+    """One telemetry run_completed for /finalize. Fire-and-forget (telemetry.send never
+    raises or blocks); the totals snapshot must have been taken BEFORE run_cost_summary()
+    popped the tracker, so it's passed in for the success path."""
+    if totals is None:
+        totals = llm.run_cost_totals(run.logger)  # error path: tracker is still in place
+    try:
+        telemetry.emit_run_completed(
+            run_id=run_token,
+            title=title or run.title or run.filename,
+            word_count=_draft_word_count(sections) if sections is not None else None,
+            status=status,
+            duration_s=round(time.time() - started, 1),
+            cost_usd=totals.get("cost_usd"),
+            prompt_tokens=totals.get("prompt_tokens", 0),
+            completion_tokens=totals.get("completion_tokens", 0),
+            cached_tokens=totals.get("cached_tokens", 0),
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- serialization (frontend shapes; camelCase where the UI expects it)
@@ -1131,6 +1167,7 @@ def get_run(run_token: str) -> dict:
 
 @app.post("/finalize")
 def finalize(req: FinalizeRequest) -> dict:
+    t0 = time.time()
     run = _get_run(req.run_token)
     if not run.title or not run.sections:
         raise HTTPException(400, "No draft yet — finish Step 4 first.")
@@ -1146,14 +1183,20 @@ def finalize(req: FinalizeRequest) -> dict:
             plan=run.plan, plan_inputs=run.plan_inputs,
         )
     except (PipelineError, LLMError) as e:
+        _emit_run_completed(run, req.run_token, "error", t0, run.title or run.filename, run.sections)
+        llm.run_cost_summary(run.logger)  # also frees the tracker on the error path (see run_cost_totals)
         raise _pipeline_failure(run.logger, "finalize", e)
     # The run is kept alive (not popped) so the final page's "Regenerate draft" button can
     # resend /step4 + /finalize against this same token for a different draft — it's still
     # bounded by the normal RUN_TTL_S/200-run eviction in _prune_runs, same as any other run.
+    run_totals = llm.run_cost_totals(run.logger)  # peek BEFORE run_cost_summary() pops the tracker (telemetry, below)
     run.logger.info("LLM COST FOR THIS RUN (logs only — not shown in the UI):")
     for line in llm.run_cost_summary(run.logger):
         run.logger.info(line)
     run.logger.info(f"RUN COMPLETE — {result.output_path}")
+    # Telemetry (fire-and-forget, telemetry.py): the totals snapshot was taken from the tracker
+    # BEFORE run_cost_summary() popped it, so the dashboard sees the same per-run numbers as the log.
+    _emit_run_completed(run, req.run_token, "ok", t0, result.title, result.sections, run_totals)
     # Map each citation's evidence ID back to its original fact text for a human-readable label
     # in the UI (e.g. a hover tooltip) — the citation itself only carries the ID + paragraph.
     facts_by_id = {str(e.get("id", "")).strip().upper(): e.get("fact", "") for e in (run.selection.get("evidence") or [])}
