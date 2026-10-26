@@ -1,0 +1,2720 @@
+{
+ "generated": "2026-10-19",
+ "max_items_per_feed": 60,
+ "feeds": [
+  {
+   "name": "3DPrint.com",
+   "url": "https://3dprint.com/feed/",
+   "host": "3dprint.com",
+   "groups": [
+    "aerospace_defense_space",
+    "electronics_semiconductors",
+    "industrial_manufacturing"
+   ],
+   "general": false
+  },
+  {
+   "name": "AdExchanger",
+   "url": "https://www.adexchanger.com/feed/",
+   "host": "adexchanger.com",
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Adweek",
+   "url": "https://www.adweek.com/feed/",
+   "host": "adweek.com",
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "AgFunder News",
+   "url": "https://agfundernews.com/feed",
+   "host": "agfundernews.com",
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "general": false
+  },
+  {
+   "name": "Al Jazeera",
+   "url": "https://www.aljazeera.com/xml/rss/all.xml",
+   "host": "aljazeera.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Axios",
+   "url": "https://api.axios.com/feed/",
+   "host": "api.axios.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Automotive Dive",
+   "url": "https://www.automotivedive.com/feeds/news/",
+   "host": "automotivedive.com",
+   "groups": [
+    "automotive_mobility",
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "AWS News Blog",
+   "url": "https://aws.amazon.com/blogs/aws/feed/",
+   "host": "aws.amazon.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Banking Dive",
+   "url": "https://www.bankingdive.com/feeds/news/",
+   "host": "bankingdive.com",
+   "groups": [
+    "banking_payments"
+   ],
+   "general": false
+  },
+  {
+   "name": "Bank of England News",
+   "url": "https://www.bankofengland.co.uk/rss/news",
+   "host": "bankofengland.co.uk",
+   "groups": [
+    "banking_payments"
+   ],
+   "general": false
+  },
+  {
+   "name": "BEA News",
+   "url": "https://www.bea.gov/rss/rss.xml",
+   "host": "bea.gov",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Becker's Hospital Review",
+   "url": "https://www.beckershospitalreview.com/feed/",
+   "host": "beckershospitalreview.com",
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "general": false
+  },
+  {
+   "name": "BioPharma Dive",
+   "url": "https://www.biopharmadive.com/feeds/news/",
+   "host": "biopharmadive.com",
+   "groups": [
+    "pharma_biotech"
+   ],
+   "general": false
+  },
+  {
+   "name": "BIS Press",
+   "url": "https://www.bis.org/doclist/bis_fsi_publs.rss",
+   "host": "bis.org",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "BIS Speeches",
+   "url": "https://www.bis.org/doclist/cbspeeches.rss",
+   "host": "bis.org",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "Bisnow",
+   "url": "https://www.bisnow.com/rss",
+   "host": "bisnow.com",
+   "groups": [
+    "construction_real_estate"
+   ],
+   "general": false
+  },
+  {
+   "name": "BleepingComputer",
+   "url": "https://www.bleepingcomputer.com/feed/",
+   "host": "bleepingcomputer.com",
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "general": false
+  },
+  {
+   "name": "Google AI Blog",
+   "url": "https://blog.google/technology/ai/rss/",
+   "host": "blog.google",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Microsoft Blog",
+   "url": "https://blogs.microsoft.com/feed/",
+   "host": "blogs.microsoft.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Nvidia Blog",
+   "url": "https://blogs.nvidia.com/feed/",
+   "host": "blogs.nvidia.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Breaking Defense",
+   "url": "https://breakingdefense.com/feed/",
+   "host": "breakingdefense.com",
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "general": false
+  },
+  {
+   "name": "Broadband Breakfast",
+   "url": "https://broadbandbreakfast.com/feed/",
+   "host": "broadbandbreakfast.com",
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "general": false
+  },
+  {
+   "name": "Business of Fashion",
+   "url": "https://www.businessoffashion.com/arc/outboundfeeds/rss/",
+   "host": "businessoffashion.com",
+   "groups": [
+    "consumer_beauty_fashion"
+   ],
+   "general": false
+  },
+  {
+   "name": "Greentech Media / Canary",
+   "url": "https://www.canarymedia.com/rss.rss",
+   "host": "canarymedia.com",
+   "groups": [
+    "energy_power_renewables",
+    "metals_mining",
+    "oil_gas"
+   ],
+   "general": false
+  },
+  {
+   "name": "Carbon Brief",
+   "url": "https://www.carbonbrief.org/feed/",
+   "host": "carbonbrief.org",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "Carrier Management",
+   "url": "https://www.carriermanagement.com/feed/",
+   "host": "carriermanagement.com",
+   "groups": [
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "CIO",
+   "url": "https://www.cio.com/feed/",
+   "host": "cio.com",
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "CIO Dive",
+   "url": "https://www.ciodive.com/feeds/news/",
+   "host": "ciodive.com",
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "CleanTechnica",
+   "url": "https://cleantechnica.com/feed/",
+   "host": "cleantechnica.com",
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "general": false
+  },
+  {
+   "name": "Climate Home",
+   "url": "https://www.climatechangenews.com/feed/",
+   "host": "climatechangenews.com",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "CNBC Top",
+   "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+   "host": "cnbc.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "CNBC Finance",
+   "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+   "host": "cnbc.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "CNBC Business",
+   "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+   "host": "cnbc.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "CNBC Technology",
+   "url": "https://www.cnbc.com/id/19854910/device/rss/rss.html",
+   "host": "cnbc.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "CoinDesk",
+   "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+   "host": "coindesk.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Cointelegraph",
+   "url": "https://cointelegraph.com/rss",
+   "host": "cointelegraph.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Commercial Observer",
+   "url": "https://commercialobserver.com/feed/",
+   "host": "commercialobserver.com",
+   "groups": [
+    "construction_real_estate"
+   ],
+   "general": false
+  },
+  {
+   "name": "Computerworld",
+   "url": "https://www.computerworld.com/feed/",
+   "host": "computerworld.com",
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Construction Dive",
+   "url": "https://www.constructiondive.com/feeds/news/",
+   "host": "constructiondive.com",
+   "groups": [
+    "construction_real_estate"
+   ],
+   "general": false
+  },
+  {
+   "name": "Cosmetics Business",
+   "url": "https://cosmeticsbusiness.com/rss",
+   "host": "cosmeticsbusiness.com",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "CSO Online",
+   "url": "https://www.csoonline.com/feed/",
+   "host": "csoonline.com",
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "general": false
+  },
+  {
+   "name": "Cybersecurity Dive",
+   "url": "https://www.cybersecuritydive.com/feeds/news/",
+   "host": "cybersecuritydive.com",
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "general": false
+  },
+  {
+   "name": "Dark Reading",
+   "url": "https://www.darkreading.com/rss.xml",
+   "host": "darkreading.com",
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "general": false
+  },
+  {
+   "name": "DataCenterDynamics",
+   "url": "https://www.datacenterdynamics.com/en/rss/",
+   "host": "datacenterdynamics.com",
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "general": false
+  },
+  {
+   "name": "Data Center Knowledge",
+   "url": "https://www.datacenterknowledge.com/rss.xml",
+   "host": "datacenterknowledge.com",
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "general": false
+  },
+  {
+   "name": "Deadline",
+   "url": "https://deadline.com/feed/",
+   "host": "deadline.com",
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "Defense News",
+   "url": "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+   "host": "defensenews.com",
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "general": false
+  },
+  {
+   "name": "Digiday",
+   "url": "https://digiday.com/feed/",
+   "host": "digiday.com",
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Digital Commerce 360",
+   "url": "https://www.digitalcommerce360.com/feed/",
+   "host": "digitalcommerce360.com",
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "general": false
+  },
+  {
+   "name": "EU Commission Press",
+   "url": "https://ec.europa.eu/commission/presscorner/api/rss",
+   "host": "ec.europa.eu",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "ECB Press",
+   "url": "https://www.ecb.europa.eu/rss/press.html",
+   "host": "ecb.europa.eu",
+   "groups": [
+    "banking_payments"
+   ],
+   "general": false
+  },
+  {
+   "name": "Economist Business",
+   "url": "https://www.economist.com/business/rss.xml",
+   "host": "economist.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Economist Finance",
+   "url": "https://www.economist.com/finance-and-economics/rss.xml",
+   "host": "economist.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "EdSurge",
+   "url": "https://www.edsurge.com/articles_rss",
+   "host": "edsurge.com",
+   "groups": [
+    "education_workforce"
+   ],
+   "general": false
+  },
+  {
+   "name": "EE Times",
+   "url": "https://www.eetimes.com/feed/",
+   "host": "eetimes.com",
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "general": false
+  },
+  {
+   "name": "US EIA Today in Energy",
+   "url": "https://www.eia.gov/rss/todayinenergy.xml",
+   "host": "eia.gov",
+   "groups": [
+    "energy_power_renewables",
+    "metals_mining",
+    "oil_gas"
+   ],
+   "general": false
+  },
+  {
+   "name": "Electrek",
+   "url": "https://electrek.co/feed/",
+   "host": "electrek.co",
+   "groups": [
+    "automotive_mobility",
+    "energy_power_renewables"
+   ],
+   "general": false
+  },
+  {
+   "name": "Electronics Weekly",
+   "url": "https://www.electronicsweekly.com/feed/",
+   "host": "electronicsweekly.com",
+   "groups": [
+    "aerospace_defense_space",
+    "electronics_semiconductors",
+    "industrial_manufacturing"
+   ],
+   "general": false
+  },
+  {
+   "name": "Endpoints News",
+   "url": "https://endpts.com/feed/",
+   "host": "endpts.com",
+   "groups": [
+    "pharma_biotech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Energy Storage News",
+   "url": "https://www.energy-storage.news/feed/",
+   "host": "energy-storage.news",
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "general": false
+  },
+  {
+   "name": "US DOE News",
+   "url": "https://www.energy.gov/rss/articles.xml",
+   "host": "energy.gov",
+   "groups": [
+    "energy_power_renewables",
+    "oil_gas"
+   ],
+   "general": false
+  },
+  {
+   "name": "Engadget",
+   "url": "https://www.engadget.com/rss.xml",
+   "host": "engadget.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Engineering.com",
+   "url": "https://www.engineering.com/feed/",
+   "host": "engineering.com",
+   "groups": [
+    "industrial_manufacturing"
+   ],
+   "general": false
+  },
+  {
+   "name": "eSchool News",
+   "url": "https://www.eschoolnews.com/feed/",
+   "host": "eschoolnews.com",
+   "groups": [
+    "education_workforce"
+   ],
+   "general": false
+  },
+  {
+   "name": "Social Media / ESG Dive",
+   "url": "https://www.esgdive.com/feeds/news/",
+   "host": "esgdive.com",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "ESG Today",
+   "url": "https://www.esgtoday.com/feed/",
+   "host": "esgtoday.com",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "Federal News Network",
+   "url": "https://federalnewsnetwork.com/feed/",
+   "host": "federalnewsnetwork.com",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Federal Reserve Press",
+   "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+   "host": "federalreserve.gov",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "Federal Reserve Speeches",
+   "url": "https://www.federalreserve.gov/feeds/speeches.xml",
+   "host": "federalreserve.gov",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "FedScoop",
+   "url": "https://fedscoop.com/feed/",
+   "host": "fedscoop.com",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Ars Technica",
+   "url": "https://feeds.arstechnica.com/arstechnica/index",
+   "host": "feeds.arstechnica.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "BBC Business",
+   "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+   "host": "feeds.bbci.co.uk",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "BBC Technology",
+   "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+   "host": "feeds.bbci.co.uk",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Business Insider",
+   "url": "https://feeds.businessinsider.com/custom/all",
+   "host": "feeds.businessinsider.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "MarketWatch Top",
+   "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+   "host": "feeds.content.dowjones.io",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "The Hacker News",
+   "url": "https://feeds.feedburner.com/TheHackersNews",
+   "host": "feeds.feedburner.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "SecurityWeek",
+   "url": "https://feeds.feedburner.com/securityweek",
+   "host": "feeds.feedburner.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Finextra",
+   "url": "https://www.finextra.com/rss/headlines.aspx",
+   "host": "finextra.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "Finovate",
+   "url": "https://finovate.com/feed/",
+   "host": "finovate.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Fintech News Singapore",
+   "url": "https://fintechnews.sg/feed/",
+   "host": "fintechnews.sg",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Aerospace Testing / Flight Global",
+   "url": "https://www.flightglobal.com/rss",
+   "host": "flightglobal.com",
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "general": false
+  },
+  {
+   "name": "Food Business News",
+   "url": "https://www.foodbusinessnews.net/rss/articles",
+   "host": "foodbusinessnews.net",
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "general": false
+  },
+  {
+   "name": "Food Dive",
+   "url": "https://www.fooddive.com/feeds/news/",
+   "host": "fooddive.com",
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "general": false
+  },
+  {
+   "name": "Forbes Business",
+   "url": "https://www.forbes.com/business/feed/",
+   "host": "forbes.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Forbes Innovation",
+   "url": "https://www.forbes.com/innovation/feed/",
+   "host": "forbes.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Forrester Blogs",
+   "url": "https://www.forrester.com/blogs/feed/",
+   "host": "forrester.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Fortune",
+   "url": "https://fortune.com/feed/",
+   "host": "fortune.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Transport Dive (Trucking)",
+   "url": "https://www.freightwaves.com/news/feed",
+   "host": "freightwaves.com",
+   "groups": [
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "Gaming (GamesIndustry.biz)",
+   "url": "https://www.gamesindustry.biz/feed",
+   "host": "gamesindustry.biz",
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "gCaptain",
+   "url": "https://gcaptain.com/feed/",
+   "host": "gcaptain.com",
+   "groups": [
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "Glossy",
+   "url": "https://www.glossy.co/feed/",
+   "host": "glossy.co",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "UK Gov News",
+   "url": "https://www.gov.uk/search/news-and-communications.atom",
+   "host": "gov.uk",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Grocery Dive",
+   "url": "https://www.grocerydive.com/feeds/news/",
+   "host": "grocerydive.com",
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "general": false
+  },
+  {
+   "name": "Healthcare Dive",
+   "url": "https://www.healthcaredive.com/feeds/news/",
+   "host": "healthcaredive.com",
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "general": false
+  },
+  {
+   "name": "Higher Ed Dive",
+   "url": "https://www.highereddive.com/feeds/news/",
+   "host": "highereddive.com",
+   "groups": [
+    "education_workforce"
+   ],
+   "general": false
+  },
+  {
+   "name": "Hollywood Reporter",
+   "url": "https://www.hollywoodreporter.com/feed/",
+   "host": "hollywoodreporter.com",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "Hospitality Net",
+   "url": "https://www.hospitalitynet.org/rss/news.xml",
+   "host": "hospitalitynet.org",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "Hotel Management",
+   "url": "https://www.hotelmanagement.net/rss.xml",
+   "host": "hotelmanagement.net",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "HousingWire",
+   "url": "https://www.housingwire.com/feed/",
+   "host": "housingwire.com",
+   "groups": [
+    "construction_real_estate"
+   ],
+   "general": false
+  },
+  {
+   "name": "HR Dive",
+   "url": "https://www.hrdive.com/feeds/news/",
+   "host": "hrdive.com",
+   "groups": [
+    "education_workforce"
+   ],
+   "general": false
+  },
+  {
+   "name": "Inside Climate News",
+   "url": "https://insideclimatenews.org/feed/",
+   "host": "insideclimatenews.org",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "InsideEVs",
+   "url": "https://insideevs.com/rss/news/all/",
+   "host": "insideevs.com",
+   "groups": [
+    "automotive_mobility"
+   ],
+   "general": false
+  },
+  {
+   "name": "Inside Higher Ed",
+   "url": "https://www.insidehighered.com/rss.xml",
+   "host": "insidehighered.com",
+   "groups": [
+    "education_workforce"
+   ],
+   "general": false
+  },
+  {
+   "name": "Insurance Business Mag",
+   "url": "https://www.insurancebusinessmag.com/us/rss/",
+   "host": "insurancebusinessmag.com",
+   "groups": [
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Insurance Journal",
+   "url": "https://www.insurancejournal.com/feed/",
+   "host": "insurancejournal.com",
+   "groups": [
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Investing.com News",
+   "url": "https://www.investing.com/rss/news.rss",
+   "host": "investing.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Education Dive K-12",
+   "url": "https://www.k12dive.com/feeds/news/",
+   "host": "k12dive.com",
+   "groups": [
+    "education_workforce"
+   ],
+   "general": false
+  },
+  {
+   "name": "Krebs on Security",
+   "url": "https://krebsonsecurity.com/feed/",
+   "host": "krebsonsecurity.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Light Reading",
+   "url": "https://www.lightreading.com/rss.xml",
+   "host": "lightreading.com",
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "general": false
+  },
+  {
+   "name": "Manufacturing Dive",
+   "url": "https://www.manufacturingdive.com/feeds/news/",
+   "host": "manufacturingdive.com",
+   "groups": [
+    "industrial_manufacturing"
+   ],
+   "general": false
+  },
+  {
+   "name": "Marketing Dive",
+   "url": "https://www.marketingdive.com/feeds/news/",
+   "host": "marketingdive.com",
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Marketing Week",
+   "url": "https://www.marketingweek.com/feed/",
+   "host": "marketingweek.com",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "MarkTechPost",
+   "url": "https://www.marktechpost.com/feed/",
+   "host": "marktechpost.com",
+   "groups": [
+    "ai_data_robotics"
+   ],
+   "general": false
+  },
+  {
+   "name": "MarTech",
+   "url": "https://martech.org/feed/",
+   "host": "martech.org",
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "McKinsey Insights",
+   "url": "https://www.mckinsey.com/insights/rss",
+   "host": "mckinsey.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "MedTech Dive",
+   "url": "https://www.medtechdive.com/feeds/news/",
+   "host": "medtechdive.com",
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "general": false
+  },
+  {
+   "name": "Mining.com",
+   "url": "https://www.mining.com/feed/",
+   "host": "mining.com",
+   "groups": [
+    "metals_mining"
+   ],
+   "general": false
+  },
+  {
+   "name": "Mobile World Live",
+   "url": "https://www.mobileworldlive.com/feed/",
+   "host": "mobileworldlive.com",
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "general": false
+  },
+  {
+   "name": "Modern Retail",
+   "url": "https://www.modernretail.co/feed/",
+   "host": "modernretail.co",
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "general": false
+  },
+  {
+   "name": "Crunchbase News",
+   "url": "https://news.crunchbase.com/feed/",
+   "host": "news.crunchbase.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Mongabay",
+   "url": "https://news.mongabay.com/feed/",
+   "host": "news.mongabay.com",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "UN News All",
+   "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+   "host": "news.un.org",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "UN News Economic",
+   "url": "https://news.un.org/feed/subscribe/en/news/topic/economic-development/feed/rss.xml",
+   "host": "news.un.org",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Nextgov",
+   "url": "https://www.nextgov.com/rss/all/",
+   "host": "nextgov.com",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "NIST News",
+   "url": "https://www.nist.gov/news-events/news/rss.xml",
+   "host": "nist.gov",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "electronics_semiconductors",
+    "enterprise_software_cloud",
+    "industrial_manufacturing"
+   ],
+   "general": false
+  },
+  {
+   "name": "OCC News",
+   "url": "https://www.occ.gov/rss/occ_news.xml",
+   "host": "occ.gov",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Oilprice.com",
+   "url": "https://oilprice.com/rss/main",
+   "host": "oilprice.com",
+   "groups": [
+    "oil_gas"
+   ],
+   "general": false
+  },
+  {
+   "name": "OpenAI Blog",
+   "url": "https://openai.com/news/rss.xml",
+   "host": "openai.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Our World in Data",
+   "url": "https://ourworldindata.org/atom.xml",
+   "host": "ourworldindata.org",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Fintech Dive (Payments Dive)",
+   "url": "https://www.paymentsdive.com/feeds/news/",
+   "host": "paymentsdive.com",
+   "groups": [
+    "banking_payments"
+   ],
+   "general": false
+  },
+  {
+   "name": "Payments Journal",
+   "url": "https://www.paymentsjournal.com/feed/",
+   "host": "paymentsjournal.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Pew Research",
+   "url": "https://www.pewresearch.org/feed/",
+   "host": "pewresearch.org",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "PR Newswire Energy",
+   "url": "https://www.prnewswire.com/rss/energy-latest-news/energy-latest-news-list.rss",
+   "host": "prnewswire.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "PR Newswire Financial",
+   "url": "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss",
+   "host": "prnewswire.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "PR Newswire Health",
+   "url": "https://www.prnewswire.com/rss/health-latest-news/health-latest-news-list.rss",
+   "host": "prnewswire.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "PR Newswire All",
+   "url": "https://www.prnewswire.com/rss/news-releases-list.rss",
+   "host": "prnewswire.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "PR Newswire Tech",
+   "url": "https://www.prnewswire.com/rss/technology-latest-news/technology-latest-news-list.rss",
+   "host": "prnewswire.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "PV Magazine",
+   "url": "https://www.pv-magazine.com/feed/",
+   "host": "pv-magazine.com",
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "general": false
+  },
+  {
+   "name": "PYMNTS",
+   "url": "https://www.pymnts.com/feed/",
+   "host": "pymnts.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "RCR Wireless",
+   "url": "https://www.rcrwireless.com/feed",
+   "host": "rcrwireless.com",
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "general": false
+  },
+  {
+   "name": "Restaurant Dive",
+   "url": "https://www.restaurantdive.com/feeds/news/",
+   "host": "restaurantdive.com",
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "Retail Dive",
+   "url": "https://www.retaildive.com/feeds/news/",
+   "host": "retaildive.com",
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "general": false
+  },
+  {
+   "name": "Rigzone",
+   "url": "https://www.rigzone.com/news/rss/rigzone_latest.aspx",
+   "host": "rigzone.com",
+   "groups": [
+    "oil_gas"
+   ],
+   "general": false
+  },
+  {
+   "name": "Route Fifty",
+   "url": "https://www.route-fifty.com/rss/all/",
+   "host": "route-fifty.com",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "NYT Business",
+   "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
+   "host": "rss.nytimes.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "NYT Technology",
+   "url": "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
+   "host": "rss.nytimes.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "SEC Press Releases",
+   "url": "https://www.sec.gov/news/pressreleases.rss",
+   "host": "sec.gov",
+   "groups": [
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "Seeking Alpha Market News",
+   "url": "https://seekingalpha.com/market_currents.xml",
+   "host": "seekingalpha.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Semiconductor Engineering",
+   "url": "https://semiengineering.com/feed/",
+   "host": "semiengineering.com",
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "general": false
+  },
+  {
+   "name": "Sifted",
+   "url": "https://sifted.eu/feed",
+   "host": "sifted.eu",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "SiliconANGLE",
+   "url": "https://siliconangle.com/feed/",
+   "host": "siliconangle.com",
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Skift",
+   "url": "https://skift.com/feed/",
+   "host": "skift.com",
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "MIT Sloan Mgmt Review",
+   "url": "https://sloanreview.mit.edu/feed/",
+   "host": "sloanreview.mit.edu",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Public Sector (Smart Cities Dive)",
+   "url": "https://www.smartcitiesdive.com/feeds/news/",
+   "host": "smartcitiesdive.com",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Marketing Land / Social Media Today",
+   "url": "https://www.socialmediatoday.com/feeds/news/",
+   "host": "socialmediatoday.com",
+   "groups": [
+    "consumer_beauty_fashion",
+    "food_beverage_agri",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "IEEE Spectrum",
+   "url": "https://spectrum.ieee.org/feeds/feed.rss",
+   "host": "spectrum.ieee.org",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Splash247 (Shipping)",
+   "url": "https://splash247.com/feed/",
+   "host": "splash247.com",
+   "groups": [
+    "automotive_mobility",
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "StateScoop",
+   "url": "https://statescoop.com/feed/",
+   "host": "statescoop.com",
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "general": false
+  },
+  {
+   "name": "STAT News",
+   "url": "https://www.statnews.com/feed/",
+   "host": "statnews.com",
+   "groups": [
+    "healthcare_digital_health",
+    "pharma_biotech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Supply Chain Brain",
+   "url": "https://www.supplychainbrain.com/rss/articles",
+   "host": "supplychainbrain.com",
+   "groups": [
+    "automotive_mobility",
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "Supply Chain Dive",
+   "url": "https://www.supplychaindive.com/feeds/news/",
+   "host": "supplychaindive.com",
+   "groups": [
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "Sustainable Brands",
+   "url": "https://sustainablebrands.com/rss",
+   "host": "sustainablebrands.com",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "TechCrunch AI",
+   "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+   "host": "techcrunch.com",
+   "groups": [
+    "ai_data_robotics",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "TechCrunch Fintech",
+   "url": "https://techcrunch.com/category/fintech/feed/",
+   "host": "techcrunch.com",
+   "groups": [
+    "ai_data_robotics",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "TechCrunch Startups",
+   "url": "https://techcrunch.com/category/startups/feed/",
+   "host": "techcrunch.com",
+   "groups": [
+    "ai_data_robotics",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "TechCrunch Mobility",
+   "url": "https://techcrunch.com/category/transportation/feed/",
+   "host": "techcrunch.com",
+   "groups": [
+    "ai_data_robotics",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "TechCrunch",
+   "url": "https://techcrunch.com/feed/",
+   "host": "techcrunch.com",
+   "groups": [
+    "ai_data_robotics",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Techmeme",
+   "url": "https://www.techmeme.com/feed.xml",
+   "host": "techmeme.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "MIT Tech Review",
+   "url": "https://www.technologyreview.com/feed/",
+   "host": "technologyreview.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "TechRadar",
+   "url": "https://www.techradar.com/rss",
+   "host": "techradar.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "The Conversation Business",
+   "url": "https://theconversation.com/us/business/articles.atom",
+   "host": "theconversation.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "The Fintech Times",
+   "url": "https://thefintechtimes.com/feed/",
+   "host": "thefintechtimes.com",
+   "groups": [
+    "banking_payments",
+    "fintech_wealth",
+    "insurance"
+   ],
+   "general": false
+  },
+  {
+   "name": "Guardian Business",
+   "url": "https://www.theguardian.com/uk/business/rss",
+   "host": "theguardian.com",
+   "groups": [],
+   "general": true
+  },
+  {
+   "name": "Loadstar",
+   "url": "https://theloadstar.com/feed/",
+   "host": "theloadstar.com",
+   "groups": [
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "The Register",
+   "url": "https://www.theregister.com/headlines.atom",
+   "host": "theregister.com",
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "The Robot Report",
+   "url": "https://www.therobotreport.com/feed/",
+   "host": "therobotreport.com",
+   "groups": [
+    "ai_data_robotics",
+    "industrial_manufacturing"
+   ],
+   "general": false
+  },
+  {
+   "name": "The Verge",
+   "url": "https://www.theverge.com/rss/index.xml",
+   "host": "theverge.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "CDC Newsroom",
+   "url": "https://tools.cdc.gov/api/v2/resources/media/132608.rss",
+   "host": "tools.cdc.gov",
+   "groups": [
+    "healthcare_digital_health",
+    "medtech_diagnostics",
+    "pharma_biotech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Trains.com",
+   "url": "https://www.trains.com/feed/",
+   "host": "trains.com",
+   "groups": [
+    "automotive_mobility",
+    "transport_logistics"
+   ],
+   "general": false
+  },
+  {
+   "name": "Trellis (Sustainability)",
+   "url": "https://www.trellis.net/feed/",
+   "host": "trellis.net",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "Utility Dive",
+   "url": "https://www.utilitydive.com/feeds/news/",
+   "host": "utilitydive.com",
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "general": false
+  },
+  {
+   "name": "Variety",
+   "url": "https://variety.com/feed/",
+   "host": "variety.com",
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "general": false
+  },
+  {
+   "name": "VentureBeat",
+   "url": "https://venturebeat.com/feed/",
+   "host": "venturebeat.com",
+   "groups": [
+    "ai_data_robotics",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "Waste Dive",
+   "url": "https://www.wastedive.com/feeds/news/",
+   "host": "wastedive.com",
+   "groups": [
+    "environment_water_waste"
+   ],
+   "general": false
+  },
+  {
+   "name": "Wealth Management.com",
+   "url": "https://www.wealthmanagement.com/rss.xml",
+   "host": "wealthmanagement.com",
+   "groups": [
+    "fintech_wealth"
+   ],
+   "general": false
+  },
+  {
+   "name": "WHO News",
+   "url": "https://www.who.int/rss-feeds/news-english.xml",
+   "host": "who.int",
+   "groups": [
+    "healthcare_digital_health",
+    "medtech_diagnostics",
+    "pharma_biotech"
+   ],
+   "general": false
+  },
+  {
+   "name": "Wired",
+   "url": "https://www.wired.com/feed/rss",
+   "host": "wired.com",
+   "groups": [
+    "ai_data_robotics",
+    "cybersecurity_identity",
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  },
+  {
+   "name": "ZDNet",
+   "url": "https://www.zdnet.com/news/rss.xml",
+   "host": "zdnet.com",
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "general": false
+  }
+ ],
+ "bing_hosts": {
+  "3dprintingindustry.com": {
+   "groups": [
+    "ai_data_robotics"
+   ],
+   "fulltext": true
+  },
+  "adage.com": {
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "fulltext": false
+  },
+  "airforce-technology.com": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": false
+  },
+  "americanbanker.com": {
+   "groups": [
+    "banking_payments"
+   ],
+   "fulltext": true
+  },
+  "artemis.bm": {
+   "groups": [
+    "insurance"
+   ],
+   "fulltext": true
+  },
+  "automationworld.com": {
+   "groups": [
+    "industrial_manufacturing"
+   ],
+   "fulltext": true
+  },
+  "automotivelogistics.media": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": true
+  },
+  "autonews.com": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": false
+  },
+  "aviationtoday.com": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": false
+  },
+  "aviationweek.com": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": true
+  },
+  "batterytechonline.com": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": false
+  },
+  "beveragedaily.com": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": true
+  },
+  "biometricupdate.com": {
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "fulltext": true
+  },
+  "biospace.com": {
+   "groups": [
+    "pharma_biotech"
+   ],
+   "fulltext": true
+  },
+  "caranddriver.com": {
+   "groups": [],
+   "fulltext": true
+  },
+  "cardiovascularbusiness.com": {
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "fulltext": false
+  },
+  "chemanager-online.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": false
+  },
+  "chemistryworld.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": true
+  },
+  "cisa.gov": {
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "fulltext": true
+  },
+  "citywire.com": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": false
+  },
+  "cmswire.com": {
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "fulltext": false
+  },
+  "coatingsworld.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": false
+  },
+  "compositesworld.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": false
+  },
+  "crn.com": {
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "fulltext": true
+  },
+  "cyberscoop.com": {
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "fulltext": true
+  },
+  "dcvelocity.com": {
+   "groups": [
+    "transport_logistics"
+   ],
+   "fulltext": true
+  },
+  "defenseone.com": {
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "fulltext": true
+  },
+  "designnews.com": {
+   "groups": [
+    "industrial_manufacturing"
+   ],
+   "fulltext": false
+  },
+  "dezeen.com": {
+   "groups": [],
+   "fulltext": true
+  },
+  "digitimes.com": {
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "fulltext": false
+  },
+  "dot.gov": {
+   "groups": [
+    "transport_logistics"
+   ],
+   "fulltext": false
+  },
+  "dvm360.com": {
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "fulltext": true
+  },
+  "ed.gov": {
+   "groups": [
+    "education_workforce"
+   ],
+   "fulltext": false
+  },
+  "edie.net": {
+   "groups": [
+    "environment_water_waste"
+   ],
+   "fulltext": true
+  },
+  "edweek.org": {
+   "groups": [
+    "education_workforce"
+   ],
+   "fulltext": true
+  },
+  "electronicdesign.com": {
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "fulltext": true
+  },
+  "embedded.com": {
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "fulltext": false
+  },
+  "enr.com": {
+   "groups": [
+    "construction_real_estate"
+   ],
+   "fulltext": false
+  },
+  "epa.gov": {
+   "groups": [
+    "automotive_mobility",
+    "chemicals_materials",
+    "construction_real_estate",
+    "energy_power_renewables",
+    "environment_water_waste",
+    "metals_mining",
+    "oil_gas"
+   ],
+   "fulltext": true
+  },
+  "equipmentworld.com": {
+   "groups": [
+    "construction_real_estate"
+   ],
+   "fulltext": false
+  },
+  "esma.europa.eu": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": true
+  },
+  "europa.eu": {
+   "groups": [
+    "ai_data_robotics",
+    "automotive_mobility",
+    "consumer_beauty_fashion",
+    "cybersecurity_identity",
+    "electronics_semiconductors",
+    "enterprise_software_cloud",
+    "environment_water_waste",
+    "healthcare_digital_health",
+    "industrial_manufacturing",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer",
+    "telecom_infrastructure"
+   ],
+   "fulltext": false
+  },
+  "faa.gov": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": true
+  },
+  "farmprogress.com": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": true
+  },
+  "fashionunited.com": {
+   "groups": [
+    "consumer_beauty_fashion"
+   ],
+   "fulltext": true
+  },
+  "fastmarkets.com": {
+   "groups": [
+    "chemicals_materials",
+    "metals_mining"
+   ],
+   "fulltext": true
+  },
+  "ffnews.com": {
+   "groups": [
+    "banking_payments"
+   ],
+   "fulltext": false
+  },
+  "fiercebiotech.com": {
+   "groups": [
+    "pharma_biotech"
+   ],
+   "fulltext": false
+  },
+  "fiercehealthcare.com": {
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "fulltext": true
+  },
+  "fiercepharma.com": {
+   "groups": [
+    "pharma_biotech"
+   ],
+   "fulltext": false
+  },
+  "financial-planning.com": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": true
+  },
+  "fintech.global": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": true
+  },
+  "fintechfutures.com": {
+   "groups": [
+    "banking_payments",
+    "fintech_wealth"
+   ],
+   "fulltext": false
+  },
+  "foodnavigator.com": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": true
+  },
+  "ftc.gov": {
+   "groups": [
+    "ai_data_robotics",
+    "consumer_beauty_fashion",
+    "enterprise_software_cloud",
+    "marketing_media_adtech",
+    "retail_ecommerce_consumer"
+   ],
+   "fulltext": false
+  },
+  "genengnews.com": {
+   "groups": [
+    "pharma_biotech"
+   ],
+   "fulltext": true
+  },
+  "globest.com": {
+   "groups": [
+    "construction_real_estate"
+   ],
+   "fulltext": false
+  },
+  "govtech.com": {
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "fulltext": true
+  },
+  "gsa.gov": {
+   "groups": [
+    "public_sector_govtech"
+   ],
+   "fulltext": true
+  },
+  "happi.com": {
+   "groups": [
+    "consumer_beauty_fashion"
+   ],
+   "fulltext": false
+  },
+  "hartenergy.com": {
+   "groups": [
+    "oil_gas"
+   ],
+   "fulltext": false
+  },
+  "healthcareitnews.com": {
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "fulltext": false
+  },
+  "hoteldive.com": {
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "fulltext": false
+  },
+  "hrexecutive.com": {
+   "groups": [
+    "education_workforce"
+   ],
+   "fulltext": false
+  },
+  "hydrogeninsight.com": {
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "fulltext": false
+  },
+  "icis.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": false
+  },
+  "igamingbusiness.com": {
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "fulltext": true
+  },
+  "industryweek.com": {
+   "groups": [
+    "industrial_manufacturing"
+   ],
+   "fulltext": true
+  },
+  "infosecurity-magazine.com": {
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "fulltext": true
+  },
+  "infoworld.com": {
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "fulltext": true
+  },
+  "investmentnews.com": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": true
+  },
+  "irena.org": {
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "fulltext": false
+  },
+  "itu.int": {
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "fulltext": true
+  },
+  "joc.com": {
+   "groups": [
+    "transport_logistics"
+   ],
+   "fulltext": false
+  },
+  "just-auto.com": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": false
+  },
+  "just-food.com": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": false
+  },
+  "just-style.com": {
+   "groups": [
+    "consumer_beauty_fashion"
+   ],
+   "fulltext": false
+  },
+  "knowledge.wharton.upenn.edu": {
+   "groups": [],
+   "fulltext": false
+  },
+  "luxurydaily.com": {
+   "groups": [
+    "consumer_beauty_fashion"
+   ],
+   "fulltext": false
+  },
+  "mas.gov.sg": {
+   "groups": [
+    "banking_payments"
+   ],
+   "fulltext": true
+  },
+  "massdevice.com": {
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "fulltext": true
+  },
+  "mddionline.com": {
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "fulltext": true
+  },
+  "medcitynews.com": {
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "fulltext": false
+  },
+  "medicaldesignandoutsourcing.com": {
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "fulltext": true
+  },
+  "medicaldevice-network.com": {
+   "groups": [
+    "medtech_diagnostics"
+   ],
+   "fulltext": false
+  },
+  "mining-technology.com": {
+   "groups": [
+    "metals_mining"
+   ],
+   "fulltext": false
+  },
+  "miningweekly.com": {
+   "groups": [
+    "metals_mining"
+   ],
+   "fulltext": true
+  },
+  "mobihealthnews.com": {
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "fulltext": false
+  },
+  "modernhealthcare.com": {
+   "groups": [
+    "healthcare_digital_health"
+   ],
+   "fulltext": false
+  },
+  "nasa.gov": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": true
+  },
+  "naturalgasintel.com": {
+   "groups": [
+    "oil_gas"
+   ],
+   "fulltext": true
+  },
+  "nhtsa.gov": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": false
+  },
+  "northernminer.com": {
+   "groups": [
+    "metals_mining"
+   ],
+   "fulltext": true
+  },
+  "nutraingredients.com": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": true
+  },
+  "offshore-technology.com": {
+   "groups": [
+    "oil_gas"
+   ],
+   "fulltext": false
+  },
+  "ogj.com": {
+   "groups": [
+    "oil_gas"
+   ],
+   "fulltext": true
+  },
+  "pharmaceutical-technology.com": {
+   "groups": [
+    "pharma_biotech"
+   ],
+   "fulltext": false
+  },
+  "pharmaphorum.com": {
+   "groups": [
+    "pharma_biotech"
+   ],
+   "fulltext": true
+  },
+  "phocuswire.com": {
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "fulltext": false
+  },
+  "plasticsnews.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": false
+  },
+  "plasticstoday.com": {
+   "groups": [
+    "chemicals_materials"
+   ],
+   "fulltext": false
+  },
+  "power-technology.com": {
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "fulltext": false
+  },
+  "propertycasualty360.com": {
+   "groups": [
+    "insurance"
+   ],
+   "fulltext": false
+  },
+  "railjournal.com": {
+   "groups": [
+    "transport_logistics"
+   ],
+   "fulltext": false
+  },
+  "rbi.org.in": {
+   "groups": [
+    "banking_payments"
+   ],
+   "fulltext": true
+  },
+  "rechargenews.com": {
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "fulltext": false
+  },
+  "recyclingtoday.com": {
+   "groups": [
+    "environment_water_waste"
+   ],
+   "fulltext": false
+  },
+  "reinsurancene.ws": {
+   "groups": [
+    "insurance"
+   ],
+   "fulltext": true
+  },
+  "renewableenergyworld.com": {
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "fulltext": false
+  },
+  "retailgazette.co.uk": {
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "fulltext": false
+  },
+  "retailwire.com": {
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "fulltext": false
+  },
+  "satellitetoday.com": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": false
+  },
+  "searchengineland.com": {
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "fulltext": false
+  },
+  "securityweek.com": {
+   "groups": [
+    "cybersecurity_identity"
+   ],
+   "fulltext": true
+  },
+  "semiconductor-today.com": {
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "fulltext": true
+  },
+  "shrm.org": {
+   "groups": [
+    "education_workforce"
+   ],
+   "fulltext": true
+  },
+  "simpleflying.com": {
+   "groups": [],
+   "fulltext": true
+  },
+  "smartwatermagazine.com": {
+   "groups": [
+    "environment_water_waste"
+   ],
+   "fulltext": true
+  },
+  "spacenews.com": {
+   "groups": [
+    "aerospace_defense_space"
+   ],
+   "fulltext": false
+  },
+  "sportico.com": {
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "fulltext": true
+  },
+  "staffingindustry.com": {
+   "groups": [
+    "education_workforce"
+   ],
+   "fulltext": false
+  },
+  "steelorbis.com": {
+   "groups": [
+    "metals_mining"
+   ],
+   "fulltext": false
+  },
+  "stratechery.com": {
+   "groups": [],
+   "fulltext": true
+  },
+  "supermarketnews.com": {
+   "groups": [
+    "retail_ecommerce_consumer"
+   ],
+   "fulltext": true
+  },
+  "techtarget.com": {
+   "groups": [
+    "enterprise_software_cloud"
+   ],
+   "fulltext": true
+  },
+  "telecomtv.com": {
+   "groups": [
+    "telecom_infrastructure"
+   ],
+   "fulltext": true
+  },
+  "thedrive.com": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": true
+  },
+  "thedrum.com": {
+   "groups": [
+    "marketing_media_adtech"
+   ],
+   "fulltext": false
+  },
+  "thepaypers.com": {
+   "groups": [
+    "banking_payments"
+   ],
+   "fulltext": true
+  },
+  "thequantuminsider.com": {
+   "groups": [
+    "ai_data_robotics"
+   ],
+   "fulltext": true
+  },
+  "therealdeal.com": {
+   "groups": [
+    "construction_real_estate"
+   ],
+   "fulltext": true
+  },
+  "thinkadvisor.com": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": false
+  },
+  "travelweekly.com": {
+   "groups": [
+    "travel_hospitality_gaming"
+   ],
+   "fulltext": false
+  },
+  "trendforce.com": {
+   "groups": [
+    "electronics_semiconductors"
+   ],
+   "fulltext": true
+  },
+  "ttnews.com": {
+   "groups": [
+    "transport_logistics"
+   ],
+   "fulltext": true
+  },
+  "upstreamonline.com": {
+   "groups": [
+    "oil_gas"
+   ],
+   "fulltext": false
+  },
+  "usda.gov": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": false
+  },
+  "usgs.gov": {
+   "groups": [
+    "metals_mining"
+   ],
+   "fulltext": false
+  },
+  "wardsauto.com": {
+   "groups": [
+    "automotive_mobility"
+   ],
+   "fulltext": false
+  },
+  "waste360.com": {
+   "groups": [
+    "environment_water_waste"
+   ],
+   "fulltext": false
+  },
+  "wealthbriefing.com": {
+   "groups": [
+    "fintech_wealth"
+   ],
+   "fulltext": true
+  },
+  "windpowermonthly.com": {
+   "groups": [
+    "energy_power_renewables"
+   ],
+   "fulltext": false
+  },
+  "world-grain.com": {
+   "groups": [
+    "food_beverage_agri"
+   ],
+   "fulltext": true
+  },
+  "worldoil.com": {
+   "groups": [
+    "oil_gas"
+   ],
+   "fulltext": true
+  },
+  "wwd.com": {
+   "groups": [
+    "consumer_beauty_fashion"
+   ],
+   "fulltext": true
+  }
+ },
+ "fulltext_blocked": [
+  "adage.com",
+  "airforce-technology.com",
+  "autonews.com",
+  "aviationtoday.com",
+  "bankingdive.com",
+  "batterytechonline.com",
+  "beckershospitalreview.com",
+  "biopharmadive.com",
+  "breakingdefense.com",
+  "cardiovascularbusiness.com",
+  "ciodive.com",
+  "cmswire.com",
+  "coatingsworld.com",
+  "compositesworld.com",
+  "cybersecuritydive.com",
+  "designnews.com",
+  "dot.gov",
+  "economist.com",
+  "ed.gov",
+  "eetimes.com",
+  "embedded.com",
+  "energy-storage.news",
+  "enr.com",
+  "equipmentworld.com",
+  "eschoolnews.com",
+  "esgdive.com",
+  "fiercebiotech.com",
+  "fiercepharma.com",
+  "finextra.com",
+  "fintechfutures.com",
+  "fooddive.com",
+  "forbes.com",
+  "ftc.gov",
+  "globest.com",
+  "grocerydive.com",
+  "happi.com",
+  "hartenergy.com",
+  "healthcaredive.com",
+  "healthcareitnews.com",
+  "highereddive.com",
+  "hoteldive.com",
+  "hrdive.com",
+  "investing.com",
+  "irena.org",
+  "just-auto.com",
+  "just-food.com",
+  "just-style.com",
+  "k12dive.com",
+  "knowledge.wharton.upenn.edu",
+  "manufacturingdive.com",
+  "marketingdive.com",
+  "medcitynews.com",
+  "medicaldevice-network.com",
+  "medtechdive.com",
+  "mining-technology.com",
+  "mobihealthnews.com",
+  "mobileworldlive.com",
+  "modernhealthcare.com",
+  "nhtsa.gov",
+  "offshore-technology.com",
+  "paymentsdive.com",
+  "pharmaceutical-technology.com",
+  "phocuswire.com",
+  "plasticsnews.com",
+  "plasticstoday.com",
+  "power-technology.com",
+  "railjournal.com",
+  "renewableenergyworld.com",
+  "restaurantdive.com",
+  "retaildive.com",
+  "retailgazette.co.uk",
+  "satellitetoday.com",
+  "searchengineland.com",
+  "smartcitiesdive.com",
+  "socialmediatoday.com",
+  "staffingindustry.com",
+  "supplychaindive.com",
+  "thedrum.com",
+  "thinkadvisor.com",
+  "travelweekly.com",
+  "usgs.gov",
+  "utilitydive.com",
+  "wardsauto.com",
+  "waste360.com",
+  "wastedive.com"
+ ]
+}

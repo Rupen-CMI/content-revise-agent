@@ -12,6 +12,7 @@ echo   CMI Blog Revamp Agent - starting up
 echo ============================================
 echo.
 
+rem ==== PACKAGING BLOCK-START (replaced in the package) ====
 rem ---------------------------------------------------------------
 rem 1. Make sure Python exists. If not, download and silently install
 rem    a local copy (no admin prompt, no wizard, no PATH changes needed
@@ -116,6 +117,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo.
+rem ==== PACKAGING BLOCK-END ====
 
 rem ---------------------------------------------------------------
 rem 4. Start the server in the background and open the browser.
@@ -152,7 +154,7 @@ if errorlevel 2 (
     pause
     exit /b 1
 )
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 
 echo Starting the server...
 set "CMI_AUTOSHUTDOWN=1"
@@ -167,7 +169,7 @@ for /l %%i in (1,1,30) do (
         set "READY=1"
         goto server_ready
     )
-    timeout /t 1 /nobreak >nul
+    ping -n 2 127.0.0.1 >nul
 )
 
 :server_ready
@@ -186,4 +188,4 @@ echo The app is running at http://127.0.0.1:%APP_PORT% and should have opened in
 echo When you close the browser tab the app shuts itself down a few seconds later.
 echo Running this file again always starts a fresh copy.
 echo.
-timeout /t 6 >nul
+ping -n 7 127.0.0.1 >nul

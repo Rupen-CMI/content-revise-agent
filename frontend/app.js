@@ -136,7 +136,8 @@ async function resumeRunIfAny() {
     state.sponsorIdx = sponsorCandidatesFrom(data.article).findIndex((p) => p.index === data.sponsor_index);
     if (state.sponsorIdx < 0) state.sponsorIdx = 0;
 
-    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits };
+    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
+      factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null };
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.report = data.report;
@@ -536,6 +537,12 @@ document.getElementById("step1-confirm-btn").addEventListener("click", async () 
     state.run.chosenCandidate = picked;
     state.run.report = data.report;
     state.run.hits = data.hits;
+    state.run.claimHits = data.claim_hits || {};
+    state.run.timings = data.timings || null;
+    state.run.longtails = data.long_tail_keywords || [];
+    state.run.factSheet = data.fact_sheet || null;
+    state.run.demand = data.demand || null;
+    state.run.publisher = data.publisher || null;
   } catch (e) {
     showError("Step 2 (fetch market evidence)", e);
     state.run.stage = "orient_done";
@@ -554,6 +561,9 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
     const data = await apiPost("/step3", { run_token: state.run.token });
     state.run.stage = "select_done";
     state.run.selection = data.selection;
+    state.run.questions = data.questions || {};
+    if (data.demand) state.run.demand = data.demand;   // market-first: answerability is now marked
+    if (data.long_tail_keywords) state.run.longtails = data.long_tail_keywords;   // market-first: they arrive at Step 3, not Step 2
   } catch (e) {
     showError("Step 3 (fetch report facts)", e);
     state.run.stage = "search_done";
@@ -581,7 +591,7 @@ document.getElementById("step3-confirm-btn").addEventListener("click", async () 
   render();
 });
 
-// Resends the SAME CALL 3 (write) + CALL 4 (revise) request against the run's already-frozen
+// Resends the SAME write request (two LLM calls: publisher block, then market block) against the run's already-frozen
 // evidence (run.evidence never changes here) to get a different draft from the LLM — lets a user
 // reroll Step 4's output without re-running Steps 1-3 if the first draft wasn't a good fit.
 document.getElementById("step4-regenerate-btn").addEventListener("click", async () => {
@@ -622,7 +632,7 @@ document.getElementById("step4-confirm-btn").addEventListener("click", async () 
   render();
 });
 
-// Resends /step4 (write + revise) then /finalize against the same frozen evidence, to get a
+// Resends /step4 (write) then /finalize against the same frozen evidence, to get a
 // different finished draft without re-running Steps 1-3 — same idea as step4-regenerate-btn,
 // just one step further along, for when the issue only became visible after seeing the final
 // SOP-checked/highlighted version.
@@ -790,6 +800,12 @@ function renderStep1Panel() {
   const marketsList = document.getElementById("step1-markets");
   marketsList.innerHTML = (orient.candidate_markets || []).map((m) => `<li>${escapeHtml(m)}</li>`).join("");
 
+  const claims = orient.claims_to_back || [];
+  document.getElementById("step1-claims").innerHTML = claims.length
+    ? claims.map((c) => `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}`
+        + (c.why ? ` <span class="option-caption">${escapeHtml(c.why)}</span>` : "") + `</li>`).join("")
+    : `<li class="empty-note">No unsourced claims were found in the article, so nothing needs outside backing.</li>`;
+
   const isOrientDone = state.run.stage === "orient_done";
   confirmBlock.hidden = !isOrientDone;
   doneBlock.hidden = isOrientDone;
@@ -831,6 +847,73 @@ function renderStep1Panel() {
 }
 
 // ---------------------------------------------------------------- render: step2 panel (fetch market evidence online)
+function formatDuration(totalSeconds) {
+  const s = Math.round(Number(totalSeconds) || 0);
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+}
+
+// Market-first chain (§3.11): renders the fact sheet with gaps highlighted and each figure's own
+// source named. A gap (size / forecast / CAGR the report does not carry) always stays visible —
+// a figure that never got a source is never stated anywhere in the article, so an editor wants to
+// see which of the three headline figures came from where.
+function renderFactSheet(fs) {
+  const gaps = fs.gaps || [];
+  const sourceEl = (entry) => {
+    if (!entry || !entry.source) return "";
+    return entry.url
+      ? `<a href="${escapeHtml(entry.url)}" target="_blank" rel="noopener">${escapeHtml(entry.source)}</a>`
+      : escapeHtml(entry.source);
+  };
+  const hist = (entry) => (entry && entry.historical ? " (dated — used with its year only)" : "");
+  const headline = (entry, label, key) => {
+    if (entry && entry.value) {
+      return `<li>${label}: <strong>${escapeHtml(entry.value)}</strong>${entry.when ? ` <span class="option-caption">(${escapeHtml(entry.when)})</span>` : ""}` +
+        ` <span class="option-caption">source: ${sourceEl(entry)}</span>${hist(entry)}</li>`;
+    }
+    return `<li class="factsheet-gap">${label}: <strong>gap</strong> <span class="option-caption">the report is silent — ` +
+      (gaps.includes(key)
+        ? "no outside page filled it, so the article states no figure for it"
+        : "the figure gap search ran for this") + `</span></li>`;
+  };
+  const statementList = (label, items, max = 3) => {
+    const n = (items || []).length;
+    if (!n) return "";
+    const shown = items.slice(0, max).map((it) => `${escapeHtml(it.text)}${it.historical ? " (dated)" : ""}`);
+    const more = n > max ? ` +${n - max} more` : "";
+    return `<li>${label} (${n}): <span class="option-caption">${shown.join(" &middot; ")}${more}</span></li>`;
+  };
+  const out = [
+    headline(fs.size, "Market size", "size"),
+    headline(fs.forecast, "Forecast", "forecast"),
+    headline(fs.cagr, "Growth rate", "cagr"),
+  ];
+  if (fs.figure_source) {
+    const fsrc = fs.figure_source;
+    out.push(`<li>Figure gap filled from an outside page: <strong>${escapeHtml(fsrc.figures.join(", "))}</strong>` +
+      ` <span class="option-caption">source: <a href="${escapeHtml(fsrc.url)}" target="_blank" rel="noopener">${escapeHtml(fsrc.name)}</a></span></li>`);
+  }
+  for (const seg of fs.segments || []) {
+    out.push(`<li>Segmentation — ${escapeHtml(seg.type)}: <strong>${escapeHtml((seg.items || []).join(", "))}</strong> ` +
+      `<span class="option-caption">source: CMI report</span></li>`);
+  }
+  const regions = fs.regions || {};
+  if (regions.leader || regions.fastest) {
+    out.push(`<li>Regions — leading: ${escapeHtml(regions.leader ? regions.leader.name : "(gap)")}${hist(regions.leader)}` +
+      ` · fastest: ${escapeHtml(regions.fastest ? regions.fastest.name : "(gap)")}${hist(regions.fastest)}` +
+      ` <span class="option-caption">source: CMI report</span></li>`);
+  }
+  for (const it of fs.us || []) {
+    out.push(`<li>U.S.: <strong>${escapeHtml(it.text)}</strong>${hist(it)} <span class="option-caption">source: CMI report</span></li>`);
+  }
+  const extra = statementList("Drivers", fs.drivers) + statementList("Restraints", fs.restraints)
+    + statementList("Opportunities", fs.opportunities);
+  out.push(extra);
+  if ((fs.players || []).length) {
+    out.push(`<li>Key players: <strong>${escapeHtml(fs.players.join(", "))}</strong> <span class="option-caption">source: CMI report</span></li>`);
+  }
+  return out.filter(Boolean).join("");
+}
+
 function renderStep2Panel() {
   const spinner = document.getElementById("step2-spinner");
   const content = document.getElementById("step2-content");
@@ -849,6 +932,15 @@ function renderStep2Panel() {
 
   const hits = state.run.hits || [];
   document.getElementById("step2-hits-count").textContent = hits.length;
+  const timings = state.run.timings;
+  document.getElementById("step2-timing").hidden = !timings;
+  document.getElementById("step2-timing-stages").hidden = !timings;
+  if (timings) {
+    document.getElementById("step2-timing-total").textContent = `Evidence collected in ${formatDuration(timings.total_s)} (stages overlap, so they do not add up to the total).`;
+    document.getElementById("step2-timing-stages").innerHTML = (timings.stages || []).map((s) =>
+      `<li>${escapeHtml(s.name)} — ${formatDuration(s.seconds)} <span class="field-hint">(started at +${formatDuration(s.start_s)})</span></li>`
+    ).join("");
+  }
   document.getElementById("step2-hits").innerHTML = hits.length
     ? hits.map((h) => {
         let host = "web";
@@ -862,6 +954,49 @@ function renderStep2Panel() {
           + `</li>`;
       }).join("")
     : `<li class="empty-note">No results survived filtering for this market (too old, off-topic, or the search returned nothing). You can still continue — the writer will rely on the CMI report alone.</li>`;
+
+  const claimList = (state.run.orient && state.run.orient.claims_to_back) || [];
+  const claimHits = state.run.claimHits || {};
+  document.getElementById("step2-claims-block").hidden = claimList.length === 0;
+  document.getElementById("step2-claim-hits").innerHTML = claimList.map((c) => {
+    const pages = claimHits[c.id] || [];
+    const pageLis = pages.length
+      ? pages.map((h) => {
+          let host = h.source || "web";
+          return `<span class="option-caption"><a href="${escapeHtml(h.url)}" target="_blank" rel="noopener">${escapeHtml(h.title)}</a> &middot; ${escapeHtml(host)}</span>`;
+        }).join("")
+      : `<span class="option-caption">No usable page found for this claim.</span>`;
+    return `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}${pageLis}</li>`;
+  }).join("");
+
+  const sectionLabel = { report_context: "Market overview", trends: "Market trends", segmentation: "Segmentation", country_us: "U.S. market analysis", key_players: "Key players" };
+  const subheadingQuestions = (state.run.questions && state.run.questions.subheading_questions) || [];
+  document.getElementById("step2-questions-block").hidden = subheadingQuestions.length === 0;
+  document.getElementById("step2-questions").innerHTML = subheadingQuestions.map((q) => `
+    <li><strong>${escapeHtml(sectionLabel[q.section] || q.section)}</strong> section — ${escapeHtml(q.question)}</li>
+  `).join("");
+
+  // Market-first chain (restructure plan §3.11): the built fact sheet — with gaps highlighted and
+  // the source of every figure — and the most-searched questions. The old chain never sends these
+  // keys, so both blocks stay hidden on an old run.
+  const factSheet = state.run.factSheet;
+  document.getElementById("step2-factsheet-block").hidden = !factSheet;
+  if (factSheet) document.getElementById("step2-factsheet").innerHTML = renderFactSheet(factSheet);
+
+  const msqs = (state.run.demand && state.run.demand.questions) || [];
+  document.getElementById("step2-msqs-block").hidden = msqs.length === 0;
+  const answerableLabel = { size: "size", growth: "growth", trends: "trend", drivers: "drivers", challenges: "challenges",
+    technology_impact: "technology", segments: "segments", region: "region", us: "U.S.", players: "players",
+    outlook: "outlook", opportunities: "opportunities" };
+  document.getElementById("step2-msqs").innerHTML = msqs.map((q) => {
+    // answerable appears only once Step 3 ran mark_answerability; before that the badge says so.
+    const badge = typeof q.answerable === "boolean"
+      ? (q.answerable
+          ? `<span class="msq-badge">answerable</span>`
+          : `<span class="msq-badge" title="No fact in the fact sheet and no selected evidence can answer this kind of question. It can never become a heading, and the FAQ never invents one.">not answerable</span>`)
+      : `<span class="msq-badge" title="Checked once Step 3 has finished deciding which facts are usable.">answerability checked in Step 3</span>`;
+    return `<li><strong>${escapeHtml(q.question)}</strong> <span class="option-caption">${escapeHtml(answerableLabel[q.intent] || q.intent)} &middot; could head the ${escapeHtml(sectionLabel[q.section] || q.section)} section</span>${badge}</li>`;
+  }).join("");
 
   const isSearchDone = state.run.stage === "search_done";
   document.getElementById("step2-confirm-block").hidden = !isSearchDone;
@@ -908,6 +1043,67 @@ function renderStep3Panel() {
         return `<li>${escapeHtml(e.fact)} <span class="option-caption">${escapeHtml(tag)} &middot; source: ${sourceEl}</span></li>`;
       }).join("")
     : `<li class="empty-note">No supporting web facts survived review — the writer will rely on the confirmed CMI report alone. You can still continue.</li>`;
+
+  const claimsForBacking = (state.run.orient && state.run.orient.claims_to_back) || [];
+  const backing = (state.run.selection && state.run.selection.claim_backing) || [];
+  const stanceLabel = { supports: "Supports", qualifies: "Qualifies", contradicts: "Contradicts" };
+  document.getElementById("step3-claims-block").hidden = claimsForBacking.length === 0;
+  document.getElementById("step3-claim-backing").innerHTML = claimsForBacking.map((c) => {
+    const items = backing.filter((b) => b.claim_id === c.id);
+    const body = items.length
+      ? items.map((b) => {
+          const src = b.url
+            ? `<a href="${escapeHtml(b.url)}" target="_blank" rel="noopener">${escapeHtml(b.source || "web")}</a>`
+            : escapeHtml(b.source || "web");
+          return `<span class="option-caption"><strong>${escapeHtml(stanceLabel[b.stance] || b.stance)}:</strong> ${escapeHtml(b.fact)} &middot; source: ${src}</span>`;
+        }).join("")
+      : `<span class="option-caption">No outside backing found. The writer will soften this claim or drop it.</span>`;
+    return `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}${body}</li>`;
+  }).join("");
+
+  const subheadingQuestions = (state.run.questions && state.run.questions.subheading_questions) || [];
+  const questionBacking = (state.run.selection && state.run.selection.question_backing) || [];
+  document.getElementById("step3-questions-block").hidden = subheadingQuestions.length === 0;
+  document.getElementById("step3-question-backing").innerHTML = subheadingQuestions.map((q) => {
+    const items = questionBacking.filter((b) => b.question_id === q.id);
+    const body = items.length
+      ? items.map((b) => {
+          const src = b.url
+            ? `<a href="${escapeHtml(b.url)}" target="_blank" rel="noopener">${escapeHtml(b.source || "web")}</a>`
+            : escapeHtml(b.source || "web");
+          return `<span class="option-caption">${escapeHtml(b.fact)} &middot; source: ${src}</span>`;
+        }).join("")
+      : `<span class="option-caption">No outside source found — answered from the CMI report/article content only.</span>`;
+    return `<li><strong>${escapeHtml(q.question)}</strong>${body}</li>`;
+  }).join("");
+
+  // Long-tail keywords: generated at Step 2 (reused from Step 1's orient guess when the confirmed
+  // market matched it, regenerated otherwise), handed to the writer in Step 4. This screen shows
+  // the pool the writer will pick from — intent cluster and reader intent per phrase — so a human
+  // can sanity-check what will be woven into the draft before it is written. Nothing is editable
+  // here by design: an untouched pool is what the writer's caps (at most 3, skip-if-no-fit) are for.
+  const longtails = state.run.longtails || [];
+  const longtailIntentLabel = {
+    commercial_review: "Commercial / review",
+    niche_b2b: "Niche / B2B",
+    research_b2b: "Research / B2B",
+    commercial_pricing: "Commercial / pricing",
+    vendor_comparison: "Vendor comparison",
+  };
+  document.getElementById("step3-longtails-block").hidden = longtails.length === 0;
+  document.getElementById("step3-longtails").innerHTML = longtails.map((t) => {
+    const intent = longtailIntentLabel[t.intent] || t.intent;
+    const why = t.why ? ` &middot; ${escapeHtml(t.why)}` : "";
+    return `<li><strong>${escapeHtml(t.keyword)}</strong> <span class="option-caption">${escapeHtml(intent)}${why}</span></li>`;
+  }).join("");
+
+  // Exact tally of what the selector kept, so "how many did the LLM find useful" never has to be counted by eye.
+  const claimsBacked = new Set(backing.map((b) => b.claim_id)).size;
+  const countParts = [`<strong>${facts.length}</strong> of ${hits.length} gathered market items judged useful`];
+  if (claimsForBacking.length) {
+    countParts.push(`<strong>${backing.length}</strong> backing source${backing.length === 1 ? "" : "s"} chosen, covering ${claimsBacked} of ${claimsForBacking.length} claim${claimsForBacking.length === 1 ? "" : "s"}`);
+  }
+  document.getElementById("step3-counts").innerHTML = countParts.join(" &middot; ");
 
   const isSelectDone = state.run.stage === "select_done";
   document.getElementById("step3-confirm-block").hidden = !isSelectDone;
@@ -966,7 +1162,9 @@ function _splitBulletSegments(segments) {
     const parts = seg.text.split("\n");
     parts.forEach((part, i) => {
       if (i > 0) { lines.push(current); current = []; }
-      if (part) current.push({ text: part, url: seg.url });
+      // kw (the backend's keyword-highlight label) must travel with the piece: dropping it here made every
+      // keyword mark inside a bulleted paragraph disappear while the legend still counted it.
+      if (part) current.push({ text: part, url: seg.url, kw: seg.kw });
     });
   }
   lines.push(current);
@@ -1067,8 +1265,8 @@ function _renderHighlightedText(text, matchers) {
 
 // Maps a segment's server-assigned "kw" label (checks.find_keyword_spans ran concept-matching
 // there, not a literal phrase search — see main.py's _apply_keyword_spans) to its highlight class.
-const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary" };
-const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword" };
+const _KW_LABEL_CLASS = { primary: "hl-primary", secondary: "hl-secondary", longtail: "hl-longtail", tertiary: "hl-tertiary" };
+const _KW_LABEL_TITLE = { primary: "Primary keyword", secondary: "Secondary keyword", longtail: "Long-tail keyword", tertiary: "Related term" };
 
 function renderSegmentsHighlighted(segments, matchers) {
   return (segments || [])
@@ -1104,8 +1302,14 @@ function _buildHighlightMatchers(result) {
 
 function renderSectionsHighlighted(sections, result) {
   const matchers = _buildHighlightMatchers(result);
+  const msqHeadings = new Set((result.msq_headings || []).map((h) => h.trim().toLowerCase()));
   return sections.map((s) => {
-    const heading = s.heading ? `<h4>${escapeHtml(s.heading)}</h4>` : "";
+    // A heading the plan built from a Most Searched Question carries a small tag — the reader sees
+    // which headings are also real search phrases at a glance (§3.11 final view).
+    const isMsq = s.heading && msqHeadings.has(s.heading.trim().toLowerCase())
+      ? `<span class="msq-badge" title="This heading is one of the article's Most Searched Questions.">MSQ</span>`
+      : "";
+    const heading = s.heading ? `<h4>${escapeHtml(s.heading)}${isMsq}</h4>` : "";
     const paras = (s.paragraphs || [])
       .map((p) => _renderParagraph(p, (segs) => renderSegmentsHighlighted(segs, matchers)))
       .join("");
@@ -1146,13 +1350,38 @@ function renderFinalPanel() {
 
   document.getElementById("final-article").innerHTML = renderSectionsHighlighted(result.sections, result);
 
-  const secondaryCount = (result.secondary_keywords || []).reduce(
-    (sum, kw) => sum + _countOccurrences(result.sections, kw), 0
-  );
-  document.getElementById("legend-count-primary").textContent =
-    `(${_countOccurrences(result.sections, result.primary_keyword)}x)`;
+  const faq = result.faq || [];
+  document.getElementById("final-faq-block").hidden = faq.length === 0;
+  document.getElementById("final-faq").innerHTML = faq.map((qa) => `
+    <div class="faq-item">
+      <p class="faq-question"><strong>${escapeHtml(qa.question)}</strong>${qa.intent
+        ? `<span class="faq-intent" title="Every FAQ entry here is a Most Searched Question from the search-demand pass, answered from the article's own facts.">MSQ &middot; ${escapeHtml(qa.intent)}</span>` : ""}</p>
+      <p class="faq-answer">${escapeHtml(qa.answer)}</p>
+    </div>
+  `).join("");
+
+  // The legend's numbers come from the backend's own highlighting pass (result.keyword_counts, filled by the
+  // same spans that produce the marks in the text) so they always match what is highlighted. A literal phrase
+  // search here cannot: it misses every secondary keyword the writer reordered or split across a sentence.
+  const counts = result.keyword_counts || {};
+  const secondaryTotal = Object.values(counts.secondary || {}).reduce((sum, n) => sum + n, 0);
+  const secondaryUsed = Object.keys(counts.secondary || {}).length;
+  // Tertiary (related) terms exist only on the market-first chain — the legend row stays hidden on
+  // an old run (no terms and no counts were ever sent for it).
+  const tertiaryTotal = Object.values(counts.tertiary || {}).reduce((sum, n) => sum + n, 0);
+  const tertiaryUsed = Object.keys(counts.tertiary || {}).length;
+  const tertiaryTerms = result.tertiary_terms || [];
+  document.getElementById("legend-tertiary").hidden = !tertiaryTerms.length;
+  document.getElementById("legend-count-tertiary").textContent =
+    tertiaryTerms.length ? `(${tertiaryTotal}x, ${tertiaryUsed}/${tertiaryTerms.length} used)` : "";
+  const longtailTotal = Object.values(counts.longtail || {}).reduce((sum, n) => sum + n, 0);
+  const longtailUsed = Object.keys(counts.longtail || {}).length;
+  document.getElementById("legend-count-primary").textContent = `(${counts.primary || 0}x)`;
   document.getElementById("legend-count-secondary").textContent =
-    `(${secondaryCount}x, ${(result.secondary_keywords || []).filter((kw) => _countOccurrences(result.sections, kw) > 0).length}/${(result.secondary_keywords || []).length} used)`;
+    `(${secondaryTotal}x, ${secondaryUsed}/${(result.secondary_keywords || []).length} used)`;
+  document.getElementById("legend-count-longtail").textContent =
+    `(${longtailTotal}x, ${longtailUsed}/${(result.long_tail_keywords || []).length} used)`;
+  document.getElementById("legend-longtail").hidden = (result.long_tail_keywords || []).length === 0;
   document.getElementById("legend-count-evidence").textContent =
     `(${(result.evidence_citations || []).length})`;
 

@@ -1,8 +1,13 @@
 import hashlib
+import json
 import logging
+import os
 import random
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -13,6 +18,7 @@ from ddgs import DDGS
 from ddgs.exceptions import DDGSException, TimeoutException
 
 import sources
+import config
 from config import CMI_HOST
 
 _null_logger = logging.getLogger("revamp.null")
@@ -173,8 +179,8 @@ _TEXT_BACKENDS = "startpage,mojeek,yahoo,duckduckgo"
 # commonly cited as DDG's unofficial throttling threshold — DDG publishes no official number),
 # and retries with backoff on timeouts instead of instant zero-results.
 _QUERY_TIMEOUT_S = 20
-_QUERY_DELAY_S = 3.0  # base gap between queries (+ up to 2.5s jitter)
-_INTRA_QUERY_DELAY_S = 1.5  # base gap between the news and text calls of one query (+ jitter)
+_QUERY_DELAY_S = 4.0  # base gap between queries (+ up to 2.5s jitter)
+_INTRA_QUERY_DELAY_S = 2.0  # base gap between the news and text calls of one query (+ jitter)
 _QUERY_RETRIES = 2
 
 
@@ -189,10 +195,76 @@ class SearchHit:
     # no date field for these at all — see _ddgs below). Only is_news hits can ever be cited as
     # "ongoing trend" evidence; text hits are background/definitional context only.
     is_news: bool = False
+    # Query-relevant paragraphs from the article page itself (feeds.attach_excerpts), when the page was
+    # readable. Empty for hits that only have a headline and snippet.
+    excerpt: str = ""
+    # "claim" for pages retrieved to back one claim of the original article (claim_id), else "market".
+    scope: str = "market"
+    claim_id: str = ""
 
     @property
     def host(self) -> str:
         return urlparse(self.url).netloc.lower().removeprefix("www.")
+
+
+# --------------------------------------------------------------- dev-only disk cache (config.SEARCH_CACHE)
+# See config.SEARCH_CACHE — enabled only via CMI_SEARCH_CACHE=1, for iterating on dev runs of the
+# same market without re-hitting rate-limited engines. One tiny JSON file per (kind, query) under
+# config.SEARCH_CACHE_DIR; live fetch paths are untouched when disabled. scope/claim_id/excerpt are
+# deliberately NOT stored: they are set by the caller AFTER the search, so a cached hit must arrive
+# blank and get its caller-side annotations exactly at a fresh hit would.
+def _cache_path(kind: str, query: str):
+    h = hashlib.sha256(f"{kind}|{query}".encode("utf-8")).hexdigest()[:24]
+    return config.SEARCH_CACHE_DIR / f"{h}.json"
+
+
+def _hit_to_cache(h: SearchHit) -> dict:
+    return {"title": h.title, "snippet": h.snippet, "url": h.url, "source": h.source,
+            "date": h.date.isoformat() if h.date else None, "is_news": h.is_news}
+
+
+def _hit_from_cache(d: dict) -> SearchHit:
+    date = None
+    if d.get("date"):
+        try:
+            date = datetime.fromisoformat(d["date"])
+        except ValueError:
+            pass
+    return SearchHit(d.get("title", ""), d.get("snippet", ""), d.get("url", ""), d.get("source", ""), date, bool(d.get("is_news")))
+
+
+def cache_lookup(kind: str, query: str) -> list[SearchHit] | None:
+    """The cached results for one (kind, query), or None on a miss/expiry/corruption (which callers
+    treat exactly like needing a live fetch). Never raises."""
+    if not config.SEARCH_CACHE:
+        return None
+    try:
+        blob = json.loads(_cache_path(kind, query).read_text(encoding="utf-8"))
+        if time.time() - blob["t"] <= config.SEARCH_CACHE_TTL_S:
+            return [_hit_from_cache(h) for h in blob.get("hits") or []]
+    except OSError:
+        pass  # absent cache behaves like a miss
+    except Exception:
+        logging.getLogger("revamp.cachecorrupt").debug("corrupt cache entry ignored", exc_info=True)
+    return None
+
+
+def cache_store(kind: str, query: str, hits: list[SearchHit]) -> None:
+    """Record one successful engine answer to disk. Best-effort: any cache bookkeeping failure is
+    swallowed — search must never break because the cache could not write. Atomic via temp+replace
+    (concurrent writes to the same key come from the parallel evidence threads)."""
+    if not config.SEARCH_CACHE:
+        return
+    try:
+        path = _cache_path(kind, query)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}{threading.get_ident()}")
+        tmp.write_text(json.dumps(
+            {"t": time.time(), "hits": [_hit_to_cache(h) for h in hits]}, ensure_ascii=False,
+        ), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _parse_date(raw) -> datetime | None:
@@ -253,10 +325,20 @@ def _text(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[Se
 def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list[SearchHit]:
     """One search call (news OR text) with timeout retries. Never raises: the two calls for a
     query must fail independently — previously a text-search "No results found." escaped from the
-    shared function and discarded the news hits already collected, wiping out every query."""
+    shared function and discarded the news hits already collected, wiping out every query.
+
+    With the dev-only cache on (config.SEARCH_CACHE), the successful result of each (kind, query)
+    is reused instead of re-hitting DDGS; the retry loop stays outside the cache, so a transient
+    engine failure inside fn is never recorded as an empty answer."""
     for attempt in range(_QUERY_RETRIES + 1):
         try:
-            return fn(d, query)
+            cached = cache_lookup(kind, query)
+            if cached is not None:
+                logger.info(f"[cache] {kind} {query!r}: {len(cached)} cached result(s)")
+                return cached
+            hits = fn(d, query)
+            cache_store(kind, query, hits)
+            return hits
         except TimeoutException as e:
             if attempt < _QUERY_RETRIES:
                 wait = 3.0 * (attempt + 1)
@@ -277,27 +359,61 @@ def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list
     return []
 
 
-def _safe(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[SearchHit]:
-    news = _attempt(_news, d, query, "news", logger)
-    time.sleep(_INTRA_QUERY_DELAY_S + random.uniform(0, 0.6))
-    text = _attempt(lambda d, q: _text(d, q, logger), d, query, "text", logger)
-    logger.info(f"[search] query {query!r}: {len(news)} news + {len(text)} text")
-    return news + text
+# DDGS politeness is per REQUEST, per kind. News calls go to the news engines (bing, yahoo) and text calls to the text
+# engines (startpage, mojeek, yahoo, duckduckgo), so the two kinds can run side by side without either engine seeing more
+# than one request per gap; within a kind, any two requests, from the market fallback or the claim stage, are spaced by
+# the gap. (The old single lock, held for a whole run, made the claim stage wait for the entire market fallback and made
+# every query do its news call, a pause, then its text call, one after the other.)
+_DDGS_LOCKS = {"news": threading.Lock(), "text": threading.Lock()}
+_ddgs_last_end = {"news": 0.0, "text": 0.0}
+
+
+@contextmanager
+def _ddgs_gate(kind: str):
+    with _DDGS_LOCKS[kind]:
+        wait = _ddgs_last_end[kind] + _QUERY_DELAY_S + random.uniform(0, 2.5) - time.monotonic()
+        if _ddgs_last_end[kind] and wait > 0:
+            time.sleep(wait)
+        try:
+            yield
+        finally:
+            _ddgs_last_end[kind] = time.monotonic()
+
+
+def _lane(kind: str, fn, queries: list[str], logger: logging.Logger) -> list[SearchHit]:
+    """One kind of DDGS call (news or text) for every query, in order, each request through that kind's gate."""
+    out: list[SearchHit] = []
+    with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
+        for q in queries:
+            with _ddgs_gate(kind):
+                batch = _attempt(fn, d, q, kind, logger)
+            logger.info(f"[search] {kind} {q!r}: {len(batch)} raw result(s)")
+            out += batch
+    return out
 
 
 def run_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
-    """Runs queries one at a time, in order, with a politeness gap between them —
-    never more than one request to DDGS in flight, and never a rapid-fire burst.
-    Reuses one DDGS session across the whole run (opening a fresh client per query was an
-    unnecessary extra per-query cost with no benefit, and some DDGS backends track sessions)."""
+    """DDGS news and text searches for every query. The two kinds run concurrently, each one query at a time with a
+    politeness gap, so the wall time is that of the slower kind, not the sum of both."""
+    with ThreadPoolExecutor(2) as ex:
+        news_f = ex.submit(_lane, "news", _news, queries, logger)
+        text_f = ex.submit(_lane, "text", lambda d, q: _text(d, q, logger), queries, logger)
+        news, text = news_f.result(), text_f.result()
+    logger.info(f"[search] DDGS: {len(news)} news + {len(text)} text raw result(s) from {len(queries)} queries")
+    return news + text
+
+
+def run_text_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
+    """Text-only DDGS queries (no news call): used for CLAIM BACKING, whose useful sources are explainers,
+    encyclopedias and reference pages — kinds of pages that never appear in a news index. Same per-request text gate as
+    the market fallback's text lane."""
     hits: list[SearchHit] = []
     with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
-        for i, q in enumerate(queries):
-            batch = _safe(d, q, logger=logger)
-            logger.info(f"[search] query {q!r} -> {len(batch)} raw result(s)")
+        for q in queries:
+            with _ddgs_gate("text"):
+                batch = _attempt(lambda d, q: _text(d, q, logger), d, q, "text", logger)
+            logger.info(f"[claim-search] query {q!r} -> {len(batch)} raw result(s)")
             hits += batch
-            if i < len(queries) - 1:
-                time.sleep(_QUERY_DELAY_S + random.uniform(0, 2.5))
     return hits
 
 
@@ -370,6 +486,31 @@ def _gate_for_phrase(phrase: str, freq: dict[str, float]) -> tuple[str, list[str
     return head, required, generic, non_head
 
 
+def _word_or_compound(token: str, hit_tokens: set[str]) -> bool:
+    """The market word as a whole word, or at the start of a short compound built on it ("wealth" -> "wealthtech").
+    Whole-word matching alone dropped "Leading Wealthtech Platform for Independent Advisors" for a wealth-platform market."""
+    return token in hit_tokens or (len(token) >= 5 and any(
+        w.startswith(token) and len(w) - len(token) <= 5 for w in hit_tokens
+    ))
+
+
+def stem_hit(word: str, stem: str) -> bool:
+    """A word matches a market-identity stem as a whole word, or by prefix only when the stem is long enough to
+    identify something ("wealth" -> "wealthtech"). A 3-letter stem such as "web" must not match by prefix: it
+    matches "website" in every press release's boilerplate and "web shells" in every security story."""
+    return word == stem or (len(stem) >= 5 and word.startswith(stem))
+
+
+def compile_topic_terms(terms: list[str]) -> list[re.Pattern]:
+    """Whole-word/phrase patterns (plural allowed) for the topic vocabulary the query-writing step produced."""
+    out = []
+    for t in terms:
+        t = re.sub(r"\s+", " ", str(t).strip().lower())
+        if len(t) >= 3:
+            out.append(re.compile(r"\b" + re.escape(t) + r"s?\b", re.IGNORECASE))
+    return out
+
+
 def _head_matched(head: str, hit_tokens: set[str]) -> bool:
     if head in hit_tokens:
         return True
@@ -401,9 +542,18 @@ def _is_key_player_own_site(host: str, key_players: list[str]) -> str | None:
 def filter_hits(
     hits: list[SearchHit], phrases: list[str], blocked_hosts: tuple[str, ...] = (),
     limit: int = 30, logger: logging.Logger = _null_logger,
-    key_players: list[str] = (),
+    key_players: list[str] = (), max_per_host: int = 0, sector_hosts: frozenset[str] = frozenset(),
+    topic_terms: list[str] = (),
 ) -> list[SearchHit]:
-    """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market."""
+    """Dedup, drop blocked/stale sources, and keep hits sharing vocabulary with the market.
+    topic_terms is the market's own vocabulary as the query-writing step produced it (technologies, activities,
+    what vendors and buyers do): a dated news item that uses one is on-topic even when its headline lacks the
+    market NAME, and a sector-source item that uses none is not kept on the strength of its host alone.
+    max_per_host (0 = unlimited) keeps one prolific site from filling the whole shortlist.
+    sector_hosts are the trade-press sites of the market's own industry: a dated news item from one is on-topic by
+    SOURCE, so it reaches SELECT (the LLM judge) even when its headline lacks the market's words
+    ("SEI taps IBM for agentic AI growth" in a wealth-platform run). Measured live: the strict word gate dropped about
+    ten such relevant items per run."""
     tokens, full_phrases = gate_terms(phrases)
     freq = _catalog_token_freq()
     gates = [(p, g) for p in phrases if (g := _gate_for_phrase(p, freq)) is not None]
@@ -412,6 +562,8 @@ def filter_hits(
     logger.info(f"[filter] gate phrases ({len(full_phrases)}): {full_phrases}")
     logger.info(f"[filter] key players ({len(key_players)}): {list(key_players)}")
     player_res = _player_patterns(list(key_players))
+    topic_res = compile_topic_terms(list(topic_terms))
+    logger.info(f"[filter] topic terms ({len(topic_res)}): {list(topic_terms)}")
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
     web_cutoff = datetime.now(timezone.utc) - _MAX_WEB_AGE
     blocked = _BLOCKED_HOSTS + tuple(h.lower() for h in blocked_hosts)
@@ -475,7 +627,7 @@ def filter_hits(
         matched_phrase = next((p for p in full_phrases if p in text), None)
         hit_tokens = _content_tokens(text)
         token_ok = any(
-            _head_matched(head, hit_tokens) and all(t in hit_tokens for t in required)
+            _head_matched(head, hit_tokens) and all(_word_or_compound(t, hit_tokens) for t in required)
             for _, (head, required, _, _) in gates
         )
         named_player = next((p for p, rx in player_res if rx.search(text)), None)
@@ -484,8 +636,14 @@ def filter_hits(
         # prefix". That is what lets "Wealthtech" / "Martech" / "Marketers" count for wealth / marketing,
         # and lets a hit with no head noun ("Adhesion Wealth Launches Custom Model Solutions") through.
         # SELECT still judges relevance afterwards.
+        topic_hit = next((rx.pattern for rx in topic_res if rx.search(text)), None)
+        # With a topic vocabulary, one market-identity word is not enough on its own either: a market named by a
+        # generic word plus a specific one ("web" + "scraping") would otherwise pass every story that merely
+        # contains the generic word ("web shells", "web apps"). The item must also use the market's head noun
+        # or one of its topic terms.
         trusted_ok = hit.is_news and sources.is_trusted(hit.host) and any(
-            any(w.startswith(t) for w in hit_tokens for t in (required or [head]))
+            any(stem_hit(w, t) for w in hit_tokens for t in (required or [head]))
+            and (not topic_res or topic_hit is not None or _head_matched(head, hit_tokens))
             for _, (head, required, _, _) in gates
         )
         # A key-player name plus a generic category word is too weak a bar on its own — it is
@@ -501,9 +659,18 @@ def filter_hits(
                 for _, (head, _, _, non_head) in gates
             )
         )
+        # A sector-source item needs a topical signal beyond its host once the topic vocabulary exists: the trade press
+        # of a broad industry (security, enterprise IT) publishes mostly stories that have nothing to do with this
+        # market (patch notices, earnings dates, breaches). Without a vocabulary (the LLM step failed) the old
+        # host-only rule stands.
+        sector_ok = hit.is_news and any(hit.host == h or hit.host.endswith("." + h) for h in sector_hosts) and (
+            topic_hit is not None or not topic_res
+        )
+        topic_ok = hit.is_news and topic_hit is not None
         rules = "|".join(
             r for ok, r in (
                 (matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player"), (trusted_ok, "trusted_source"),
+                (sector_ok, "sector_source"), (topic_ok, "topic_terms"),
             ) if ok
         )
         if rules:
@@ -519,6 +686,128 @@ def filter_hits(
             logger.info(f"[filter] DROP (no topical overlap) [{hit.host}] {hit.title!r}")
 
     scored.sort(key=lambda x: (x[0], x[1].date or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
-    final = [hit for _, hit in scored[:limit]]
+    final: list[SearchHit] = []
+    per_host: dict[str, int] = {}
+    for _, hit in scored:
+        if len(final) >= limit:
+            break
+        if max_per_host and per_host.get(hit.host, 0) >= max_per_host:
+            continue
+        per_host[hit.host] = per_host.get(hit.host, 0) + 1
+        final.append(hit)
     logger.info(f"[filter] kept {kept}, dropped {dropped}, returning top {len(final)} of {kept}")
+    return final
+
+
+# ------------------------------------------------------------------------------- claim backing
+# Claim-backing searches judge a DIFFERENT question than market news does: does any outside page
+# support, qualify, or contradict one factual claim made in the original article? That changes the
+# filter profile in four deliberate ways (each one reuses filter_hits's reasoning, inverted for the
+# different purpose — see filter_claim_hits for the per-rule notes):
+#   - no recency cutoff at all: "commission-free apps are regulated like brokers" is backed just as
+#     well by a 2021 regulator explainer as by this month's news, and stale-dating a BACKGROUND
+#     claim's source is wrong, not cautious;
+#   - encyclopedia/dictionary/explainer hosts (wikipedia, investopedia, …) are ALLOWED here — for
+#     market news they are useless, but for backing a definition/practice/comparison claim they are
+#     exactly the useful kind, so they must not sit in the blocked list;
+#   - DEFINITIONAL_TITLE_RE does not apply: a "What is X?" page is the prize here, not junk —
+#     still dropped: adult, PR wires/social/content farms, vendor login/landing pages, section
+#     hubs, bare company quote pages, and the market-report-SEO ad pattern (a page titled
+#     "<Market> Size, Share, Growth…" advertises a rival report; it is not claim backing);
+#   - the topical bar is overlap with THE CLAIM's own vocabulary (not the market's), verified
+#     token-wise, because these hits were retrieved BY the claim's queries — the gate only has to
+#     catch a stray irrelevant result from the same engine, not re-derive the market.
+
+# Encyclopedia / dictionary / reference hosts the market filter bans (they answer "what is X",
+# never "what happened in X") — re-listed so filter_claim_hits can un-block them.
+_ENC_REFS = frozenset({
+    "wikipedia.org", "grokipedia.com", "wallstreetmojo.com", "investopedia.com", "britannica.com",
+    "merriam-webster.com", "dictionary.com", "corporatefinanceinstitute.com",
+})
+# The big software vendors' own sites are blocked for MARKET evidence (a vendor blog is not reporting) but they are
+# the primary source for exactly the claims this stage backs: what a product category is ("What is marketing
+# automation?"), what a named company offers, how a named product works. Vendor login/landing pages are still
+# caught by _VENDOR_PAGE_TITLE_RE; whether a page SUPPORTS the claim is SELECT's stance call, not the host list's.
+_CLAIM_ALLOWED_VENDORS = frozenset({
+    "microsoft.com", "learn.microsoft.com", "oracle.com", "ibm.com", "adobe.com", "business.adobe.com",
+    "salesforce.com", "hubspot.com", "academy.hubspot.com", "blog.hubspot.com", "knowledge.hubspot.com",
+    "aws.amazon.com", "g2.com", "learn.g2.com",
+})
+_CLAIM_BLOCKED_HOSTS = tuple(h for h in _BLOCKED_HOSTS if h not in _ENC_REFS and h not in _CLAIM_ALLOWED_VENDORS)
+
+# A 2-word title ("Robinhood") is a ticker/quote page; for claim backing even a short page title
+# naming the claim's subject can be fine, so the floor sits between filter_hits's 4 and 0.
+_MIN_CLAIM_TITLE_WORDS = 3
+
+# Distinctive claim words that must survive into a hit's text for the hit to be judged related.
+# Two tokens minimum: one token is almost always a category word the claim shares with half the web
+# (different token sets per claim keep this honest), two is the loosest bar that still discriminates.
+_CLAIM_OVERLAP_MIN = 2
+_CLAIM_MAX_PER_HOST = 2
+
+
+def _site_of(host: str) -> str:
+    """The site a host belongs to ("blog.converted.in" -> "converted.in", "news.bbc.co.uk" -> "bbc.co.uk")."""
+    parts = host.split(".")
+    keep = 3 if len(parts) >= 3 and len(parts[-1]) == 2 and len(parts[-2]) <= 3 else 2
+    return ".".join(parts[-keep:])
+
+
+def filter_claim_hits(
+    hits: list[SearchHit], claim: str, logger: logging.Logger = _null_logger, limit: int = 6,
+) -> list[SearchHit]:
+    """The claim-backing filter profile (see the block comment above for how and why it differs
+    from filter_hits). Ranks by overlap with the claim's own vocabulary; `limit` caps the handful
+    handed to SELECT per claim, which only ever picks at most two."""
+    claim_tokens = _content_tokens(claim)
+    logger.info(f"[filter:claim] gate ({len(claim_tokens)} tokens): {sorted(claim_tokens)}")
+    seen: set[str] = set()
+    scored: list[tuple[int, SearchHit]] = []
+    dropped = 0
+    for hit in hits:
+        if _is_adult(hit) or not hit.title or not hit.url:
+            dropped += 1
+            continue
+        if any(hit.host == b or hit.host.endswith("." + b) for b in _CLAIM_BLOCKED_HOSTS):
+            dropped += 1
+            logger.info(f"[filter:claim] DROP (blocked host {hit.host}): {hit.title!r}")
+            continue
+        title_words = len(hit.title.split())
+        if (
+            title_words < _MIN_CLAIM_TITLE_WORDS
+            or _HUB_TITLE_RE.search(hit.title)
+            or _JUNK_ANY_TITLE_RE.search(hit.title)
+            or (title_words <= 5 and _BARE_COMPANY_TITLE_RE.match(hit.title))
+            or (not hit.is_news and _VENDOR_PAGE_TITLE_RE.search(hit.title))
+        ):
+            dropped += 1
+            logger.info(f"[filter:claim] DROP (junk shape) [{hit.host}] {hit.title!r}")
+            continue
+        fingerprint = hashlib.sha256(re.sub(r"\W+", " ", hit.title.lower()).strip().encode()).hexdigest()
+        if fingerprint in seen or hit.url in seen:
+            dropped += 1
+            continue
+        seen.update((fingerprint, hit.url))
+        overlap = claim_tokens & _content_tokens(f"{hit.title} {hit.snippet} {hit.excerpt}")
+        if len(overlap) < _CLAIM_OVERLAP_MIN:
+            dropped += 1
+            logger.info(f"[filter:claim] DROP (no claim overlap) [{hit.host}] {hit.title!r}")
+            continue
+        scored.append((len(overlap), hit))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Independent sources back a claim; one site's five pages on the same topic are one opinion. Bing's web feed
+    # in particular fills a result list with a single site's pages, so each host supplies at most two.
+    per_host: dict[str, int] = {}
+    ranked: list[tuple[int, SearchHit]] = []
+    for n, h in scored:
+        site = _site_of(h.host)
+        if per_host.get(site, 0) >= _CLAIM_MAX_PER_HOST:
+            continue
+        per_host[site] = per_host.get(site, 0) + 1
+        ranked.append((n, h))
+    final = [h for _, h in ranked[:limit]]
+    logger.info(
+        f"[filter:claim] kept {len(scored)}, dropped {dropped}, returning top {len(final)}; "
+        + "; ".join(f"{n}:{h.host}" for n, h in ranked[:limit])
+    )
     return final

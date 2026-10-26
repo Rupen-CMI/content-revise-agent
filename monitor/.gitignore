@@ -1,0 +1,12 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.env
+.env.local
+!.env.example
+# The repo root ignores *.json globally; re-include this app's manifest files:
+!package.json
+!package-lock.json
+!tsconfig.json

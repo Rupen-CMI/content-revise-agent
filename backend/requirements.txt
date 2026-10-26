@@ -3,7 +3,6 @@ fastapi>=0.115
 uvicorn[standard]
 python-multipart          # file uploads (/upload)
 openai                   # LLM client (llm.py)
-psycopg2-binary          # report catalog (reports.py)
 httpx                    # live report fetch
 trafilatura              # article-text extraction from report pages
 beautifulsoup4
@@ -12,3 +11,4 @@ python-docx              # .docx read/write
 ddgs                     # web search
 python-dotenv            # root .env (DB_URL, LLM_*)
 sentence-transformers    # semantic report matching (lazy import in reports.py)
+feedparser              # RSS/Atom parsing (feeds.py)

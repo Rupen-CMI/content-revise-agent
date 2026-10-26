@@ -12,7 +12,20 @@ _null_logger = logging.getLogger("revamp.null")
 _null_logger.addHandler(logging.NullHandler())
 _null_logger.propagate = False
 
-_client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY, timeout=LLM_TIMEOUT_S)
+def _extra_headers(base_url: str) -> dict[str, str]:
+    """Behind the usage proxy, tag calls with this install's id so the dashboard can tie LLM spend to
+    the telemetry events. Never sent to DeepSeek itself (dev / --direct builds). Best-effort."""
+    if "deepseek.com" in base_url:
+        return {}
+    try:
+        import telemetry
+        return {"X-Install-Id": telemetry.install_id()}
+    except Exception:
+        return {}
+
+
+_client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY, timeout=LLM_TIMEOUT_S,
+                 default_headers=_extra_headers(LLM_BASE_URL))
 
 
 class LLMError(RuntimeError):
@@ -113,6 +126,22 @@ def _run_cost_for(logger: logging.Logger) -> RunCost:
     return tracker
 
 
+def run_cost_totals(logger: logging.Logger) -> dict:
+    """Snapshot (peek, NOT pop) of a run's accumulated cost/token totals, for telemetry
+    (main.py /finalize). Must be called BEFORE run_cost_summary(), which pops the tracker.
+    Degrades to zeros/None — never raises — when nothing was recorded for this run."""
+    run_id = _run_id_of(logger)
+    tracker = _run_costs.get(run_id) if run_id is not None else None
+    calls = tracker.calls if tracker else []
+    return {
+        "calls": len(calls),
+        "cost_usd": tracker.total() if tracker else None,
+        "prompt_tokens": sum(c["prompt_tokens"] for c in calls),
+        "completion_tokens": sum(c["completion_tokens"] for c in calls),
+        "cached_tokens": sum(c["cached_tokens"] for c in calls),
+    }
+
+
 def run_cost_summary(logger: logging.Logger) -> list[str]:
     """Called once at the end of a run (main.py, right before "RUN COMPLETE") to log the total."""
     run_id = _run_id_of(logger)
@@ -127,7 +156,7 @@ def _parse_json(text: str) -> dict:
 
 def chat_json(
     system: str, user: str, *, temperature: float = 0.3, retries: int = 2,
-    call_name: str = "call", logger: logging.Logger = _null_logger,
+    call_name: str = "call", logger: logging.Logger = _null_logger, max_tokens: int | None = None,
 ) -> dict:
     logger.info(f"--- LLM call: {call_name} (model={LLM_MODEL}, temperature={temperature}) ---")
     logger.info(f"[{call_name}] SYSTEM PROMPT:\n{system}")
@@ -143,6 +172,7 @@ def chat_json(
                 messages=messages,
                 temperature=temperature,
                 response_format={"type": "json_object"},
+                **({"max_tokens": max_tokens} if max_tokens else {}),
             )
         except APITimeoutError as e:
             logger.error(f"[{call_name}] request to {LLM_BASE_URL} timed out after {LLM_TIMEOUT_S}s: {e}", exc_info=True)

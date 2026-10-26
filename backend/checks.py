@@ -5,6 +5,28 @@ from datetime import date
 import freshness
 from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
 
+# A sentence that gives a view in the voice of a CMI analyst ("A CMI analyst expects...", "An analyst at CMI believes...",
+# "CMI's research team suggests..."). The post carries one or two of them, no more.
+_CMI_NAME = r"(?:CMI|Coherent Market Insights)"
+_CMI_OPINION_RE = re.compile(
+    r"\b(?:an?|one)\s+(?:senior |lead |market |industry )?(?:analyst|expert|researcher|strategist)s?\s+(?:at|from|with)\s+" + _CMI_NAME + r"\b"
+    r"|\banalysts?\s+(?:at|from|with)\s+" + _CMI_NAME + r"\b"
+    r"|\b" + _CMI_NAME + r"(?:'s|\u2019s)?\s+(?:senior |lead |market )?(?:analysts?|experts?|researchers?|research team|analyst team)\b",
+    re.IGNORECASE,
+)
+CMI_OPINIONS_MIN, CMI_OPINIONS_MAX = 1, 2
+
+
+def count_cmi_opinions(paragraphs: list[str]) -> int:
+    """Sentences that attribute a view to a CMI analyst/expert/research team."""
+    n = 0
+    for p in paragraphs:
+        for sentence in re.split(r"(?<=[.!?])\s+", p):
+            if _CMI_OPINION_RE.search(sentence):
+                n += 1
+    return n
+
+
 _FIGURE = re.compile(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(%|percent|bn\b|billion|mn\b|million|tn\b|trillion)", re.IGNORECASE)
 _NUMBER = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
 
@@ -33,12 +55,29 @@ def _stem(word: str) -> str:
     stem regardless of whether the base itself ends in "e" ("size") or not ("box") — stemming
     "sizes" to "siz" while "size" stays "size" would otherwise leave the two never matching as the
     same keyword concept, which is what originally happened here."""
-    for suf in ("ing", "ed", "es", "s"):
-        if word.endswith(suf) and len(word) - len(suf) >= 3:
-            word = word[: -len(suf)]
+    for suf, repl in (("ies", "y"), ("ing", ""), ("ed", ""), ("es", ""), ("s", "")):
+        if word.endswith(suf) and len(word) - len(suf) + len(repl) >= 3:
+            word = word[: -len(suf)] + repl
             break
     if word.endswith("e") and len(word) >= 4:
         word = word[:-1]
+    return word
+
+
+def word_stem(word: str) -> str:
+    """Derivational fold alongside _stem's inflection fold: strips (lowercased, longest suffix
+    first while the remaining stem keeps at least four letters — a strip that would cut below
+    that is skipped and the next shorter suffix applies) the suffixes that turn a base word into
+    its nominal/participial forms, so a keyword's -ation noun and the sentence's verb or plural
+    form land on the same stem ("segmentation", "segments", "segmented" and "segment" all fold
+    to "segment"). A word no suffix applies to keeps its shape ("regional"), so unrelated words
+    that merely share a prefix never collapse into one — no special cases for any word family.
+    Read as an ADDITIONAL way for keyword_words_in_sentence to match; the existing _stem
+    behaviour is untouched."""
+    word = word.lower().strip()
+    for suf in ("ations", "ation", "ments", "ment", "ings", "ing", "ions", "ion", "ied", "ies", "ed", "es", "s", "ly"):
+        if word.endswith(suf) and len(word) - len(suf) >= 4:
+            return word[:-len(suf)]
     return word
 
 
@@ -81,7 +120,16 @@ def keyword_used(text: str, phrase: str, window: int | None = None) -> bool:
     return count_keyword_uses(text, phrase, window) > 0
 
 
-def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix: str) -> bool:
+def _market_name_in_text(text: str, market_name: str) -> bool:
+    """The market's own content words all appear somewhere in `text` — the same market-side gate
+    secondary_keyword_in_paragraph uses, kept here for a plain "the market name is missing" verdict."""
+    stems = {_stem(w) for w in re.findall(r"[a-z0-9']+", text.lower())}
+    words = _keyword_content_words(market_name)
+    return bool(words) and all(_stem(w) in stems for w in words)
+
+
+def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix: str,
+                                   use_stems: bool = True) -> bool:
     """A secondary keyword is built as "<market core> market <suffix>" (e.g. "Wealth Management
     Platform Market size"). count_keyword_uses' fixed word-window (~12-14 words for a keyword this
     long) is too narrow for how real analysis writing actually reads: a paragraph often names the
@@ -99,8 +147,16 @@ def secondary_keyword_in_paragraph(paragraph_text: str, market_name: str, suffix
         return False
     text_stems = {_stem(w) for w in re.findall(r"[a-z0-9']+", low)}
     market_ok = all(_stem(w) in text_stems for w in market_words)
-    suffix_ok = all(_stem(w) in text_stems for w in suffix_words)
-    return market_ok and suffix_ok
+    if not market_ok:
+        return False
+    # The suffix's non-market words: the paragraph-anywhere presence test stays (its strictness is the
+    # anchor rule's own standard and must not change), and keyword_words_in_sentence's loose verdict is
+    # accepted on top of it — a keyword whose content words all sit in one sentence, in any order and any
+    # natural inflection with ordinary words between them, is a use however the sentence was reworded.
+    # use_stems also gates the derivational word_stem fold below (off for the stuffing count, on by default).
+    if keyword_words_in_sentence(paragraph_text, suffix, use_stems=use_stems) is not None:
+        return True
+    return all(_stem(w) in text_stems for w in suffix_words)
 
 
 def secondary_keyword_spans_in_paragraph(paragraph_text: str, market_name: str, suffix: str) -> list[tuple[int, int]]:
@@ -124,6 +180,19 @@ def secondary_keyword_spans_in_paragraph(paragraph_text: str, market_name: str, 
         return []
     window = _KEYWORD_MATCH_WINDOW + 2 * max(0, len(target) - 2)
     return find_keyword_spans(paragraph_text, suffix, window=window)
+
+
+def secondary_keyword_loose_spans(paragraph_text: str, market_name: str, suffix: str) -> list[tuple[int, int]]:
+    """UI-highlight fallback when the strict span match above finds nothing: same gate as
+    secondary_keyword_in_paragraph (the market's own words must be present somewhere in the paragraph —
+    the anchor rule is unchanged), then instead of find_keyword_spans' one-stretch window the loose
+    matcher keyword_words_in_sentence supplies EACH content word's own span in the one sentence where the
+    suffix's words all appear, in any order and any inflection, so the highlight shows the same loose use
+    the coverage check credits. Returns [] when the strict match still holds elsewhere (the caller runs it
+    only after the strict finder came up empty) or when the paragraph doesn't clear the gate."""
+    if not secondary_keyword_in_paragraph(paragraph_text, market_name, suffix):
+        return []
+    return keyword_words_in_sentence(paragraph_text, suffix) or []
 
 
 def phrase_partially_named(text: str, phrase: str, min_fraction: float = 0.5) -> bool:
@@ -176,6 +245,164 @@ def find_keyword_spans(text: str, phrase: str, window: int | None = None) -> lis
     return spans
 
 
+_LONGTAIL_GLUE_WORDS = frozenset({
+    "a", "an", "the", "in", "for", "of", "to", "with", "on", "at", "by", "from", "and", "vs", "versus", "or",
+    "that", "is", "are", "its", "their", "s",
+})
+
+
+def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Each use of a long-tail phrase in `text`, as (start_char, end_char). A long-tail phrase is a concept like a
+    secondary keyword: the writer may REORDER its words to fit a sentence (and inflect them), but every content
+    word of it must be there, close together — so the same concept matcher is used, not a literal substring search
+    (the one place highlighting, the used/not-used verdict and the SOP check all agree)."""
+    target = {_stem(w) for w in _keyword_content_words(phrase)}
+    out: list[tuple[int, int]] = []
+    # Tighter than a secondary keyword's window: a long-tail phrase is a specific multi-word search phrase, and its
+    # words scattered across a clause ("the <market name>, the software layer that banks ...") are not a use of it.
+    window = len(target) + 3
+    for start, end in find_keyword_spans(text, phrase, window=window):
+        # find_keyword_spans starts a match at the FIRST target word it meets, which can be an earlier,
+        # unrelated use of one of the phrase's words; tighten to the shortest stretch that holds all of them
+        # (each word's last occurrence inside the match), so the highlight covers just the phrase's own words.
+        tokens = [m for m in re.finditer(r"[a-z0-9']+", text[start:end].lower())]
+        last = {}
+        for m in tokens:
+            if _stem(m.group(0)) in target:
+                last[_stem(m.group(0))] = m
+        if len(last) == len(target):
+            start, end = start + min(m.start() for m in last.values()), start + max(m.end() for m in last.values())
+        # a use lives in ONE sentence: words scattered across a sentence end or a line break are not the phrase
+        # (or a comma/colon/dash: a phrase's own words are not split by a clause boundary)
+        if re.search(r"[.!?;:,]\s|\n|\s[-—–]\s", text[start:end]):
+            continue
+        # and between the phrase's own words only light grammatical glue may sit (an article, a preposition, "vs"):
+        # "an AI-driven wealth management platform" is a different thing from "AI in wealth management platforms"
+        between = [m.group(0) for m in re.finditer(r"[a-z0-9']+", text[start:end].lower()) if _stem(m.group(0)) not in target]
+        if any(w not in _LONGTAIL_GLUE_WORDS for w in between):
+            continue
+        out.append((start, end))
+    return out
+
+
+# The existing sentence splitter (every other place in this file splits inline); lifted here so the
+# loose matcher below and its callers agree on where a sentence ends.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def keyword_words_in_sentence(text: str, phrase: str, use_stems: bool = True) -> list[tuple[int, int]] | None:
+    """The loose per-word match the REORDER rule asks the checks to accept: `phrase` is a TOPIC to cover, and
+    its content words count as covered when EVERY one of them appears somewhere in ONE sentence of `text`, in
+    any order and in any natural grammatical form (the same _stem folding the tight matcher applies,
+    plus the derivational word_stem fold: a keyword word also matches a sentence word whose word_stem
+    equals its own — segmentation matches segments/segmented — while synonyms still never count), with
+    ordinary words of the sentence sitting between them — never across a sentence boundary (the text is split
+    with the paragraph's own sentence splitter first). The window between the first and last of the phrase's
+    words is max(len(content words) + 8, 12) tokens; synonyms and dropped content words still do not count.
+    use_stems=False turns the derivational word_stem fold off (the inflectional _stem fold stays on), so
+    only the phrase's own word shapes count — the keyword-stuffing count needs the exact words, not every
+    form the topic folds to.
+    Returns the character span of ONE occurrence of each content word (its last occurrence inside the matched
+    window), or None when the sentence covers none of the phrase in that loose sense. The tight match still
+    wins: where longtail_spans already finds the phrase's words as one light-glued stretch, that occurrence's
+    own per-word spans come back."""
+    words = _keyword_content_words(phrase)
+    target = {_stem(w) for w in words}
+    if not target:
+        return None
+    target_stems = {word_stem(w) for w in words} if use_stems else set()
+    offsets = [0] + [m.end() for m in _SENT_SPLIT_RE.finditer(text)]
+    for si, sentence in enumerate(_SENT_SPLIT_RE.split(text)):
+        found = _keyword_words_in_one_sentence(sentence, phrase, target, target_stems)
+        if found is not None:
+            base = offsets[si] if si < len(offsets) else 0
+            return [(start + base, end + base) for start, end in found]
+    return None
+
+
+def _keyword_words_in_one_sentence(sentence: str, phrase: str, target: set[str], target_stems: set[str]) -> list[tuple[int, int]] | None:
+    """One sentence's verdict for keyword_words_in_sentence: the tight longtail_spans match first (each of its
+    content words' own span inside the tight stretch), else the loose token window, where each token matches
+    on _stem or — additionally — on the derivational word_stem fold (an empty target_stems turns the fold off)."""
+    for start, end in longtail_spans(sentence, phrase):
+        last: dict[str, tuple[int, int]] = {}
+        for m in re.finditer(r"[a-z0-9']+", sentence[start:end].lower()):
+            st = _stem(m.group(0))
+            if st in target:
+                last[st] = (start + m.start(), start + m.end())
+        if len(last) == len(target):
+            return list(last.values())
+    tokens = list(re.finditer(r"[a-z0-9']+", sentence.lower()))
+    stems = [_stem(m.group(0)) for m in tokens]
+    dstems = [word_stem(m.group(0)) for m in tokens]
+    n = len(stems)
+    window = max(len(target) + 8, 12)
+    i = 0
+    while i < n:
+        seen: dict[str, int] = {}
+        for j in range(i, min(i + window, n)):
+            if stems[j] in target:
+                seen[stems[j]] = j
+            elif dstems[j] in target_stems:
+                seen[dstems[j]] = j
+            if len(seen) == len(target):
+                return [(tokens[pos].start(), tokens[pos].end()) for pos in sorted(seen.values())]
+        i += 1
+    return None
+
+
+LONGTAIL_MIN_USED, LONGTAIL_MAX_USED = 2, 3  # how many long-tail phrases a finished post should use
+
+
+def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: str = "") -> list[str]:
+    """Soft notes for a long-tail phrase pasted in as a pile of nouns: for each span of a
+    phrase that longtail_spans finds inside one body sentence, flag the sentence when the span STARTS it and the
+    span itself holds five or more content words with fewer than two joining words inside — the listed order pasted
+    in as the sentence's subject. Also flag a sentence where five or more CONSECUTIVE non-function words all
+    belong to one phrase's content words, wherever in the sentence the run sits — the phrase pushed into the
+    sentence as one unbroken noun pile without the REORDER rule applying. Each sentence is flagged at most once.
+    Log-only (soft): without grammatical data the flag is a signal to read, never a
+    strip, so a note carries the offending sentence (truncated) and nothing is removed from the draft."""
+    out: list[str] = []
+    for kw in phrases:
+        target = {_stem(w) for w in _keyword_content_words(kw)}
+        for s in sections:
+            label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
+            for p in s.get("paragraphs") or []:
+                for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+                    sentence = sentence.strip()
+                    if not sentence:
+                        continue
+                    lead = re.match(r"[a-z0-9']+", sentence.lower())
+                    flagged = False
+                    for start, end in longtail_spans(sentence, kw):
+                        if lead is None or start != lead.start():
+                            continue
+                        span_words = [m.group(0) for m in re.finditer(r"[a-z0-9']+", sentence[start:end].lower())]
+                        content = [w for w in span_words if w not in _LONGTAIL_GLUE_WORDS]
+                        glue = [w for w in span_words if w in _LONGTAIL_GLUE_WORDS]
+                        if len(content) >= 5 and len(glue) < 2:
+                            out.append(f"{label}: the long-tail phrase is pasted as a pile of nouns at the head of "
+                                       f'"{sentence[:90]}"')
+                            flagged = True
+                    if not flagged:
+                        # Extended pile condition: a run of >= 5 consecutive non-function tokens whose stems all
+                        # belong to this phrase, anywhere in the sentence — same pasted-noun-pile shape, just not
+                        # opening the sentence.
+                        run = best = 0
+                        for m in re.finditer(r"[a-z0-9']+", sentence.lower()):
+                            tok = m.group(0)
+                            if tok in _LONGTAIL_GLUE_WORDS or _stem(tok) not in target:
+                                run = 0
+                            else:
+                                run += 1
+                                best = max(best, run)
+                        if best >= 5:
+                            out.append(f"{label}: a keyword's own words run together as a pile of nouns inside "
+                                       f'"{sentence[:90]}"')
+    return out
+
+
 # A paragraph can hold a short lead-in sentence followed by parallel items (3 trends, a
 # segmentation breakdown) as "\n- " lines within the SAME paragraph string, instead of as separate
 # paragraph objects — this is a presentation convention (docx_io/app.js render it as a real
@@ -186,15 +413,90 @@ def find_keyword_spans(text: str, phrase: str, window: int | None = None) -> lis
 _BULLET_LINE_RE = re.compile(r"^-\s+")
 
 
+def split_bullet_lines(para_text: str) -> tuple[str, list[str]]:
+    """(lead-in text, [bullet item, ...]) if para_text contains "\n- " bullet lines, else
+    (para_text, []). The one place that owns this convention — docx_io and app.js both render it,
+    and long_paragraph_problems below measures a bulleted paragraph's pieces, not its whole length."""
+    lines = para_text.split("\n")
+    lead = []
+    items = []
+    for line in lines:
+        if _BULLET_LINE_RE.match(line):
+            items.append(_BULLET_LINE_RE.sub("", line, count=1))
+        elif items:
+            # a non-bullet line after bullets started: treat the whole thing as plain text
+            # instead, rather than silently dropping a line that didn't fit the pattern.
+            return para_text, []
+        else:
+            lead.append(line)
+    return "\n".join(lead), items
+
+
 def count_items_in(paragraphs: list[str]) -> int:
     """How many 'items' a list of paragraph strings contains, counting a paragraph with bullet
-    lines as one item per bullet rather than one item for the whole paragraph. Mirrors
-    docx_io._split_bullet_lines's convention without importing the presentation module."""
+    lines as one item per bullet rather than one item for the whole paragraph."""
     total = 0
     for p in paragraphs:
-        bullets = sum(1 for line in p.split("\n") if _BULLET_LINE_RE.match(line))
-        total += bullets if bullets else 1
+        _, items = split_bullet_lines(p)
+        total += len(items) if items else 1
     return total
+
+
+_MAX_PARAGRAPH_WORDS = 100  # readability ceiling for a single flowing chunk of prose
+# DISCONNECTED (False): the "no paragraph over 100 words" SOP no longer runs — neither in run_checks nor in the
+# write-time problem log (pipeline._write_problems). long_paragraph_problems below is kept intact; set True to
+# turn the check back on, nothing else needs to change.
+LONG_PARAGRAPH_CHECK_ENABLED = False
+
+
+def long_paragraph_problems(sections: list[dict]) -> list[str]:
+    """Flags any paragraph whose own prose runs past _MAX_PARAGRAPH_WORDS. A bulleted paragraph's
+    lead-in and each bullet are measured separately, never the whole concatenated string, since a
+    real bulleted list is already broken into short, readable pieces by the time it renders."""
+    problems = []
+    for s in sections:
+        for p in s.get("paragraphs") or []:
+            lead, items = split_bullet_lines(str(p))
+            pieces = ([lead] if lead.strip() else []) + items
+            for piece in pieces:
+                n = _words(piece)
+                if n > _MAX_PARAGRAPH_WORDS:
+                    problems.append(
+                        f'"{(s.get("heading") or "intro").strip() or "intro"}" has a paragraph of {n} words (over '
+                        f"{_MAX_PARAGRAPH_WORDS}) — split it into shorter paragraphs, or turn parallel items into a "
+                        "bulleted list"
+                    )
+    return problems
+
+
+def question_heading_problems(sections: list[dict], questions: list[dict]) -> list[str]:
+    """For each chosen subheading question with a section assignment (see pipeline.run_select_questions),
+    flags the assigned section (found by its sop tag) if its heading doesn't read as that question —
+    doesn't end in "?", or shares too little vocabulary with the question to plausibly be it. A loose,
+    soft check: the model may legitimately smooth grammar, so this does not require an exact match."""
+    problems = []
+    by_tag = {tag: s for s in sections for tag in (s.get("sop") or [])}
+    for q in questions or []:
+        sec_tag = q.get("section")
+        s = by_tag.get(sec_tag)
+        if not s:
+            continue
+        heading = (s.get("heading") or "").strip()
+        if not heading.endswith("?"):
+            problems.append(
+                f'the {sec_tag} section was assigned the question "{q["question"]}" but its heading '
+                f'("{heading}") does not end in "?" — the heading must be that question (or a lightly '
+                "grammar-smoothed version of it), not an ordinary descriptive heading"
+            )
+            continue
+        q_tokens = _market_tokens(q["question"])
+        overlap = q_tokens & _market_tokens(heading)
+        if q_tokens and len(overlap) < max(1, len(q_tokens) // 2):
+            problems.append(
+                f'the {sec_tag} section\'s heading ("{heading}") shares too little wording with its assigned '
+                f'question ("{q["question"]}") to plausibly be it'
+            )
+    return problems
 
 # Mirrors search.py's gate-token approach: strip words too generic to identify a specific
 # market, so "market"/"services" matching everywhere doesn't make every section look on-topic.
@@ -236,17 +538,18 @@ def _title_subject_stems(title: str, market_name: str) -> set[str]:
 
 
 # Capitalized words common enough in business writing that matching ONE alone proves nothing (a
-# first word like "Digital" or "Bank" recurs across unrelated facts/paragraphs) — only a run of
-# TWO OR MORE consecutive capitalized words ("Ping An", "Kinsale Capital") is treated as a real
+# first word like "Global" or "Services" recurs across unrelated facts/paragraphs) — only a run of
+# TWO OR MORE consecutive capitalized words ("Acme Group", "Orbit Holdings") is treated as a real
 # proper-noun signature; a lone generic-sounding capitalized word is excluded entirely rather than
-# risk a coincidental match.
+# risk a coincidental match. Generic English function/structure words and universal company-name
+# suffix words only — no industry nouns, since the same check runs for any market.
 _FACT_GENERIC_CAPS = frozenset({
     "the", "a", "an", "to", "of", "in", "on", "for", "by", "its", "it", "as", "with", "and", "or",
-    "digital", "bank", "banks", "company", "companies", "firm", "firms", "platform", "platforms",
-    "management", "technology", "investment", "investments", "financial", "new", "group", "global",
-    "market", "wealth", "service", "services", "solutions", "solution", "capital", "fund", "funds",
-    "advisory", "advisors", "advisor", "partners", "partnership", "head", "united", "states",
-    "research", "ventures", "holdings", "international", "systems", "custom", "model",
+    "company", "companies", "firm", "firms",
+    "management", "new", "group", "global",
+    "market", "service", "services", "solutions", "solution", "capital",
+    "partners", "partnership", "head", "united", "states",
+    "research", "holdings", "international", "custom", "model",
     # Nationality/region adjectives — common enough that one coincidentally recurring elsewhere
     # proves nothing (found live: "Indian" from a Zomint fact false-matched a draft sentence about
     # a different, unrelated company, "South Indian Bank").
@@ -257,11 +560,11 @@ _FACT_GENERIC_CAPS = frozenset({
 
 def _fact_signature_tokens(fact: str) -> set[str]:
     """Distinctive signatures for one selected-evidence fact: each non-generic capitalized word
-    (company/person name fragments — "Kestrel", "Vanguard", "Paul", "Arnold") plus the first
-    two-word slice of each capitalized run ("ping an", "bny pershing") so a paraphrase that keeps
-    just the entity's own name, without the generic words following it ("Digital Bank", "Group"),
-    still matches — any number/percentage counts too. A single GENERIC capitalized word ("Digital",
-    "Bank", "Group") is excluded even alone, since business prose is full of them and matching one
+    (company/person name fragments — "Kestrel", "Paul", "Arnold") plus the first
+    two-word slice of each capitalized run ("acme group", "orbit holdings") so a paraphrase that keeps
+    just the entity's own name, without the generic words following it ("Global Partners", "Group"),
+    still matches — any number/percentage counts too. A single GENERIC capitalized word ("Global",
+    "Group") is excluded even alone, since business prose is full of them and matching one
     in isolation proved nothing about whether THIS specific fact was used (an earlier version of
     this check false-positived on exactly that)."""
     runs = re.findall(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b", fact)
@@ -278,7 +581,7 @@ def _fact_signature_tokens(fact: str) -> set[str]:
     if sigs:
         return sigs
     # Fallback for a fact with no proper noun and no number at all (e.g. a plain trend statement
-    # like "advisors and record keepers are pushing forward convergence of wealth and retirement")
+    # like "suppliers and distributors keep pushing their work out to outside partners")
     # — found live: such a fact can be genuinely, clearly used (even near-verbatim) in the draft,
     # but with an empty signature set the check always reported it as unused regardless of reality,
     # since "bool(sig) and ..." short-circuits to False whenever sig is empty. Fall back to
@@ -373,9 +676,10 @@ def _verbatim_overlap(
     covered_words = 0
     examples: list[str] = []
     for p in paragraphs:
-        if p.strip() == SPONSOR_TOKEN:
+        own = p.replace(SPONSOR_TOKEN, " ")
+        if not own.strip():
             continue
-        words = re.findall(r"\w+", _strip_name(p).lower())
+        words = re.findall(r"\w+", _strip_name(own).lower())
         total_words += len(words)
         covered = [False] * len(words)
         matched_labels: set[str] = set()
@@ -388,7 +692,7 @@ def _verbatim_overlap(
                     matched_labels.add(label)
         covered_words += sum(covered)
         if matched_labels and len(examples) < 5:
-            examples.append(f"[{', '.join(sorted(matched_labels))}] " + p[:100] + ("…" if len(p) > 100 else ""))
+            examples.append(f"[{', '.join(sorted(matched_labels))}] " + own[:100] + ("…" if len(own) > 100 else ""))
 
     overlap_pct = (covered_words / total_words * 100) if total_words else 0.0
     return overlap_pct, examples
@@ -397,27 +701,36 @@ def _verbatim_overlap(
 MAX_LINK_WORD_OFFSET = 200
 
 
+def _sponsor_replacement(text: str, sponsor_text: str) -> str:
+    """The token stands for the retained paragraph's real words: substituting it back in lets word
+    counts account for those real words where they actually sit (inline or as their own paragraph).
+    The retained text itself is then blanked for the FIRST-MENTION test, since the guest author's
+    wording cannot be changed and must never count as a plain-text mention the article controls."""
+    return text.replace(SPONSOR_TOKEN, sponsor_text) if sponsor_text else text
+
+
 def cmi_link_placement(sections: list[dict], sponsor_text: str, market_name: str) -> tuple[int | None, bool, tuple[int, int] | None]:
     """Where the CMI report link sits: (word offset at which it starts counting the retained
     paragraph at its real length, whether it is the FIRST mention of the market's full name in the
     article, (section index, paragraph index) of the paragraph holding it). The offset is None when
     there is no link. The retained paragraph's own text is ignored for the first-mention test: it is
-    the guest author's wording and cannot be changed."""
+    the guest author's wording and cannot be changed. The token may be inline in a paragraph or its
+    own paragraph; either way its real words count toward the offset where they actually sit."""
     words_before = 0
     text_before: list[str] = []
     for si, s in enumerate(sections):
         for pi, p in enumerate(s["paragraphs"]):
-            if p.strip() == SPONSOR_TOKEN:
+            if not p.replace(SPONSOR_TOKEN, " ").strip():
                 words_before += len(sponsor_text.split())
                 continue
             m = re.search(CMI_LINK_PATTERN, p)
             if m:
                 prefix = p[:m.start()]
-                before = "\n".join(text_before + [prefix])
+                before = "\n".join(text_before + [prefix.replace(SPONSOR_TOKEN, " ")])
                 first = not market_name or market_name.lower() not in before.lower()
-                return words_before + len(prefix.split()), first, (si, pi)
-            text_before.append(p)
-            words_before += len(p.split())
+                return words_before + len(_sponsor_replacement(prefix, sponsor_text).split()), first, (si, pi)
+            text_before.append(p.replace(SPONSOR_TOKEN, " "))
+            words_before += len(_sponsor_replacement(p, sponsor_text).split())
     return None, True, None
 
 
@@ -426,9 +739,10 @@ def _stale_event_mentions(sections: list[dict], today: date | None = None) -> li
     out: list[str] = []
     for section in sections:
         for paragraph in section.get("paragraphs", []):
-            if paragraph.strip() == SPONSOR_TOKEN:
+            own = paragraph.replace(SPONSOR_TOKEN, " ")
+            if not own.strip():
                 continue
-            for m in freshness.INLINE_EVENT_DATE_RE.finditer(paragraph):
+            for m in freshness.INLINE_EVENT_DATE_RE.finditer(own):
                 d = freshness.event_date(m)
                 if d is not None and freshness.is_stale(d, today):
                     s = f"{m.group(0)} ({section.get('heading') or 'intro'})"
@@ -438,32 +752,54 @@ def _stale_event_mentions(sections: list[dict], today: date | None = None) -> li
     return out
 
 
+def _layout_stats(sections: list[dict], sponsor_text: str = "") -> tuple[str, int, int, int]:
+    """(section order string, topic switches, publisher words, total words). A section is P
+    (publisher) when it is the unheaded intro or carries no SOP tag; every tagged section is M
+    (market), including the conclusion. A topic switch is an adjacent pair whose class differs, so
+    the intended layout (intro + publisher block, then market block) has exactly one. The sponsor
+    placeholder counts as the retained paragraph's real words, which belong to the publisher."""
+    classes = ["M" if s.get("sop") else "P" for s in sections]
+    switches = sum(1 for a, b in zip(classes, classes[1:]) if a != b)
+    order_parts: list[str] = []
+    publisher = total = 0
+    for s, cls in zip(sections, classes):
+        order_parts.append(f'{(s.get("heading") or "").strip() or "intro"} {cls}')
+        for p in s.get("paragraphs") or []:
+            words = _words(_sponsor_replacement(p, sponsor_text).replace(SPONSOR_TOKEN, " "))
+            total += words
+            if cls == "P":
+                publisher += words
+    return " | ".join(order_parts), switches, publisher, total
+
+
 def run_checks(
     title: str, sections: list[dict], source_text: str, sponsor_brand_terms: list[str],
     sponsor_text: str = "", original_body: str = "", report_name: str = "",
     selection: dict | None = None, hits: list | None = None, report_text: str = "",
     primary_keyword: str = "", secondary_keywords: list[str] = (), original_title: str = "",
+    questions: list[dict] = (), longtails: list[str] = (),
 ) -> list[CheckResult]:
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
     results: list[CheckResult] = []
 
-    placed = sum(p.strip() == SPONSOR_TOKEN for p in paragraphs)
+    token_count = full.count(SPONSOR_TOKEN)
+    placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
     non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
     leaked = placed != 1 and non_token_overlap >= 6
     results.append(CheckResult(
         "Retained backlink paragraph placed once, unaltered",
-        placed == 1 and full.count(SPONSOR_TOKEN) == 1,
-        (f"placed {placed} time(s)" + (" — the model appears to have written out the retained "
+        token_count == 1,
+        (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
          "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
     ))
 
     intro = sections[0]["paragraphs"] if sections else []
-    in_intro_slot = len(intro) >= 2 and intro[1].strip() == SPONSOR_TOKEN
+    in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro)
     results.append(CheckResult(
         "Retained paragraph sits in the intro, not mid-article",
         in_intro_slot,
-        "" if in_intro_slot else "expected it as paragraph 2 of the unheaded intro section",
+        "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section, as its own paragraph or inside a sentence",
     ))
 
     cmi_links = re.findall(CMI_LINK_PATTERN, full)
@@ -634,7 +970,46 @@ def run_checks(
         ))
 
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
-    results.append(CheckResult("Length is 1,400-1,700 words (soft)", 1400 <= total <= 1700, f"{total} words"))
+    results.append(CheckResult("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words"))
+
+    order, switches, publisher_words, layout_total = _layout_stats(sections, sponsor_text)
+    publisher_pct = (publisher_words / layout_total * 100) if layout_total else 0.0
+    results.append(CheckResult(
+        "Publisher content is about a fifth of the post (soft)",
+        15 <= publisher_pct <= 25,
+        f"{publisher_pct:.0f}% publisher / {100 - publisher_pct:.0f}% market "
+        f"({publisher_words} of {layout_total} words; soft target 15-25% publisher)",
+    ))
+    results.append(CheckResult(
+        "Topics are grouped: publisher block, then market block",
+        switches <= 2,
+        f"{switches} topic switch(es) — order: {order}",
+    ))
+
+    if LONG_PARAGRAPH_CHECK_ENABLED:
+        long_paras = long_paragraph_problems(sections)
+        results.append(CheckResult(
+            f"No paragraph over {_MAX_PARAGRAPH_WORDS} words (soft)",
+            not long_paras,
+            "; ".join(long_paras) if long_paras else "",
+        ))
+
+    if longtails:
+        body = "\n".join(" ".join(s["paragraphs"]) for s in sections)
+        used_longtails = [kw for kw in longtails if longtail_spans(body, kw)]
+        results.append(CheckResult(
+            f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
+            LONGTAIL_MIN_USED <= len(used_longtails) <= LONGTAIL_MAX_USED,
+            f"{len(used_longtails)} of {len(longtails)} used: " + (", ".join(used_longtails) or "none"),
+        ))
+
+    if questions:
+        question_problems = question_heading_problems(sections, questions)
+        results.append(CheckResult(
+            "Question-headed sections ask and answer their assigned question (soft)",
+            not question_problems,
+            "; ".join(question_problems) if question_problems else "",
+        ))
 
     # Soft check: flags prose dense enough that a reader could lose the thread, without demanding
     # dumbed-down writing — this is still meant to read as a professional analyst brief, not a
@@ -662,12 +1037,14 @@ def run_checks(
         # many original-topic/market-analysis sections this particular run produced. The ceiling
         # stays a loose sanity check, not a target: it only flags outright stuffing (several uses
         # crammed into one paragraph), which the per-paragraph "do NOT stack" rule already forbids.
+        needed = 1 + sum(1 for sec in sections if sec.get('sop'))
         primary_count = full.lower().count(primary_keyword.lower())
         primary_pct = primary_count / total * 100
         results.append(CheckResult(
             "Primary keyword present, not stuffed (soft)",
-            len(sections) <= primary_count and primary_pct <= 3.0,
-            f"{primary_keyword!r} used {primary_count}x ({primary_pct:.1f}% of {total} words) across {len(sections)} section(s)",
+            needed <= primary_count and primary_pct <= 3.0,
+            f"{primary_keyword!r} used {primary_count}x ({primary_pct:.1f}% of {total} words); at least {needed} expected "
+            "(the intro's link plus every market section)",
         ))
 
     if secondary_keywords:
@@ -687,15 +1064,7 @@ def run_checks(
             f"not found: {', '.join(unused)}" if unused else f"used {used} of {len(secondary_keywords)}",
         ))
 
-    known = _numbers(source_text)
-    unverified = sorted({m.group(0) for m in _FIGURE.finditer(full) if float(m.group(1).replace(",", "")) not in known})
-    results.append(CheckResult(
-        "All figures traceable to the report or evidence",
-        not unverified,
-        "unverified: " + ", ".join(unverified) if unverified else "",
-    ))
-
-    non_sponsor = "\n".join(p for p in paragraphs if p.strip() != SPONSOR_TOKEN).lower()
+    non_sponsor = "\n".join(p for p in paragraphs if p.replace(SPONSOR_TOKEN, " ").strip()).lower()
     leaked = [t for t in sponsor_brand_terms if t and t.lower() in non_sponsor]
     results.append(CheckResult(
         "Guest brand not mentioned outside the retained paragraph",
@@ -703,9 +1072,15 @@ def run_checks(
         ", ".join(leaked),
     ))
 
+    opinions = count_cmi_opinions(paragraphs)
+    results.append(CheckResult(
+        f"CMI analyst opinion: {CMI_OPINIONS_MIN} to {CMI_OPINIONS_MAX} labelled statements in the article",
+        CMI_OPINIONS_MIN <= opinions <= CMI_OPINIONS_MAX,
+        f"found {opinions}",
+    ))
+
     sources = []
-    if original_body:
-        sources.append(("original article", original_body))
+    # Only the CMI report is a copy risk; the publisher's article is edited, so its wording may be reused.
     if report_text:
         sources.append(("CMI report", report_text))
     if sources:
@@ -718,3 +1093,883 @@ def run_checks(
         ))
 
     return results
+# ===================================================================================================
+# Market-first chain (v2) checks — plan sections 3.9, 3.6a and 3.6b. The old run_checks stays intact
+# above (the old chain keeps running behind its flag); the v2 chain calls run_checks_v2, which keeps
+# the checks the plan keeps (CMI link, sponsor, SOP sections, U.S. length, opinions, report overlap,
+# recency, guest brand) and replaces the retired ones ("Title names the article's subject", "Title
+# carries CMI vocabulary", the soft publisher-fifth and the grouped-topics pair) with the hard
+# block-share and block-order checks. Helper modules that import pipeline (`planning`, `facts`, `faqs`)
+# are imported inside the functions: pipeline imports this module, so module-level imports would cycle.
+# ===================================================================================================
+
+_V2_INTRO_CAP = 0.20
+_V2_TRANSITION_MIN, _V2_TRANSITION_MAX = 0.05, 0.10
+_V2_MARKET_MIN = 0.70
+_V2_SENTENCE_MAX_WORDS = 30
+_V2_FLESCH_MIN = 50
+
+# A sentence that credits a figure to CMI in so many words.
+_CMI_NAMED_RE = re.compile(_CMI_NAME, re.IGNORECASE)
+
+# Placeholder figures that must never print (§3.9): "USD 2024", "a stated rate", a bare "%" with no
+# number in front of it, and a leftover bracketed sample shape.
+_V2_PLACEHOLDER_RES = (
+    re.compile(r"\bUSD\s*20[12]\d\b", re.IGNORECASE),
+    re.compile(r"\ba\s+stated\s+rate\b", re.IGNORECASE),
+    re.compile(r"(?<![\d.,])%"),
+    re.compile(r"<[A-Z][a-z]+(?: [A-Za-z]+)*>"),
+)
+
+
+def _is_market_section(s: dict) -> bool:
+    import planning
+    return bool(s.get("sop")) and s["sop"][0] in planning.ORDER
+
+
+def _fact_numbers(text: str) -> set[str]:
+    """facts._numbers, normalized numeric tokens ('561.7', '6.4') — imported lazily (see block comment).
+    A full date's day ("September 15, 2026") is dropped first: a day-of-month is calendar context the
+    same way a year is, never a figure whose identity a sentence must carry."""
+    import facts
+    text = re.sub(r"\b\d{1,2}, 20\d{2}\b", " ", text or "")
+    return set(facts._numbers(text))
+
+
+def _fact_numbers_with_words(text: str) -> set[str]:
+    """`_fact_numbers` plus the cardinals a fact spells in words ("Sixty-three percent" carries "63"), for every
+    place a FACT's own text/detail/source builds the reference set. Never applied to a draft sentence: a draft's
+    spelled "three trends" is prose, not a figure it must trace."""
+    import facts
+    text = re.sub(r"\b\d{1,2}, 20\d{2}\b", " ", text or "")
+    return set(facts.fact_numbers(text))
+
+
+def _v2_block_words(sections: list[dict], sponsor_text: str = "") -> dict:
+    """Words per block, measured on the real text with the sponsor paragraph substituted in (§3.6b):
+    {intro, transition, market, per_section, total}."""
+    blocks = {"intro": 0, "transition": 0, "market": 0}
+    per_section: dict[str, int] = {}
+    for s in sections:
+        tag = s["sop"][0] if _is_market_section(s) else ("transition" if s.get("sop") == ["transition"] else "intro")
+        n = sum(_words(_sponsor_replacement(p, sponsor_text)) for p in s["paragraphs"])
+        if tag == "intro":
+            blocks["intro"] += n
+        elif tag == "transition":
+            blocks["transition"] += n
+        else:
+            blocks["market"] += n
+            per_section[tag] = n
+    blocks["per_section"] = per_section
+    blocks["total"] = blocks["intro"] + blocks["transition"] + blocks["market"]
+    return blocks
+
+
+def block_share_problems(sections: list[dict], sponsor_text: str = "") -> list[str]:
+    """Hard caps on each block's share of the body words (§3.6b): intro <= 20%, transition 5-10%,
+    market >= 70%. There is no repair call and no retry (user decision, §3.6b): a miss is reported for
+    the content team to trim by hand."""
+    b = _v2_block_words(sections, sponsor_text)
+    total = b["total"]
+    out: list[str] = []
+    if total > 0:
+        if b["intro"] / total > _V2_INTRO_CAP:
+            out.append(f"the publisher intro is {b['intro']} words = {b['intro'] / total:.0%} of the body (cap 20%)")
+        t_share = b["transition"] / total
+        if not (_V2_TRANSITION_MIN <= t_share <= _V2_TRANSITION_MAX):
+            out.append(f"the transition is {b['transition']} words = {t_share:.0%} of the body (band 5-10%)")
+        if b["market"] / total < _V2_MARKET_MIN:
+            out.append(f"the market block is {b['market']} words = {b['market'] / total:.0%} of the body (minimum 70%)")
+    return out
+
+
+def block_order_problems(sections: list[dict]) -> list[str]:
+    """The body runs intro -> transition -> market with zero switches back to the publisher's subject
+    (§3.6b). The class sequence must be monotone: some P (untagged), then some T, then only M."""
+    seen_trans = seen_market = False
+    for s in sections:
+        cls = "T" if s.get("sop") == ["transition"] else ("P" if not _is_market_section(s) else "M")
+        if cls == "M":
+            seen_market = True
+        elif cls == "T" and seen_market:
+            return ["the article returns to the transition after the market block has started"]
+        elif cls == "P" and (seen_trans or seen_market):
+            return ["the article returns to the publisher's opening after the transition or the market block has started"]
+        if cls == "T":
+            seen_trans = True
+    return []
+
+
+def v2_structure_problems(title: str, sections: list[dict], plan: dict, inp) -> list[str]:
+    """The written draft carries the plan's validated structure: the plan's exact title, every SOP
+    section present in the plan's order with the plan's exact heading, and exactly the plan's 2-3 MSQ
+    headings, each the MSQ's own text (§3.9 hard check 1)."""
+    problems: list[str] = []
+    if title.strip() != str(plan.get("title") or "").strip():
+        problems.append(f"the title is not the plan's validated title ({title!r} vs {plan.get('title')!r})")
+    got_sops = [s["sop"][0] for s in sections if _is_market_section(s)]
+    want_sops = [p["sop"] for p in plan["sections"]]
+    if got_sops != want_sops:
+        problems.append(f"market sections appear as {got_sops}, the plan's order is {want_sops}")
+    question_headings: list[str] = []
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        heading = (s.get("heading") or "").strip()
+        planned = next((p["heading"] for p in plan["sections"] if p["sop"] == s["sop"][0]), None)
+        if planned is not None and heading != planned.strip():
+            problems.append(f'the {s["sop"][0]} heading is {heading!r}, the plan\'s was {planned!r}')
+        if heading.endswith("?"):
+            question_headings.append(heading)
+    msqs = {q["question"].strip() for q in inp.questions if q.get("answerable")}
+    for h in question_headings:
+        if h not in msqs:
+            problems.append(f"the question heading {h!r} is not one of the MSQs")
+    for p in plan["sections"]:
+        if p.get("msq") and p["heading"].strip() not in [h.strip() for h in question_headings]:
+            problems.append(f'the planned question heading {p["heading"]!r} is missing from the draft')
+    if not 2 <= len(question_headings) <= 3:
+        problems.append(f"{len(question_headings)} heading(s) are questions, want 2-3")
+    return problems
+
+
+def v2_keyword_problems(sections: list[dict], plan: dict, market_name: str) -> list[str]:
+    """Assigned keyword use in the draft (§3.7/§3.9): 4-6 secondary keywords assigned, each used in its
+    section (its own words together with the market's), and at most one per paragraph."""
+    assigned = [p["secondary"] for p in plan["sections"] if p.get("secondary")]
+    out: list[str] = []
+    if not 4 <= len(assigned) <= 6:
+        out.append(f"{len(assigned)} secondary keyword(s) assigned, want 4-6")
+    for ps in plan["sections"]:
+        if not ps.get("secondary"):
+            continue
+        sec = next((s for s in sections if _is_market_section(s) and s["sop"][0] == ps["sop"]), None)
+        if sec and not secondary_keyword_in_paragraph(
+                " ".join(" ".join(sec["paragraphs"]).split()), market_name, ps["secondary"]):
+            # A keyword use can be missing two ways: the market name it must lean on is absent from
+            # the section entirely (the primary keyword rule, §3.7), or the suffix's own words never
+            # appear. Report the two plainly so the fix is legible either way.
+            if _market_name_in_text(" ".join(" ".join(sec["paragraphs"]).split()), market_name):
+                out.append(f'the secondary keyword "{ps["secondary"]}" is not used in its {ps["sop"]} section')
+            else:
+                out.append(f'the market name appears nowhere in its {ps["sop"]} section, so the keyword '
+                           f'"{ps["secondary"]}" has no anchored use in it')
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        for n, p in enumerate(s["paragraphs"], 1):
+            low = _sponsor_replacement(p, " ").lower()
+            # The stuffing count matches on the exact word shapes only (no derivational fold): a paragraph
+            # that merely says "the segments show ..." is not carrying the keyword "segmentation" for this
+            # test — the topic's own words piling up is what stuffing means here.
+            found = [k for k in dict.fromkeys(assigned)
+                     if secondary_keyword_in_paragraph(low, market_name, k, use_stems=False)]
+            if len(found) >= _KEYWORD_STUFFING_AT:
+                out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries '
+                           f'{len(found)} secondary keywords ({", ".join(found)}); that is keyword stuffing')
+    return out
+
+
+# Everyday words such as "size" and "forecast" sit beside the market's name in any paragraph that states its figures, so a
+# keyword assigned to another section turns up there by plain writing. That is not stuffing; three or more in one
+# paragraph is (hard). Two is reported as a soft note, so the reader of the checks still sees it.
+_KEYWORD_STUFFING_AT = 3
+
+
+def v2_keyword_overlap_notes(sections: list[dict], plan: dict, market_name: str) -> list[str]:
+    assigned = [p["secondary"] for p in plan["sections"] if p.get("secondary")]
+    out: list[str] = []
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        for n, p in enumerate(s["paragraphs"], 1):
+            low = _sponsor_replacement(p, " ").lower()
+            found = [k for k in dict.fromkeys(assigned) if secondary_keyword_in_paragraph(low, market_name, k)]
+            if len(found) == _KEYWORD_STUFFING_AT - 1:
+                out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries 2 secondary keywords '
+                           f'({", ".join(found)})')
+    return out
+
+
+def v2_placeholder_figure_problems(sections: list[dict], faq: list[dict] = ()) -> list[str]:
+    """Placeholder shapes must never print (§3.9): "USD <year>", "a stated rate", a bare "%", a leftover
+    bracketed sample shape."""
+    out: list[str] = []
+    for s in sections:
+        label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
+        for p in s["paragraphs"]:
+            for rx in _V2_PLACEHOLDER_RES:
+                m = rx.search(p)
+                if m:
+                    out.append(f"a placeholder figure {m.group(0)!r} appears in {label}")
+    for qa in faq:
+        for rx in _V2_PLACEHOLDER_RES:
+            m = rx.search(str(qa.get("answer") or ""))
+            if m:
+                out.append(f"a placeholder figure {m.group(0)!r} appears in the FAQ answer to {str(qa.get('question', ''))[:60]!r}")
+    return out
+
+
+def v2_number_trace_problems(sections: list[dict], faq: list[dict], inp, sponsor_text: str) -> list[str]:
+    """Every number in the draft and the FAQ traces to a fact-sheet entry, a selected evidence item, a
+    guest publisher point, the sponsor text or the market name (§3.9, per §3.2's "nothing third")."""
+    allowed: set[str] = set()
+    if inp is not None:
+        for i in inp.items.values():
+            allowed |= _fact_numbers_with_words(i["text"]) | _fact_numbers_with_words(i.get("detail", ""))
+            allowed |= _fact_numbers_with_words(i.get("source", ""))  # a source domain can carry digits ("zz8020.com")
+        for pt in inp.points:
+            allowed |= _fact_numbers_with_words(pt["text"])
+        allowed |= _fact_numbers_with_words(sponsor_text) | _fact_numbers_with_words(inp.market_name)
+    drafts: list[tuple[str, str]] = [
+        (str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")), p)
+        for s in sections for p in s["paragraphs"]
+    ]
+    drafts += [(f"FAQ: {str(qa.get('question', ''))[:50]}", str(qa.get("answer") or "")) for qa in faq]
+    out: list[str] = []
+    for label, text in drafts:
+        if sponsor_text:
+            text = _sponsor_replacement(text, sponsor_text)
+        for n in sorted(_fact_numbers(text)):
+            if re.fullmatch(r"(?:19|20)\d\d", n):
+                continue        # a plain year is context; the figure it dates is checked in its own sentence
+            if n not in allowed:
+                out.append(f"{label}: the number {n} appears in no fact-sheet entry, evidence item or guest point")
+    return out
+
+
+# Everyday function words no sentence can avoid: excluded from the wording-overlap tie-break below, so
+# a shared one proves nothing about which fact a sentence belongs to.
+_WORDING_STOPWORDS = frozenset({
+    "that", "this", "these", "those", "they", "them", "their", "there", "here", "what", "which", "when",
+    "where", "while", "with", "from", "into", "onto", "upon", "over", "than", "then", "only", "also",
+    "very", "such", "same", "each", "both", "more", "most", "some", "will", "would", "could", "should",
+    "have", "been", "were", "does", "done", "about", "between", "through", "because", "since",
+})
+
+
+def _wording_overlap(sentence: str, fact_text: str, fact_detail: str = "") -> int:
+    """How many DISTINCT content words (lowercase alphabetic words of 4+ letters, minus
+    _WORDING_STOPWORDS) a sentence shares with one fact's own text plus detail — the second tie-break
+    for figure ownership: when two outside facts tie on the figures they share with a sentence, the fact
+    whose own wording the sentence keeps is the one the sentence belongs to. Shared with the writer's
+    source-naming backstop (called as checks._wording_overlap there), so both judge the same tie."""
+    sent_words = {w for w in re.findall(r"[a-z]+", sentence.lower()) if len(w) >= 4} - _WORDING_STOPWORDS
+    fact_words = {w for w in re.findall(r"[a-z]+", f"{fact_text} {fact_detail}".lower())
+                  if len(w) >= 4} - _WORDING_STOPWORDS
+    return len(sent_words & fact_words)
+
+
+def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
+    """A figure that came from an outside source (a non-CMI source: a gap-filled fact-sheet headline or a
+    selected news item) names that source, and is never credited to CMI (§3.2): the unit of naming is one
+    line of a paragraph — the name must appear at that line's first sentence using the source's figure,
+    and a source named earlier in the same line covers the later sentences of that line."""
+    out: list[str] = []
+    if inp is None:
+        return out
+    # (fact id, source name, identifying numbers) for every input fact: any of them may "own" a number
+    # a sentence carries, so the full registry tells a real misattribution apart from a coincidental
+    # token shared by two different facts (Farther's "150 million" against Savvy's "150 advisors").
+    # A fact's matching relies on tokens only; the registry then lets a sentence that NAMES the owning
+    # source keep its numbers even when another fact shares those tokens.
+    registry: list[tuple[str, str, set[str]]] = []
+    for i in inp.items.values():
+        # Attribution uses digits only: a spelled small number ("two") is prose, not an identifying figure,
+        # so a fact whose detail says "two acquisitions" must not be blamed for a drafted "$2 trillion".
+        figs = _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", ""))
+        if figs:
+            registry.append((i["id"], i.get("source") or "CMI report", figs))
+    # The fact's own wording (text + detail) for the tie-break below, keyed by its id.
+    fact_wording = {i["id"]: (i["text"], i.get("detail", "") or "") for i in inp.items.values()}
+    # Headline gap-fills always count; a news item counts through its own numbers, which is how its
+    # fact reaches the draft.
+    relevant_kinds = ("size", "forecast", "cagr", "evidence")
+    outside: list[tuple[str, str, set[str]]] = [
+        (fid, src, figs) for fid, src, figs in registry
+        if src not in ("CMI report", "") and fid in {i["id"] for i in inp.items.values() if i["kind"] in relevant_kinds}]
+    if not outside:
+        return out
+    for s in sections:
+        label = str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro"))
+        for p in s["paragraphs"]:
+            # The unit of naming is one line of a paragraph (a prose paragraph or one bullet): a source
+            # named in an earlier sentence of the same line covers the later sentences of that line,
+            # and the memory resets at every line — a new line that uses the source's figure names it again.
+            for line in _sponsor_replacement(p, " ").split("\n"):
+                named_line: set[str] = set()    # outside sources named in earlier sentences of this line
+                for sentence in re.split(r"(?<=[.!?])\s+", line):
+                    low = sentence.lower()
+                    named_line |= {src for _, src, _ in outside if _names_source(low, src)}
+                    sent_nums = _fact_numbers(sentence)
+                    if not sent_nums:
+                        continue
+                    # A source named in the sentence keeps the numbers its own facts carry: another fact
+                    # sharing those tokens (a "150 million" raised against "150 advisors") is coincidence,
+                    # not a figure the writer misattributed. Only true figures cover, never a shared year,
+                    # and source-name detection mirrors the complaint branch (the same _names_source).
+                    sent_strong = {n for n in sent_nums if not re.fullmatch(r"(?:19|20)\d\d", n)}
+
+                    def _covered(except_fid: str) -> bool:
+                        return any(((src2 not in ("CMI report", "") and _names_source(low, src2))
+                                    or (src2 == "CMI report" and _CMI_NAMED_RE.search(sentence)))
+                                   and (sent_strong & figs2)
+                                   for fid2, src2, figs2 in registry if fid2 != except_fid)
+
+                    # A token shared by two outside facts gives the weaker one a half-claim on the
+                    # sentence, and reporting it would blame the wrong fact: only the fact(s) with the
+                    # MOST figures in common with the sentence are owners, the rest are coincidence
+                    # (the overlap never counts a shared year).
+                    cands = [(fid, source, figs, {n for n in sent_nums & figs
+                                                  if not re.fullmatch(r"(?:19|20)\d\d", n)})
+                             for fid, source, figs in outside]
+                    cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands if strong]
+                    top = max((len(strong) for _, _, _, strong in cands), default=0)
+                    cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands
+                             if len(strong) == top]
+                    # A second tie-break, applied only when candidates from more than one distinct
+                    # source still stand after the figure-overlap rule: the fact whose own wording
+                    # (text + detail) the sentence keeps — the most distinct content words shared —
+                    # owns the sentence. A wording overlap that is itself tied behaves exactly as the
+                    # old rule did: every tied candidate is reported.
+                    if len({source for _, source, _, _ in cands}) > 1:
+                        best_wording = max(_wording_overlap(sentence, *fact_wording[fid])
+                                           for fid, _, _, _ in cands)
+                        cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands
+                                 if _wording_overlap(sentence, *fact_wording[fid]) == best_wording]
+                    for fid, source, figs, strong in cands:
+                        hit = sent_nums & figs   # kept for the report text's fallback (strong is never empty here)
+                        if _covered(fid):
+                            continue
+                        # The 'is it named' test is the same _names_source the covering branches use, so a
+                        # source without 4+ letter words (a domain) is no longer skipped wholesale.
+                        if not _names_source(low, source) and source not in named_line:
+                            out.append(f"{label}: the figure {', '.join(sorted(strong or hit))} from {source} ({fid}) sits "
+                                       "in a sentence that does not name that source")
+                        if source.lower() not in ("cmi", "coherent market insights") and _CMI_NAMED_RE.search(sentence):
+                            out.append(f"{label}: figures from {source} ({fid}) sit in a sentence that credits CMI")
+    return out
+
+
+def _names_source(low_sentence: str, source: str) -> bool:
+    """Does a sentence (lowercased) carry a source's name? Same detection the complaint branch uses:
+    the source's 4+ letter words, or a short brand contained whole ("MSN"). A name the word finder fits
+    nothing to (a domain such as "zz8020.com" holds no 4+ letter run) counts as named when its full
+    lowercase name — the trailing ", YYYY-MM"/", undated" date suffix stripped — appears in the sentence."""
+    toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]
+    if not toks:
+        name = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", source.lower()).strip()
+        return name in low_sentence
+    return any(t.lower() in low_sentence for t in toks)
+
+
+def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict]) -> list[str]:
+    """The FAQ is MSQs only (§3.8): every question is the verbatim text of a planned, answerable MSQ from
+    the plan's faq list, and every figure in an answer traces to that question's own facts or the draft."""
+    out: list[str] = []
+    planned_questions: set[str] = set()
+    if inp is not None:
+        q_by_id = {q["id"]: q for q in inp.questions}
+        planned_questions = {q_by_id[qid]["question"].strip() for qid in (plan.get("faq") or []) if qid in q_by_id}
+    for qa in faq:
+        if str(qa.get("question") or "").strip() not in planned_questions:
+            out.append(f"the FAQ question {str(qa.get('question'))[:70]!r} is not a planned MSQ")
+    if inp is None:
+        return out
+    import faqs
+    draft_nums: set[str] = set()
+    for s in sections:
+        for p in s["paragraphs"]:
+            draft_nums |= _fact_numbers(_sponsor_replacement(p, " "))
+    for qa in faq:
+        q = next((q for q in inp.questions if q["id"] == qa.get("id")), None)
+        if q is None:
+            continue
+        src_nums: set[str] = set()
+        for i in faqs.sources_for_question(q, inp):
+            src_nums |= _fact_numbers_with_words(i["text"]) | _fact_numbers_with_words(i.get("detail", ""))
+            src_nums |= _fact_numbers_with_words(i.get("source", ""))  # a source domain can carry digits ("zz8020.com")
+        for n in sorted(_fact_numbers(str(qa.get("answer") or ""))):
+            if re.fullmatch(r"(?:19|20)\d\d", n):
+                continue
+            if n not in src_nums and n not in draft_nums:
+                out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} states {n}, which neither its facts nor "
+                           "the draft carry")
+    return out
+# Product rule: every sentence must be understandable by itself — no sentence may open with a
+# pointing word that leans on an earlier sentence for its subject.
+_VAGUE_OPENER_RE = re.compile(r"^(?:this|that|these|those|such)\b|^(?:it|they)\s+(?:means|shows|points|suggests|implies|explains|matters|leads|signals|reflects|reveals|indicates|helps|makes|keeps|gives|adds)\b", re.IGNORECASE)
+_VAGUE_LEADING_CHARS = "\"' \u201c\u2018()"
+_VAGUE_BULLET_MARKERS = ("- ", "• ")
+
+
+def v2_vague_reference_problems(sections: list[dict], faq: list[dict] = ()) -> list[str]:
+    """Sentences that open with a pointing word, in EVERY section (opening, transition, market) and
+    every FAQ answer: read alone, the sentence never says what "this/that/these/those/it" refers to.
+    The retained sponsor paragraph is exempt — the token is blanked, since the sponsor's wording is
+    not ours to judge — as are FAQ questions (only answers are judged)."""
+    out: list[str] = []
+
+    def flagged(label: str, text: str) -> list[str]:
+        hits: list[str] = []
+        for line in text.split("\n"):
+            line = line.strip()
+            for marker in _VAGUE_BULLET_MARKERS:
+                if line.startswith(marker):
+                    line = line[len(marker):].strip()
+                    break
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                sentence = sentence.lstrip(_VAGUE_LEADING_CHARS).strip()
+                if len(sentence.split()) < 3:
+                    continue
+                if _VAGUE_OPENER_RE.search(sentence):
+                    hits.append(f'{label}: "{sentence[:70]}" opens with a pointing word')
+        return hits
+
+    for s in sections:
+        label = (s.get("heading") or "").strip() or (
+            "the opening" if not s.get("sop")
+            else "the transition" if s.get("sop") == ["transition"] else s["sop"][0])
+        for p in s.get("paragraphs") or []:
+            out.extend(flagged(label, _sponsor_replacement(p, " ")))
+    for qa in faq:
+        label = f"FAQ answer to {str(qa.get('question') or '')[:40]!r}"
+        out.extend(flagged(label, str(qa.get("answer") or "")))
+    return out
+
+
+def v2_heading_shape_problems(sections: list[dict], plan: dict, inp, market_name: str) -> list[str]:
+    """The shape of every market section's heading (§3.9): a planned MSQ's heading IS its question's
+    text, and any other heading is a short SOP-topic phrase naming the market — never a question."""
+    import planning
+    out: list[str] = []
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        sop = s["sop"][0]
+        p = next((p for p in plan["sections"] if p["sop"] == sop), None)
+        if p is None:
+            continue
+        heading = (s.get("heading") or "").strip()
+        if p.get("msq"):
+            question = next(q["question"] for q in inp.questions if q["id"] == p["msq"])
+            if heading != question:
+                out.append(f"the {sop} heading {heading!r} is not its planned question")
+        else:
+            reason = planning.heading_problem(heading, sop, market_name, [q["question"] for q in inp.questions])
+            if reason is not None:
+                out.append(f"the {sop} heading {heading!r} is not a clean topic heading ({reason})")
+    return out
+
+
+# A deliberate copy of the publisher module's _JARGON_RE measurement pattern — checks cannot import publisher
+# (a circular import), so the two must be kept in step by hand.
+_OPENING_JARGON_RE = re.compile(r"\d+(?:[.,]\d+)?\s?(?:kb|mb|gb|tb|ms|hz|khz|mhz|ghz|mg|mcg|kg|km|kph|mph|mm|cm|ml|kw|kwh|mw|gw|psi|rpm|bpm|hp)\b|\b(?:kilobytes?|megabytes?|gigabytes?|terabytes?|milliseconds?|kilograms?|kilometres?|kilometers?|kilowatts?|megawatts?|gigawatts?|horsepower|milligrams?)\b", re.IGNORECASE)
+
+
+def v2_opening_jargon_notes(sections: list[dict]) -> list[str]:
+    """Soft notes: the opening and the transition must be plain-English blocks (the publisher's voice),
+    so any measurement that reaches them is surfaced — the market sections may keep their measurements."""
+    out: list[str] = []
+    for s in sections:
+        sop = s.get("sop") or []
+        if sop and sop != ["transition"]:
+            continue
+        label = "the opening" if not sop else "the transition"
+        for p in s.get("paragraphs") or []:
+            for m in _OPENING_JARGON_RE.finditer(_sponsor_replacement(p, " ")):
+                note = f"{label} holds the measurement {m.group(0).lower()!r}"
+                if note not in out:
+                    out.append(note)
+    return out
+
+
+# Passive voice, measured for the soft active-voice check: a form of be, an optional adverb ending in -ly, then a
+# past participle — a word ending in -ed or -en, or one of the irregular participles listed beside them.
+# Participles that read as plain adjectives (a state, not an agentless passive) are kept out of the count, so
+# ordinary descriptive sentences are not flagged.
+_V2_PASSIVE_ADJ_WORDS = frozenset({
+    "based", "limited", "related", "interested", "concerned", "expected", "estimated", "projected", "forecast",
+    "named", "listed", "called", "located", "focused", "positioned", "fragmented", "mixed", "established",
+    "advanced", "connected", "integrated", "designed",
+})
+_V2_PASSIVE_RE = re.compile(
+    r"\b(?:is|are|was|were|be|been|being)\s+(?:\w+ly\s+)?(?P<part>built|made|done|seen|known|given|held|led|run"
+    r"|set|put|paid|sold|bought|found|shown|taken|chosen|driven|spent|kept|won|lost|brought|\w+(?:ed|en))\b",
+    re.IGNORECASE,
+)
+
+
+def v2_active_voice_notes(sections: list[dict]) -> list[str]:
+    """Soft notes for the active-voice rule: a body sentence is passive when a form of be sits beside a past
+    participle with no actor in the verb group, and at most one sentence in six may be such a sentence. The
+    judgement is grammatical only, so a participle that reads as a plain adjective is not counted, and the
+    retained sponsor paragraph's own wording is blanked the way the other sentence checks blank it. The notes
+    carry the offending sentences so the rate can be tuned against real drafts."""
+    sentences = [s2.strip() for s in sections for p in s.get("paragraphs") or []
+                 for s2 in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, " ")) if s2.strip()]
+    passive = [s2 for s2 in sentences
+               if (m := _V2_PASSIVE_RE.search(s2)) is not None
+               and m.group("part").lower() not in _V2_PASSIVE_ADJ_WORDS]
+    if not sentences or len(passive) <= len(sentences) / 6:
+        return []
+    return [s2[:90] for s2 in passive[:4]]
+
+
+# Names of the soft checks DISCONNECTED from run_checks_v2's results, on the owner's instruction
+# ('remove all these SOPs'): the code that produces them is kept untouched above, the results just no
+# longer surface in the draft's checks list. Re-enable by emptying this set. The names are derived
+# from the same constants that build them inside run_checks_v2, so the strings keep matching there.
+V2_DISCONNECTED_CHECKS = frozenset({
+    f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
+    "Every assigned long-tail is used in its own section (soft)",
+    "No long-tail phrase is pasted as a noun pile (soft)",
+    f"No sentence over {_V2_SENTENCE_MAX_WORDS} words (soft)",
+    f"Readability Flesch >= {_V2_FLESCH_MIN} (soft)",
+})
+
+
+# ===================================================================================================
+# run_checks_v2 — the v2 chain's check list (§3.9): the kept checks from the old run_checks, the new
+# hard checks (the plan's validated structure, block shares and order, placeholder figures, number
+# traces, outside-source attribution, FAQ = MSQs, planning's title problems) and the new soft checks
+# (body length, long-tail, sentence length, Flesch, tertiary terms). A failed hard check is a
+# problem report for the content team — there is no repair call and no retry.
+# ===================================================================================================
+
+
+def run_checks_v2(
+    title: str, sections: list[dict], plan: dict, inp, faq: list[dict] | None = None,
+    sponsor_brand_terms: list[str] = (), sponsor_text: str = "",
+    report_text: str = "", report_name: str = "",
+    selection: dict | None = None, hits: list | None = None,
+    include_disconnected: bool = False,
+) -> list[CheckResult]:
+    import planning
+
+    faq = list(faq or [])
+    paragraphs = [p for s in sections for p in s["paragraphs"]]
+    full = "\n".join(paragraphs)
+    market_name = getattr(inp, "market_name", "") or report_name
+    results: list[CheckResult] = []
+
+    # ---- kept: the retained sponsor paragraph, placed once, unaltered, in the intro slot
+    token_count = full.count(SPONSOR_TOKEN)
+    placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
+    non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
+    leaked = placed != 1 and non_token_overlap >= 6
+    results.append(CheckResult(
+        "Retained backlink paragraph placed once, unaltered",
+        token_count == 1,
+        (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
+         "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
+    ))
+    intro_paragraphs = sections[0]["paragraphs"] if sections else []
+    in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro_paragraphs)
+    results.append(CheckResult(
+        "Retained paragraph sits in the intro, not mid-article",
+        in_intro_slot,
+        "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section",
+    ))
+
+    # ---- kept: the CMI report link — exactly once, early, the market's first mention, correct anchor
+    cmi_links = re.findall(CMI_LINK_PATTERN, full)
+    results.append(CheckResult("CMI report linked exactly once", len(cmi_links) == 1, f"found {len(cmi_links)}"))
+    link_offset, link_is_first_mention, _ = cmi_link_placement(sections, sponsor_text, market_name)
+    results.append(CheckResult(
+        f"CMI link sits within the first {MAX_LINK_WORD_OFFSET} words",
+        link_offset is not None and link_offset <= MAX_LINK_WORD_OFFSET,
+        "no CMI link found" if link_offset is None else f"the link starts at word {link_offset}",
+    ))
+    if link_offset is not None:
+        results.append(CheckResult(
+            "The first mention of the market name is the CMI link",
+            link_is_first_mention,
+            "" if link_is_first_mention else f"{market_name!r} appears in plain text before the link",
+        ))
+    if report_name:
+        anchor_matches_report = any(link.strip() == report_name.strip() for link in cmi_links)
+        results.append(CheckResult(
+            "CMI link anchor names the confirmed report",
+            anchor_matches_report,
+            "" if anchor_matches_report else f"expected {report_name!r}, found {cmi_links!r}",
+        ))
+
+    # ---- hard (§3.6a): the title passes planning's own hard title checks
+    title_hard, title_soft = planning.title_problems(
+        title, market_name, [b for b in (plan.get("title_basis") or [])], set(inp.items))
+    results.append(CheckResult(
+        "Title passes the plan's hard title checks",
+        not title_hard,
+        "; ".join(title_hard) if title_hard else "",
+    ))
+    if title_soft:
+        results.append(CheckResult(
+            "Title soft notes (soft)", True, "; ".join(title_soft),
+        ))
+
+    # ---- hard (§3.9): the draft carries the plan's validated structure ...
+    structure = v2_structure_problems(title, sections, plan, inp)
+    results.append(CheckResult(
+        "Draft structure matches the validated plan (title, SOP order, 2-3 MSQ headings)",
+        not structure,
+        "; ".join(structure) if structure else "",
+    ))
+
+    # ---- hard (§3.9): the SHAPE of each heading — question headings are their planned MSQ's text,
+    # every other heading a short SOP-topic phrase naming the market and never a question
+    heading_problems = v2_heading_shape_problems(sections, plan, inp, market_name)
+    results.append(CheckResult(
+        "Headings: question headings are planned MSQs, every other heading names its SOP topic and the market",
+        not heading_problems,
+        "; ".join(heading_problems) if heading_problems else "",
+    ))
+
+    # ---- hard (§3.9): every sentence names what it refers to — none opens with a pointing word
+    vague_problems = v2_vague_reference_problems(sections, faq)
+    results.append(CheckResult(
+        "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)",
+        not vague_problems,
+        "; ".join(vague_problems[:6]) + (f" (+{len(vague_problems) - 6} more)" if len(vague_problems) > 6 else "")
+        if vague_problems else "",
+    ))
+
+    # ---- soft (§3.9): the opening and transition are the publisher's plain-English blocks
+    jargon_notes = v2_opening_jargon_notes(sections)
+    results.append(CheckResult(
+        "The opening and transition hold no measurements or units (soft)",
+        not jargon_notes,
+        "; ".join(jargon_notes) if jargon_notes else "",
+    ))
+
+    # ---- hard (§3.7): secondary keywords — 4-6 assigned, each used in its section, one per paragraph
+    keyword_problems = v2_keyword_problems(sections, plan, market_name)
+    results.append(CheckResult(
+        "Secondary keywords: 4-6 assigned, each used in its own section, no paragraph stuffed with them",
+        not keyword_problems,
+        "; ".join(keyword_problems) if keyword_problems else "",
+    ))
+    overlap_notes = v2_keyword_overlap_notes(sections, plan, market_name)
+    results.append(CheckResult(
+        "No paragraph carries two assigned secondary keywords (soft)",
+        not overlap_notes,
+        "; ".join(overlap_notes) if overlap_notes else "",
+    ))
+
+    # ---- hard (§3.6b): intro -> transition -> market, with no switches back to the publisher's topic
+    order_problems = block_order_problems(sections)
+    results.append(CheckResult(
+        "Block order: publisher intro, transition, then only market sections",
+        not order_problems,
+        "; ".join(order_problems) if order_problems else "",
+    ))
+
+    # ---- hard (§3.6b): intro <= 20%, transition 5-10%, market >= 70% of the body words
+    share_problems = block_share_problems(sections, sponsor_text)
+    results.append(CheckResult(
+        "Block shares: intro <= 20%, transition 5-10%, market >= 70%",
+        not share_problems,
+        "; ".join(share_problems) if share_problems else "",
+    ))
+
+    # ---- hard (§3.9): every number in the draft and the FAQ traces to an allowed source
+    trace_problems = v2_number_trace_problems(sections, faq, inp, sponsor_text)
+    trace_bad = [p for p in trace_problems]
+    results.append(CheckResult(
+        "Every number traces to the fact sheet, evidence, guest points or sponsor",
+        not trace_bad,
+        "; ".join(trace_bad[:5]) + (f" (+{len(trace_bad) - 5} more)" if len(trace_bad) > 5 else "")
+        if trace_bad else "",
+    ))
+
+    # ---- hard (§3.2): an outside source's figure names that source in the same sentence, never CMI
+    attribution_problems = v2_evidence_attribution_problems(sections, inp)
+    results.append(CheckResult(
+        "Outside-source figures name their source once per paragraph, never CMI",
+        not attribution_problems,
+        "; ".join(attribution_problems) if attribution_problems else "",
+    ))
+
+    # ---- hard (§3.9): placeholder figures ("USD <year>", "a stated rate", bare "%") never print
+    placeholder_problems = v2_placeholder_figure_problems(sections, faq)
+    results.append(CheckResult(
+        "No placeholder figures reached the draft",
+        not placeholder_problems,
+        "; ".join(placeholder_problems) if placeholder_problems else "",
+    ))
+
+    # ---- hard (§3.8): every FAQ question is a planned answerable MSQ, its figures traced
+    faq_problems = v2_faq_problems(faq, plan, inp, sections)
+    results.append(CheckResult(
+        "FAQ questions are planned MSQs and their figures trace",
+        not faq_problems,
+        "; ".join(faq_problems) if faq_problems else "",
+    ))
+
+    # ---- kept: the market sections carry the SOPs' own requirements
+    sub_paragraphs = sum(len(s["paragraphs"]) for s in sections if "subsegment" in s["sop"])
+    results.append(CheckResult("Two sub-segment analyses", sub_paragraphs >= 2, f"found {sub_paragraphs} sub-segment paragraph(s)"))
+    trend_paragraphs = sum(count_items_in(s["paragraphs"]) for s in sections if "trends" in s["sop"])
+    results.append(CheckResult("Three trends (at least 3 trend paragraphs)", trend_paragraphs >= 3, f"{trend_paragraphs} paragraph(s)"))
+    us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
+    results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
+
+    # ---- kept: CMI analyst opinion voice, 1-2 labelled statements
+    opinions = count_cmi_opinions(paragraphs)
+    results.append(CheckResult(
+        f"CMI analyst opinion: {CMI_OPINIONS_MIN} to {CMI_OPINIONS_MAX} labelled statements",
+        CMI_OPINIONS_MIN <= opinions <= CMI_OPINIONS_MAX,
+        f"found {opinions}",
+    ))
+
+    # ---- kept: verbatim overlap with the report stays below 5%
+    if report_text:
+        overlap_pct, overlap_examples = _verbatim_overlap(
+            paragraphs, [("CMI report", report_text)], report_name=report_name)
+        results.append(CheckResult(
+            "Verbatim overlap with source material is below 5%",
+            overlap_pct <= 5.0,
+            f"{overlap_pct:.1f}% of draft words fall in a run of >= 10 words copied from a source"
+            + (" — e.g. " + " | ".join(overlap_examples) if overlap_examples else ""),
+        ))
+
+    # ---- kept: recency — stale dated events and undated "trends" sources
+    stale = _stale_event_mentions(sections)
+    results.append(CheckResult(
+        "Dated events cited are from the last 12 months",
+        not stale,
+        "stale: " + "; ".join(stale) if stale else "",
+    ))
+    if selection is not None and hits is not None:
+        bad_trend_sources = []
+        for e in selection.get("evidence") or []:
+            if "trends" not in (e.get("use_for_all") or [e.get("use_for")]):
+                continue
+            m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
+            if not m or not 1 <= int(m.group(1)) <= len(hits):
+                continue
+            hit = hits[int(m.group(1)) - 1]
+            if getattr(hit, "date", None) is None:
+                bad_trend_sources.append(e.get("id"))
+        results.append(CheckResult(
+            "\"Trends\" facts are sourced from dated results, not undated pages",
+            not bad_trend_sources,
+            "" if not bad_trend_sources else f"background (undated) source(s) used as trends: {', '.join(bad_trend_sources)}",
+        ))
+
+    # ---- kept: the guest brand is never mentioned outside the retained paragraph
+    non_sponsor = "\n".join(p for p in paragraphs if p.replace(SPONSOR_TOKEN, " ").strip()).lower()
+    brand_leaks = [t for t in sponsor_brand_terms if t and t.lower() in non_sponsor]
+    results.append(CheckResult(
+        "Guest brand not mentioned outside the retained paragraph",
+        not brand_leaks,
+        ", ".join(brand_leaks),
+    ))
+
+    # ---- soft (§3.9): body length 1,200-1,500 words
+    total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
+    results.append(CheckResult("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words"))
+
+    # ---- soft (§3.9): 2-3 long-tail keywords used — counted against the phrases the PLAN assigned when it assigned at
+    # least one (the writer is only on the hook for its own sections; the pool holds spares the plan never handed out).
+    # With no assignment (or no plan) the whole pool is counted, as before.
+    longtail_phrases = [lt["keyword"] for lt in getattr(inp, "longtails", [])]
+    if longtail_phrases:
+        lt_by_id = {lt["id"]: lt["keyword"] for lt in getattr(inp, "longtails", [])}
+        plan_sections = (plan.get("sections") if isinstance(plan, dict) else None) or []
+        assigned_ids = [s.get("longtail") for s in plan_sections if s.get("longtail")]
+        assigned_phrases = [lt_by_id[lid] for lid in assigned_ids if lid in lt_by_id]
+        pool = assigned_phrases or longtail_phrases
+        body = full.replace(SPONSOR_TOKEN, " ")
+        # A phrase counts as used when either the tight longtail_spans match or the loose per-word matcher
+        # finds it: a keyword is a topic to cover, so its content words spread across one sentence (any
+        # order, any inflection, ordinary words between) is a real use, same as the REORDER rule asks.
+        used_lt = [kw for kw in pool if longtail_spans(body, kw) or keyword_words_in_sentence(body, kw)]
+        if assigned_phrases:
+            detail = (f"{len(used_lt)} of {len(assigned_phrases)} assigned used ({len(longtail_phrases)} in pool): "
+                      + (", ".join(used_lt) or "none"))
+        else:
+            detail = f"{len(used_lt)} of {len(longtail_phrases)} used: " + (", ".join(used_lt) or "none")
+        results.append(CheckResult(
+            f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
+            LONGTAIL_MIN_USED <= len(used_lt) <= LONGTAIL_MAX_USED,
+            detail,
+        ))
+        # and each assigned phrase must appear in the section the plan gave it, not only somewhere in the post
+        assigned_by_sop = {s["sop"]: s["longtail"] for s in plan_sections
+                           if isinstance(s.get("sop"), str) and s.get("longtail")}
+        missing_in_section = []
+        for s in sections:
+            tag = s["sop"][0] if _is_market_section(s) else ""
+            kw = lt_by_id.get(assigned_by_sop.get(tag, ""))
+            if kw is None:
+                continue
+            section_text = "\n".join(s["paragraphs"])
+            if not (longtail_spans(section_text, kw) or keyword_words_in_sentence(section_text, kw)):
+                missing_in_section.append(kw)
+        results.append(CheckResult(
+            "Every assigned long-tail is used in its own section (soft)",
+            not missing_in_section,
+            ", ".join(missing_in_section),
+        ))
+        pile_notes = longtail_pile_notes(sections, pool, sponsor_text)
+        results.append(CheckResult(
+            "No long-tail phrase is pasted as a noun pile (soft)",
+            not pile_notes,
+            "; ".join(pile_notes) if pile_notes else "",
+        ))
+
+    # ---- soft (§3.9): no sentence over the word ceiling
+    long_sentences: list[str] = []
+    for s in sections:
+        label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
+        for p in s["paragraphs"]:
+            for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+                n = _words(sentence)
+                if n > _V2_SENTENCE_MAX_WORDS:
+                    long_sentences.append(f"{label}: a sentence runs {n} words")
+    results.append(CheckResult(
+        f"No sentence over {_V2_SENTENCE_MAX_WORDS} words (soft)",
+        not long_sentences,
+        "; ".join(long_sentences[:5]) + (f" (+{len(long_sentences) - 5} more)" if len(long_sentences) > 5 else "")
+        if long_sentences else "",
+    ))
+
+    # ---- soft: active voice — at most one sentence in six is passive (the Actors rule, measured)
+    passive_notes = v2_active_voice_notes(sections)
+    results.append(CheckResult(
+        "Active voice: at most 1 sentence in 6 is passive (soft)",
+        not passive_notes,
+        "; ".join(passive_notes) if passive_notes else "",
+    ))
+
+    # ---- soft (§3.9): readability — plain prose, Flesch at least the v2 floor
+    score = _flesch_reading_ease(full.replace(SPONSOR_TOKEN, sponsor_text) if sponsor_text else full)
+    if score is None:
+        results.append(CheckResult(
+            f"Readability (Flesch Reading Ease, soft)", True,
+            "draft too short to measure a reading score",
+        ))
+    else:
+        results.append(CheckResult(
+            f"Readability Flesch >= {_V2_FLESCH_MIN} (soft)",
+            score >= _V2_FLESCH_MIN,
+            f"score {score:.0f}/100",
+        ))
+
+    # ---- soft (§3.9): the search demand's tertiary terms are used
+    terms = [t for t in getattr(inp, "terms", []) if t]
+    if terms:
+        used_terms = [t for t in terms if keyword_used(full, t)]
+        floor = max(1, len(terms) // 2)
+        results.append(CheckResult(
+            "Tertiary terms used (soft)",
+            len(used_terms) >= floor,
+            f"used {len(used_terms)} of {len(terms)} (expected at least {floor}); "
+            f"not found: {', '.join(t for t in terms if t not in used_terms)}",
+        ))
+
+    # The disconnected soft checks stay out of the results unless the caller asks for them again.
+    if include_disconnected:
+        return results
+    return [r for r in results if r.name not in V2_DISCONNECTED_CHECKS]

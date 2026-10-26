@@ -152,9 +152,14 @@
             <span class="kv-label">How it connects to a market</span>
             <p class="kv-value" id="step1-bridge"></p>
           </div>
-          <div class="kv-block kv-block-last">
+          <div class="kv-block">
             <span class="kv-label">Markets considered</span>
             <ul class="tag-list" id="step1-markets"></ul>
+          </div>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Claims in your article that need backing</span>
+            <p class="field-hint">Statements the article makes as fact without a source. After you confirm the market, the agent looks for outside sources that support, qualify or correct each one; the draft uses what it finds and softens or drops what it cannot back.</p>
+            <ul class="plain-list" id="step1-claims"></ul>
           </div>
         </div>
 
@@ -199,9 +204,39 @@
         </div>
         <div class="content-card" id="step2-done-block">
           <p class="status-note"><i data-lucide="check"></i> <span id="step2-hits-count"></span> supporting web result(s) gathered for this market.</p>
+          <p class="status-note" id="step2-timing" hidden><i data-lucide="timer"></i> <span id="step2-timing-total"></span></p>
+          <ul class="plain-list" id="step2-timing-stages" hidden></ul>
           <div class="kv-block kv-block-last">
             <p class="field-hint">Raw results from the web search, before Step 3 picks which facts to use. News results carry a publish date; Background results are undated reference pages and are never used as trend evidence.</p>
             <ul class="plain-list" id="step2-hits"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step2-claims-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Pages found for your article's own claims</span>
+            <p class="field-hint">Reference and explainer pages found for each claim from Step 1, before Step 3 picks which ones actually back it.</p>
+            <ul class="plain-list" id="step2-claim-hits"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step2-questions-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Sections rewritten as direct-answer questions</span>
+            <p class="field-hint">Common market questions drafted for this market (up to three). Each one replaces its section's ordinary heading — the section still covers everything it normally would, but opens with a direct 1-3 line answer to the question instead of a topic sentence.</p>
+            <ul class="plain-list" id="step2-questions"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step2-factsheet-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Fact sheet</span>
+            <p class="field-hint">Every figure the article may state, read off the confirmed report. A missing market size, forecast or growth rate is highlighted as a gap — Step 2 then looks for one outside source to fill it (below, "Figure gap"); a figure that stays a gap is never stated anywhere in the article.</p>
+            <ul class="plain-list" id="step2-factsheet"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step2-msqs-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Most searched questions</span>
+            <p class="field-hint">What people actually search about this market. The 2-3 that become article headings are picked when the article is planned (Step 4); the rest are answered in the FAQ. Answerability is checked in Step 3, once the evidence is in.</p>
+            <ul class="plain-list" id="step2-msqs"></ul>
           </div>
         </div>
         <div id="step2-confirm-block" class="btn-row">
@@ -218,6 +253,7 @@
         <span>Step 3: selecting usable facts from the gathered evidence…</span>
       </div>
       <div id="step3-content" hidden>
+        <p class="status-note" id="step3-counts"></p>
         <div class="content-card">
           <div class="kv-block kv-block-last">
             <span class="kv-label">CMI report used by the writer</span>
@@ -231,9 +267,30 @@
         </div>
         <div class="content-card">
           <div class="kv-block kv-block-last">
-            <span class="kv-label">Supporting facts from web search</span>
-            <p class="field-hint">Supplementary evidence pulled from open web sources (not the CMI report) to support specific claims. Each fact shows where it came from.</p>
+            <span class="kv-label">Market facts from web search</span>
+            <p class="field-hint">Recent news about the confirmed market (not from the CMI report). They are used in the market half of the article. Each fact shows where it came from.</p>
             <ul class="plain-list" id="step3-evidence"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step3-claims-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Backing for your article's own claims</span>
+            <p class="field-hint">Outside sources chosen for each claim from Step 1, with what each one does to the claim: supports, qualifies or contradicts it. They are used in the article's own sections. A claim with no backing is softened or dropped by the writer, never stated as fact.</p>
+            <ul class="plain-list" id="step3-claim-backing"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step3-questions-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Evidence for the question-headed sections</span>
+            <p class="field-hint">Outside sources chosen to ground each question's direct answer (chosen in Step 2 — see Step 2 for the questions themselves and which section each replaces). A question with no outside source still gets answered, from the CMI report and the article's own content.</p>
+            <ul class="plain-list" id="step3-question-backing"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step3-longtails-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Long-tail keywords the writer can use</span>
+            <p class="field-hint">Specific search phrases for this market's commercial and research audience (worth 3+ words each, so they rank where the market's head terms do not). The writer is instructed to weave AT MOST THREE of these into the final draft, word-for-word, only inside sentences it would write anyway — never in a heading or the title. It is normal for a few not to be used: a forced one hurts more than a skipped one.</p>
+            <ul class="plain-list" id="step3-longtails"></ul>
           </div>
         </div>
         <div id="step3-confirm-block" class="btn-row">
@@ -287,10 +344,19 @@
         <div class="highlight-legend" id="final-highlight-legend">
           <span class="legend-item"><i class="legend-swatch legend-swatch--primary"></i> Primary keyword <span class="legend-count" id="legend-count-primary"></span></span>
           <span class="legend-item"><i class="legend-swatch legend-swatch--secondary"></i> Secondary keyword <span class="legend-count" id="legend-count-secondary"></span></span>
+          <span class="legend-item" id="legend-tertiary"><i class="legend-swatch legend-swatch--tertiary"></i> Related term <span class="legend-count" id="legend-count-tertiary"></span></span>
+          <span class="legend-item" id="legend-longtail"><i class="legend-swatch legend-swatch--longtail"></i> Long-tail keyword <span class="legend-count" id="legend-count-longtail"></span></span>
           <span class="legend-item"><i class="legend-swatch legend-swatch--evidence"></i> Cited evidence <span class="legend-count" id="legend-count-evidence"></span></span>
         </div>
 
         <div class="scroll-box article-render" id="final-article"></div>
+        <div class="content-card" id="final-faq-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Frequently Asked Questions</span>
+            <p class="field-hint">Generated from the finished article and the CMI report — outside the article's word limit, appended after the conclusion in the downloaded .docx.</p>
+            <div id="final-faq"></div>
+          </div>
+        </div>
         <div class="btn-row">
           <button class="btn btn-primary" id="final-download-btn"><i data-lucide="download"></i> Download revised .docx</button>
           <button class="btn btn-ghost" id="final-regenerate-btn"><i data-lucide="refresh-cw"></i> Regenerate draft</button>
