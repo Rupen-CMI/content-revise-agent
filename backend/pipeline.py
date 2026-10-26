@@ -2243,10 +2243,51 @@ def _segmentation_word_dropped_problem(sections: list[dict]) -> str | None:
         return (
             f"the segmentation section's lead-in sentence uses {', '.join(repr(w) for w in banned_stand_ins)} "
             "instead of the word \"segment\"/\"segmentation\" — rewrite that one sentence so it uses the real word "
-            "\"segment\" or \"segmentation\" (e.g. \"Coherent Market Insights breaks the market into three "
-            "segments:\"), not a stand-in word, since this is where that secondary keyword's own words belong"
+            "\"segment\" or \"segmentation\" (e.g. \"Coherent Market Insights breaks the market into N "
+            "segments:\", N being the number of bullets), not a stand-in word, since this is where that "
+            "secondary keyword's own words belong"
         )
     return None
+
+
+_COUNT_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
+_COUNT_NAMES = {v: k for k, v in _COUNT_WORDS.items()}
+_STATED_COUNT_RE = re.compile(
+    r"\b(two|three|four|five|six|seven|[2-7])\b(?=(?:\s+[\w-]+){0,2}\s+"
+    r"(?:segments?|segmentations?|splits?|types?|axes|dimensions?|categories|trends?)\b)",
+    re.I,
+)
+
+
+def _fix_stated_counts(sections: list[dict], logger: logging.Logger) -> None:
+    """A trends or segmentation lead-in that states a count ("three split types") must match the bullets
+    under it. The prompt asks the model to count what it wrote, but a stated number is the model's habit,
+    not a figure from the report, and a draft was found live saying "three split types" over two bullets.
+    The bullets are the ground truth (each is a real segmentation or trend), so the stated number is
+    rewritten to the bullet count, including a count of two (the prompt asks for more than two bullets,
+    but a short paragraph must still not misstate its own length); a lead-in that states no count, or a
+    paragraph with fewer than two bullets, is left alone."""
+    for s in sections:
+        if not {"trends", "segmentation"} & set(s.get("sop", [])):
+            continue
+        for i, para in enumerate(s["paragraphs"]):
+            lead, sep, rest = para.partition("\n- ")
+            bullets = rest.count("\n- ") + 1 if sep else 0
+            if bullets < 2 or bullets not in _COUNT_NAMES:
+                continue
+            m = _STATED_COUNT_RE.search(lead)
+            if not m:
+                continue
+            stated = _COUNT_WORDS.get(m.group(1).lower(), int(m.group(1)) if m.group(1).isdigit() else 0)
+            if stated == bullets:
+                continue
+            new = str(bullets) if m.group(1).isdigit() else _COUNT_NAMES[bullets]
+            if m.group(1)[0].isupper():
+                new = new.capitalize()
+            s["paragraphs"][i] = lead[:m.start()] + new + lead[m.end():] + sep + rest
+            logger.warning(
+                f"[write] lead-in stated {m.group(1)!r} but lists {bullets} bullets; changed it to {new!r}: {lead[:90]!r}"
+            )
 
 
 _MAX_LITERAL_SECONDARY_KEYWORDS = 2  # see _repeated_keyword_shape_problem
@@ -2627,6 +2668,7 @@ def run_write(
     if not market_sections:
         raise PipelineError("Call 3B returned no market sections")
     title = _plain(str(written_b.get("title") or ""))
+    _fix_stated_counts(market_sections, logger)
     sections = pub_sections + market_sections
     written = {"title": title, "sections": sections,
                "evidence_citations": list(written_a.get("evidence_citations") or []) + list(written_b.get("evidence_citations") or [])}

@@ -741,15 +741,18 @@ fixed wording: this subject sits inside this market, and here is that market's s
 report's framing, its overall size/growth story and key dynamics (drivers, demand factors), and explicitly connects the market's \
 trajectory back to the publisher's subject and its reader: not a generic restatement of the market's importance, but the \
 specific implication of the report's figures and dynamics for the kind of reader, product or decision the post so far is about. The report knows nothing about the post so far, so this connection must be written fresh and grounded in the report's actual figures.
-  - trends: three distinct trends. ONE paragraph string of 150-170 words: a single lead-in sentence (about 18-20 words) saying \
-three trends are reshaping the market, then each trend as its own "\\n- " line (a dash, one space, then the trend) inside that SAME \
+  - trends: at least three distinct trends (more than two; the SOP's minimum is three). ONE paragraph string of 150-170 words: a single lead-in sentence (about 18-20 words) saying \
+how many trends are reshaping the market, the number being the count of bullets you wrote, then each trend as its own "\\n- " line (a dash, one space, then the trend) inside that SAME \
 paragraph string, not three separate paragraphs. Each bullet is 2 sentences, 40-48 words: it names the trend, explains its \
 impact on the market in detail and rests on at least one MARKET EVIDENCE item (two where space allows). This renders as a real \
 bulleted list.
   - segmentation: ONE paragraph of 70-85 words INCLUDING its bullets. A single lead-in sentence that uses the word "segment" or \
-"segmentation" itself (not a stand-in word such as "axes" or "breakdown") and states how many segments the report uses, then each \
-segmentation line as its own "\\n- " bullet inside the same paragraph string (3-4 bullets, 12-16 words each, for example \
-"- By <segment type>: <its categories>."). The lead-in is at most 18 words and the shortest grammatical lead-in beats a longer one padded with \
+"segmentation" itself (not a stand-in word such as "axes" or "breakdown"), then each \
+segmentation line as its own "\\n- " bullet inside the same paragraph string (12-16 words each, for example \
+"- By <segment type>: <its categories>."). Write one bullet for each way the CMI REPORT CONTENT above actually splits the market \
+(MORE THAN TWO bullets: at least three, usually three or four, taking every split the report lists, such as type or product, \
+application or end use, and region, and never one invented to reach a number), and COUNT THE BULLETS YOU WROTE: if the lead-in states a \
+number of segmentations, it is exactly that count, never a default of three. When in doubt, leave the number out of the lead-in. The lead-in is at most 18 words and the shortest grammatical lead-in beats a longer one padded with \
 connector words. Nothing else goes in the paragraph: the lead-in and the bullets are the whole 70-85 words, and there is no second paragraph.
   - subsegment: exactly TWO analyses, each its own entry in "paragraphs" (an object with "segment", "sub_segment" and \
 "paragraph", see the shape below). Each "paragraph" is 4 sentences of at most 20 words each (70-90 words) analysing ONE sub-segment, and the two come from \
