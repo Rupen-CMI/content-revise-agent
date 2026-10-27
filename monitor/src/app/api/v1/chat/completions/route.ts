@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { locationFromHeaders } from "@/lib/events";
 import { callCost, extractUsage } from "@/lib/pricing";
-import { errorBody, proxyLimits, sanitizeRequest, sanitizeUpstream } from "@/lib/proxy";
+import { budgetsEnforced, errorBody, proxyLimits, sanitizeRequest, sanitizeUpstream } from "@/lib/proxy";
 import { findActiveToken, recordCall, spendTodayAll } from "@/lib/tokens";
 
 export const runtime = "nodejs";
@@ -43,7 +43,8 @@ export async function POST(req: NextRequest) {
   }
   if (!token) return fail(401, "invalid or revoked token", "invalid_request_error", "invalid_api_key");
 
-  if (token.spend_today >= token.daily_budget_usd) {
+  const enforceBudgets = budgetsEnforced(); // off by default: spend is tracked, never blocked (see lib/proxy.ts)
+  if (enforceBudgets && token.spend_today >= token.daily_budget_usd) {
     return fail(429, "daily budget reached for this install; try again tomorrow (UTC)", "insufficient_quota", "daily_budget_exceeded");
   }
   if (token.calls_last_minute >= limits.maxCallsPerMinute) {
@@ -64,14 +65,16 @@ export async function POST(req: NextRequest) {
   const clean = sanitizeRequest(body, limits);
   if (!clean.ok) return fail(clean.status, clean.message, "invalid_request_error", clean.code);
 
-  try {
-    const globalCap = Number.parseFloat(process.env.GLOBAL_DAILY_BUDGET_USD ?? "");
-    if (Number.isFinite(globalCap) && globalCap > 0 && (await spendTodayAll()) >= globalCap) {
-      return fail(429, "service daily budget reached; try again tomorrow (UTC)", "insufficient_quota", "global_budget_exceeded");
+  if (enforceBudgets) {
+    try {
+      const globalCap = Number.parseFloat(process.env.GLOBAL_DAILY_BUDGET_USD ?? "");
+      if (Number.isFinite(globalCap) && globalCap > 0 && (await spendTodayAll()) >= globalCap) {
+        return fail(429, "service daily budget reached; try again tomorrow (UTC)", "insufficient_quota", "global_budget_exceeded");
+      }
+    } catch (e) {
+      console.error("[proxy] global budget check failed:", e);
+      return fail(500, "storage failure", "server_error", "storage_failure");
     }
-  } catch (e) {
-    console.error("[proxy] global budget check failed:", e);
-    return fail(500, "storage failure", "server_error", "storage_failure");
   }
 
   // --- forward

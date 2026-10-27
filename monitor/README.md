@@ -144,7 +144,10 @@ What the proxy enforces on every call:
   response_format`. No tools, no streaming. `model` must be in `ALLOWED_MODELS` (default `deepseek-chat`);
   `max_tokens` is clamped to `PROXY_MAX_TOKENS_CAP` (default 20000).
 - **Budgets** — per-token daily budget in USD (UTC day) → `429 daily_budget_exceeded`; optional
-  `GLOBAL_DAILY_BUDGET_USD` across all tokens.
+  `GLOBAL_DAILY_BUDGET_USD` across all tokens. **Currently switched off:** nothing is blocked, every call
+  is still priced and recorded, so spend is tracked without limits. The logic, the stored per-token budget
+  and `GLOBAL_DAILY_BUDGET_USD` are all kept; set `ENFORCE_BUDGETS=1` in Vercel to turn blocking back on.
+  (The calls-per-minute limit is separate and always on.)
 - **Accounting** — every call is recorded (`llm_calls`): tokens, cost (same pricing table as `backend/llm.py`),
   duration, status, city/region/country. This is the authoritative cost figure and cannot be skipped or faked
   by the client.

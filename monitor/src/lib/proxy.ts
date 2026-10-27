@@ -7,6 +7,17 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * Whether daily USD budgets (each token's `daily_budget_usd` and the optional GLOBAL_DAILY_BUDGET_USD cap)
+ * actually BLOCK calls. Off by default: for now every call goes through and spend is only tracked (the
+ * proxy still prices and records every call, so the dashboard's cost figures are unaffected). All the
+ * budget logic and its settings are kept; set ENFORCE_BUDGETS=1 to switch enforcement back on.
+ * The calls-per-minute limit is separate and always on (it only stops runaway loops).
+ */
+export function budgetsEnforced(): boolean {
+  return process.env.ENFORCE_BUDGETS === "1";
+}
+
 export function proxyLimits() {
   return {
     // Real prompts peak ~110 KB (22k tokens); 400k chars is ~3.5x that and already beyond the model's context.

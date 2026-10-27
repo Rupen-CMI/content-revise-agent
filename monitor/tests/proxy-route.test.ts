@@ -34,6 +34,7 @@ beforeEach(() => {
   tokens.recordCall.mockResolvedValue(undefined);
   process.env.DEEPSEEK_API_KEY = "sk-test-not-real";
   delete process.env.GLOBAL_DAILY_BUDGET_USD;
+  delete process.env.ENFORCE_BUDGETS;
 });
 
 describe("POST /api/v1/chat/completions", () => {
@@ -52,20 +53,63 @@ describe("POST /api/v1/chat/completions", () => {
     expect(f).not.toHaveBeenCalled();
   });
 
-  it("429s (no retry hint) once the token's daily budget is spent", async () => {
-    tokens.findActiveToken.mockImplementation(async (t: string) => (t === "cmi_good" ? { ...TOKEN, spend_today: 5 } : null));
-    const f = vi.spyOn(globalThis, "fetch");
-    const res = await call(goodBody);
-    expect(res.status).toBe(429);
-    expect(res.headers.get("x-should-retry")).toBe("false");
-    expect((await res.json()).error.code).toBe("daily_budget_exceeded");
-    expect(f).not.toHaveBeenCalled();
+  describe("budgets are tracked but NOT enforced by default", () => {
+    const upstream = () =>
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({ model: "deepseek-flash", choices: [{ message: { role: "assistant", content: "{}" } }], usage: { prompt_tokens: 1000, completion_tokens: 500 } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+
+    it("a token far over its daily budget still gets its call through, and the spend is still recorded", async () => {
+      tokens.findActiveToken.mockImplementation(async (t: string) => (t === "cmi_good" ? { ...TOKEN, spend_today: 999 } : null));
+      const f = upstream();
+      const res = await call(goodBody);
+      expect(res.status).toBe(200);
+      expect(f).toHaveBeenCalledTimes(1);
+      expect(tokens.recordCall).toHaveBeenCalledTimes(1);
+      expect(tokens.recordCall.mock.calls[0][0].costUsd).toBeGreaterThan(0); // cost tracking is unaffected
+    });
+
+    it("a reached global cap is ignored too, and its spend query is not even run", async () => {
+      process.env.GLOBAL_DAILY_BUDGET_USD = "10";
+      tokens.spendTodayAll.mockResolvedValue(10);
+      upstream();
+      expect((await call(goodBody)).status).toBe(200);
+      expect(tokens.spendTodayAll).not.toHaveBeenCalled();
+    });
+
+    it("the per-minute rate limit is separate and still applies", async () => {
+      tokens.findActiveToken.mockImplementation(async (t: string) => (t === "cmi_good" ? { ...TOKEN, calls_last_minute: 9999 } : null));
+      const f = upstream();
+      expect((await call(goodBody)).status).toBe(429);
+      expect(f).not.toHaveBeenCalled();
+    });
   });
 
-  it("429s when the global daily cap is reached", async () => {
-    process.env.GLOBAL_DAILY_BUDGET_USD = "10";
-    tokens.spendTodayAll.mockResolvedValue(10);
-    expect((await call(goodBody)).status).toBe(429);
+  describe("with ENFORCE_BUDGETS=1 the budget logic is back on", () => {
+    beforeEach(() => {
+      process.env.ENFORCE_BUDGETS = "1";
+    });
+
+    it("429s (no retry hint) once the token's daily budget is spent", async () => {
+      tokens.findActiveToken.mockImplementation(async (t: string) => (t === "cmi_good" ? { ...TOKEN, spend_today: 5 } : null));
+      const f = vi.spyOn(globalThis, "fetch");
+      const res = await call(goodBody);
+      expect(res.status).toBe(429);
+      expect(res.headers.get("x-should-retry")).toBe("false");
+      expect((await res.json()).error.code).toBe("daily_budget_exceeded");
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it("429s when the global daily cap is reached", async () => {
+      process.env.GLOBAL_DAILY_BUDGET_USD = "10";
+      tokens.spendTodayAll.mockResolvedValue(10);
+      const res = await call(goodBody);
+      expect(res.status).toBe(429);
+      expect((await res.json()).error.code).toBe("global_budget_exceeded");
+    });
   });
 
   it("forwards with the server-side key, returns the upstream body verbatim, and records usage + cost + location", async () => {
