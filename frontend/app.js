@@ -1411,9 +1411,117 @@ function render() {
   iconify();
 }
 
+// ---------------------------------------------------------------- display name
+// The name the user types here is what the usage dashboard shows for this install. It is asked for on
+// the very first launch (the dialog can't be dismissed until a valid name is saved) and can be
+// changed afterwards from the sidebar. Validation mirrors telemetry.normalize_name on the server.
+const NAME_MIN = 2;
+const NAME_MAX = 60;
+const nameEls = {
+  modal: document.getElementById("name-modal"),
+  form: document.getElementById("name-form"),
+  input: document.getElementById("name-input"),
+  error: document.getElementById("name-error"),
+  save: document.getElementById("name-save"),
+  saveLabel: document.getElementById("name-save-label"),
+  cancel: document.getElementById("name-cancel"),
+  title: document.getElementById("name-modal-title"),
+  hint: document.getElementById("name-modal-hint"),
+  chip: document.getElementById("user-chip"),
+  chipName: document.getElementById("user-chip-name"),
+};
+let currentUserName = null;
+let nameRequired = false;
+
+function normalizeName(raw) {
+  const cleaned = String(raw ?? "").replace(/\s+/g, " ").replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  return cleaned.length >= NAME_MIN && cleaned.length <= NAME_MAX ? cleaned : null;
+}
+
+function paintUserChip() {
+  nameEls.chip.hidden = !currentUserName;
+  nameEls.chipName.textContent = currentUserName || "";
+  iconify();
+}
+
+function showNameError(message) {
+  nameEls.error.textContent = message || "";
+  nameEls.error.hidden = !message;
+}
+
+function openNameModal({ required }) {
+  nameRequired = required;
+  nameEls.title.textContent = required ? "Welcome! What should we call you?" : "Change your name";
+  nameEls.hint.textContent = required
+    ? "Enter your name. It is shown to the team that manages this tool in its usage dashboard, so your work can be attributed to you. You can change it any time from the sidebar."
+    : "The dashboard keeps your new name as current and remembers the previous one.";
+  nameEls.saveLabel.textContent = required ? "Continue" : "Save name";
+  nameEls.cancel.hidden = required;
+  nameEls.input.value = required ? "" : (currentUserName || "");
+  showNameError("");
+  nameEls.modal.hidden = false;
+  nameEls.input.focus();
+  nameEls.input.select();
+}
+
+function closeNameModal() {
+  nameEls.modal.hidden = true;
+  nameRequired = false;
+  if (!nameEls.chip.hidden) nameEls.chip.focus();
+}
+
+async function submitName() {
+  const name = normalizeName(nameEls.input.value);
+  if (!name) {
+    showNameError(`Enter a name of ${NAME_MIN}-${NAME_MAX} characters.`);
+    nameEls.input.focus();
+    return;
+  }
+  if (name === currentUserName) { closeNameModal(); return; }  // unchanged: nothing to record
+  nameEls.save.disabled = true;
+  showNameError("");
+  try {
+    const resp = await fetch(`${API_BASE}/app/user`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_name: name }),
+    });
+    if (!resp.ok) {
+      showNameError((await resp.text().catch(() => "")) || "Could not save the name. Try again.");
+      return;
+    }
+    currentUserName = (await resp.json()).user_name;
+    paintUserChip();
+    closeNameModal();
+  } catch {
+    showNameError("Could not reach the app. Check that it is still running, then try again.");
+  } finally {
+    nameEls.save.disabled = false;
+  }
+}
+
+async function initUserName() {
+  let name;
+  try {
+    const resp = await fetch(`${API_BASE}/app/user`);
+    if (!resp.ok) return;                 // older/unreachable backend: never block the app over this
+    name = (await resp.json()).user_name;
+  } catch { return; }
+  currentUserName = name || null;
+  paintUserChip();
+  if (!currentUserName) openNameModal({ required: true });
+}
+
+nameEls.form.addEventListener("submit", (e) => { e.preventDefault(); submitName(); });
+nameEls.cancel.addEventListener("click", closeNameModal);
+nameEls.chip.addEventListener("click", () => openNameModal({ required: false }));
+nameEls.modal.addEventListener("mousedown", (e) => { if (e.target === nameEls.modal && !nameRequired) closeNameModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !nameEls.modal.hidden && !nameRequired) closeNameModal(); });
+
 // ---------------------------------------------------------------- init
 initTheme();
 iconify();
+initUserName();
 render();
 if (restoreResultIfAny()) {
   document.getElementById("sponsor-section").hidden = false;

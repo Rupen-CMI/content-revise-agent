@@ -1,6 +1,7 @@
 import { Header } from "@/components/Header";
 import { requireAdminPage } from "@/lib/auth";
 import { publicError } from "@/lib/errors";
+import { budgetsEnforced } from "@/lib/proxy";
 import { listTokens, type TokenListRow } from "@/lib/tokens";
 import { fmtCost, fmtTime } from "@/lib/format";
 
@@ -8,6 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function TokensPage() {
   await requireAdminPage();
+  const enforced = budgetsEnforced();
   let tokens: TokenListRow[] = [];
   let error: string | null = null;
   try {
@@ -41,7 +43,9 @@ export default async function TokensPage() {
               <tr>
                 <th>User</th>
                 <th>Status</th>
-                <th className="num">Daily budget</th>
+                <th className="num" title={enforced ? undefined : "Stored but not enforced: calls are never blocked, spend is only tracked"}>
+                  {enforced ? "Daily budget" : "Daily budget (off)"}
+                </th>
                 <th className="num">Today</th>
                 <th className="num">30 days</th>
                 <th className="num">All time</th>
@@ -52,7 +56,8 @@ export default async function TokensPage() {
             </thead>
             <tbody>
               {tokens.map((t) => {
-                const over = !t.revoked_at && Number(t.spend_today) >= t.daily_budget_usd;
+                // "budget reached" only means something while budgets block calls (they don't by default)
+                const over = enforced && !t.revoked_at && Number(t.spend_today) >= t.daily_budget_usd;
                 return (
                   <tr key={t.id}>
                     <td>{t.label}</td>

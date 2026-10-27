@@ -18,6 +18,7 @@ import {
   fmtCost,
   fmtDuration,
   fmtLocation,
+  fmtRunStatus,
   fmtTime,
   fmtTokens,
 } from "@/lib/format";
@@ -85,6 +86,8 @@ export default async function DashboardPage() {
                 <thead>
                   <tr>
                     <th>User</th>
+                    <th>Current name</th>
+                    <th>Previous name</th>
                     <th>Last seen</th>
                     <th>Location</th>
                     <th className="num">Runs</th>
@@ -103,6 +106,8 @@ export default async function DashboardPage() {
                           {row.install_id.slice(0, 6)}
                         </span>
                       </td>
+                      <td>{row.current_name || <span className="muted">not set yet</span>}</td>
+                      <td className="dim">{row.previous_name || "—"}</td>
                       <td className="dim">{fmtTime(row.last_seen)}</td>
                       <td className="dim">{row.last_location || "—"}</td>
                       <td className="num">{row.runs}</td>
@@ -112,7 +117,7 @@ export default async function DashboardPage() {
                   ))}
                   {installs.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="muted">
+                      <td colSpan={8} className="muted">
                         No events yet. The agent reports here once it is built with MONITOR_URL set.
                       </td>
                     </tr>
@@ -139,7 +144,7 @@ export default async function DashboardPage() {
                 </thead>
                 <tbody>
                   {runs.map((r) => (
-                    <tr key={r.event_id}>
+                    <tr key={`${r.install_id}:${r.run_key}`}>
                       <td className="wrap">
                         <Link href={`/user/${encodeURIComponent(r.install_id)}`}>
                           {r.title || "(untitled)"}
@@ -147,8 +152,8 @@ export default async function DashboardPage() {
                       </td>
                       <td>{r.user_label || "(unlabeled)"}</td>
                       <td>
-                        <span className={`badge ${r.status === "error" ? "error" : "ok"}`}>
-                          {r.status ?? "?"}
+                        <span className={`badge ${fmtRunStatus(r.status, r.step).cls}`}>
+                          {fmtRunStatus(r.status, r.step).text}
                         </span>
                       </td>
                       <td className="num">{fmtCost(r.cost_usd)}</td>

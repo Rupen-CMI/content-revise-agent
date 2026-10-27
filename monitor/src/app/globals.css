@@ -236,6 +236,8 @@ td.muted { padding: 22px 18px; text-align: center; }
 }
 .badge.ok { background: var(--success-soft); color: var(--success); }
 .badge.error { background: var(--danger-soft); color: var(--danger); }
+.badge.running { background: var(--accent-soft); color: var(--accent); }
+.badge.unfinished { background: var(--bg-sunken); color: var(--text-muted); border: 1px solid var(--border); padding: 0 9px; }
 
 /* ---------- Chart (Recharts; colours from theme tokens so light/dark just works) ---------- */
 .chart {

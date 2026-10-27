@@ -5,8 +5,9 @@ import { redirect } from "next/navigation";
 import {
   createSessionToken,
   SESSION_COOKIE,
-  SESSION_TTL_S,
+  SESSION_IDLE_S,
   secretsMatch,
+  sessionCookieOptions,
 } from "@/lib/session";
 import { clearFailures, clientIp, ipKey, isLockedOut, recordFailure } from "@/lib/throttle";
 
@@ -40,12 +41,6 @@ export async function loginAction(
 
   await clearFailures(who);
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, await createSessionToken(secret), {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_TTL_S,
-    secure: true,
-  });
+  jar.set(SESSION_COOKIE, await createSessionToken(secret), sessionCookieOptions(SESSION_IDLE_S));
   redirect("/");
 }

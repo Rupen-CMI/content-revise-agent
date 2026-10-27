@@ -4,7 +4,7 @@ import { sameOriginOnly } from "@/lib/auth";
 import { demoEnabled } from "@/lib/demo";
 import { clientIp, ipKey } from "@/lib/throttle";
 import { isPublicPath } from "@/middleware";
-import { SESSION_COOKIE, SESSION_TTL_S } from "@/lib/session";
+import { SESSION_COOKIE, SESSION_IDLE_S, SESSION_MAX_S } from "@/lib/session";
 
 const req = (headers: Record<string, string>) =>
   new NextRequest("https://dash.example.app/api/tokens", { method: "POST", headers });
@@ -52,9 +52,10 @@ describe("login throttle keys", () => {
 describe("session + demo hardening", () => {
   beforeEach(() => vi.unstubAllEnvs());
 
-  it("uses a __Host- cookie and a 7 day lifetime", () => {
+  it("uses a __Host- cookie, a 1 hour idle timeout and a 12 hour absolute limit", () => {
     expect(SESSION_COOKIE.startsWith("__Host-")).toBe(true);
-    expect(SESSION_TTL_S).toBe(7 * 24 * 3600);
+    expect(SESSION_IDLE_S).toBe(3600);
+    expect(SESSION_MAX_S).toBe(12 * 3600);
   });
 
   it("demo data can never be enabled in production", () => {

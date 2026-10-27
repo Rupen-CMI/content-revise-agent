@@ -16,8 +16,10 @@ import telemetry
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    """Point the data dir at a temp folder and reset the module's cached state per test."""
+    """Point the data dir at a temp folder and reset the module's cached state per test. telemetry loads the
+    real repo .env at import, so a developer's own MONITOR_* settings must not leak into any test."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _clear_monitor_env(monkeypatch)
     telemetry._reset_for_tests()
     yield
     telemetry._reset_for_tests()

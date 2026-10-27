@@ -81,6 +81,7 @@ class RunCost:
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.reported = 0  # calls[:reported] have already been sent to the dashboard (see run_cost_delta)
 
     def add(self, call_name: str, model: str, prompt_tokens: int, completion_tokens: int, cached_tokens: int, cost: float | None) -> None:
         self.calls.append({
@@ -132,14 +133,35 @@ def run_cost_totals(logger: logging.Logger) -> dict:
     Degrades to zeros/None — never raises — when nothing was recorded for this run."""
     run_id = _run_id_of(logger)
     tracker = _run_costs.get(run_id) if run_id is not None else None
-    calls = tracker.calls if tracker else []
+    return _totals_of(tracker.calls if tracker else [], known=tracker is not None)
+
+
+def _totals_of(calls: list[dict], known: bool = True) -> dict:
+    costs = [c["cost"] for c in calls]
     return {
         "calls": len(calls),
-        "cost_usd": tracker.total() if tracker else None,
+        # None = "unknown" (no tracker at all, or a call on a model with no price), never a silent 0
+        "cost_usd": (None if any(c is None for c in costs) else sum(costs)) if known else None,
         "prompt_tokens": sum(c["prompt_tokens"] for c in calls),
         "completion_tokens": sum(c["completion_tokens"] for c in calls),
         "cached_tokens": sum(c["cached_tokens"] for c in calls),
     }
+
+
+def run_cost_delta(logger: logging.Logger) -> dict:
+    """Cost/token totals of only the LLM calls made since the previous run_cost_delta() for this run, and
+    marks them as reported. Same shape as run_cost_totals(). This is what telemetry sends after every
+    step, so the dashboard SUMS what each step added and never double counts. It stays correct when the
+    tracker is popped by run_cost_summary() and a later "Regenerate draft" starts a fresh one: a fresh
+    tracker simply starts counting from its first call again. Never raises."""
+    run_id = _run_id_of(logger)
+    tracker = _run_costs.get(run_id) if run_id is not None else None
+    if tracker is None:
+        return _totals_of([], known=False)
+    end = len(tracker.calls)  # snapshot: calls from other threads may still be appended
+    calls = tracker.calls[tracker.reported:end]
+    tracker.reported = end
+    return _totals_of(calls)
 
 
 def run_cost_summary(logger: logging.Logger) -> list[str]:

@@ -82,14 +82,27 @@ Then build with a label per customer:
 python packaging/build_package.py --user "Acme Realty"
 ```
 
-The end-user agent then POSTs `app_started` (per launch) and `run_completed`
-(per finalized document) to `<MONITOR_URL>/api/ingest` with header
-`X-Ingest-Key`. Events are idempotent on a client-generated `event_id`, and
-failed sends are queued in a local outbox file and retried when connectivity
-returns.
+The end-user agent then POSTs these events to `<MONITOR_URL>/api/ingest` (per-install token, or the legacy
+`X-Ingest-Key`):
+
+| Event | When | Carries |
+|---|---|---|
+| `app_started` | each launch | install, name, location |
+| `name_updated` | the user typed or changed their display name | the name |
+| `run_progress` | after **every** pipeline step 1-4, pass **or fail** | run id, step, and the cost/tokens **that step added** |
+| `run_completed` | each `/finalize` (ok or error) | run id, status, word count, and the cost/tokens it added |
+
+Cost and token fields are per-event amounts, never running totals, and every event of a run shares its
+`run_id`. The dashboard sums them, so a run abandoned after step 2 still shows up (as `unfinished · Step 2`,
+or `running · Step 3` while its last event is under 30 minutes old) with exactly what it cost, and
+"Regenerate draft" adds to the same run instead of creating a second one. Events are idempotent on a
+client-generated `event_id`, and failed sends are queued in a local outbox file and retried when
+connectivity returns.
 
 Without `MONITOR_URL` in `.env` the build bakes no monitor keys and telemetry
-is a silent no-op (dev builds never send anything).
+is a silent no-op, and that includes running the agent from the project folder: **a dev run is only tracked
+if its `.env` sets `MONITOR_URL` plus `MONITOR_PROXY_TOKEN`** (mint one with
+`npm run token -- create "<your name> (dev)" 5`). Dev runs still call DeepSeek directly with your own key.
 
 ## What is stored (and what is not)
 
@@ -131,7 +144,10 @@ What the proxy enforces on every call:
   response_format`. No tools, no streaming. `model` must be in `ALLOWED_MODELS` (default `deepseek-chat`);
   `max_tokens` is clamped to `PROXY_MAX_TOKENS_CAP` (default 20000).
 - **Budgets** — per-token daily budget in USD (UTC day) → `429 daily_budget_exceeded`; optional
-  `GLOBAL_DAILY_BUDGET_USD` across all tokens.
+  `GLOBAL_DAILY_BUDGET_USD` across all tokens. **Currently switched off:** nothing is blocked, every call
+  is still priced and recorded, so spend is tracked without limits. The logic, the stored per-token budget
+  and `GLOBAL_DAILY_BUDGET_USD` are all kept; set `ENFORCE_BUDGETS=1` in Vercel to turn blocking back on.
+  (The calls-per-minute limit is separate and always on.)
 - **Accounting** — every call is recorded (`llm_calls`): tokens, cost (same pricing table as `backend/llm.py`),
   duration, status, city/region/country. This is the authoritative cost figure and cannot be skipped or faked
   by the client.
@@ -153,7 +169,13 @@ What the proxy enforces on every call:
 
    The same operations exist as `GET/POST/DELETE /api/tokens` (dashboard session required), and the
    **LLM tokens** page (`/tokens`) shows spend per token.
-3. Put the token in the repo `.env` as `MONITOR_PROXY_TOKEN` for that user's build.
+3. Build that user's copy with their token, passed explicitly (it is never read from the repo `.env`, whose
+   `MONITOR_PROXY_TOKEN` is only your own dev token and is refused by the build):
+
+   ```powershell
+   $env:MONITOR_PROXY_TOKEN = "cmi_..."          # or: --proxy-token cmi_...
+   python packaging/build_package.py --user "Priya"
+   ```
 
 ### Quick check
 
@@ -168,7 +190,7 @@ curl -s "$MONITOR_URL/api/v1/chat/completions" \
 
 | Surface | Who can use it | How |
 |---|---|---|
-| Dashboard pages, `/api/tokens` | the owner | `ADMIN_PASSWORD` login -> signed `__Host-` session cookie (HttpOnly, Secure, SameSite=Lax, 7 days). Checked in middleware **and again** inside every page and admin route. Mutations also refuse cross-site requests (CSRF). |
+| Dashboard pages, `/api/tokens` | the owner | `ADMIN_PASSWORD` login -> signed `__Host-` session cookie (HttpOnly, Secure, SameSite=Lax). Ends after **1 hour of inactivity** (sliding) or **12 hours** since sign-in, whichever comes first. Checked in middleware **and again** inside every page and admin route. Mutations also refuse cross-site requests (CSRF). |
 | `POST /api/ingest` | an install | its own token (`Authorization: Bearer cmi_...`); the user label comes from the token, so one install cannot report as another. `INGEST_KEY` is only a legacy fallback for `--direct` builds and may be left unset. |
 | `POST /api/v1/chat/completions` | an install | its own token; whitelisted params only, model allowlist, `max_tokens` cap, 400k-char prompt cap, per-token daily USD budget, per-token calls/minute limit, optional global daily cap. |
 
@@ -179,6 +201,10 @@ What is deliberately **not** possible:
 - Prompts and document text are never stored; only titles, token counts, costs and city-level location.
   The raw IP address is never stored (login throttling keeps only a salted hash for 24 h).
 - Login is throttled: 5 failures per IP (and 40 overall) per 15 minutes locks login for that window.
+- Idle timeout: every real request renews the session cookie (at most once a minute; `<Link>` prefetches
+  and sign-out do not count). Activity that makes no request (reading, scrolling, moving the mouse) is
+  reported by `IdleGuard` through `POST /api/session/ping` at most every 2 minutes, and an open tab locks
+  itself and signs out once the hour is up. Activity is shared between tabs through `localStorage`.
 - Responses to API routes are `Cache-Control: no-store`; the create-token response contains a live secret.
 - Security headers on every response: CSP (no external scripts, `connect-src 'self'`, no framing), HSTS,
   `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `noindex`. No `X-Powered-By`.
@@ -193,6 +219,7 @@ Things to do on the Vercel side (not code):
 - Revoke a token the moment a PC is lost or a person leaves: `npm run token -- revoke <id>`.
 - Keep `DEEPSEEK_API_KEY` only in Vercel env, with a spend cap set in the DeepSeek console as a last resort.
 
-Known limits: a stolen session cookie stays valid until it expires (stateless sessions); the per-token
+Known limits: a stolen session cookie stays valid until its idle/absolute limit passes (stateless
+sessions: rotate `SESSION_SECRET` to kill all of them at once); the per-token
 budget is checked before a call, so concurrent calls can overshoot it by a few cents; usage events are
 reported by the agent, so only the proxy's `llm_calls` figures are authoritative for cost.

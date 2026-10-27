@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const events = vi.hoisted(() => ({ insertEvent: vi.fn() }));
+const events = vi.hoisted(() => ({ insertEvent: vi.fn(), upsertInstallName: vi.fn() }));
 const tokens = vi.hoisted(() => ({ lookupToken: vi.fn() }));
 vi.mock("@/lib/tokens", () => tokens);
-vi.mock("@/lib/events", async (orig) => ({ ...(await orig<typeof import("@/lib/events")>()), insertEvent: events.insertEvent }));
+vi.mock("@/lib/events", async (orig) => ({ ...(await orig<typeof import("@/lib/events")>()), insertEvent: events.insertEvent, upsertInstallName: events.upsertInstallName }));
 
 import { NextRequest } from "next/server";
 import { POST } from "@/app/api/ingest/route";
@@ -32,6 +32,7 @@ function call(body: unknown, headers: Record<string, string> = {}) {
 beforeEach(() => {
   vi.restoreAllMocks();
   events.insertEvent.mockReset().mockResolvedValue(true);
+  events.upsertInstallName.mockReset().mockResolvedValue(undefined);
   tokens.lookupToken
     .mockReset()
     .mockImplementation(async (t: string) => (t === "cmi_good" ? { id: "t1", label: "Priya", daily_budget_usd: 5 } : null));
@@ -83,5 +84,91 @@ describe("POST /api/ingest", () => {
 
   it("responses are no-store", async () => {
     expect((await call(EVENT)).headers.get("cache-control")).toBe("no-store");
+  });
+
+  describe("display names", () => {
+    const AUTH = { authorization: "Bearer cmi_good" };
+
+    it("a name_updated event only updates the install's name (no events row)", async () => {
+      const res = await call({ ...EVENT, type: "name_updated", user_name: "  Priya   Nair " }, AUTH);
+      expect(res.status).toBe(202);
+      expect(events.insertEvent).not.toHaveBeenCalled();
+      expect(events.upsertInstallName).toHaveBeenCalledWith(EVENT.install_id, "Priya Nair", expect.any(String));
+    });
+
+    it("name_updated without a usable name is rejected", async () => {
+      expect((await call({ ...EVENT, type: "name_updated" }, AUTH)).status).toBe(400);
+      expect((await call({ ...EVENT, type: "name_updated", user_name: "x" }, AUTH)).status).toBe(400);
+      expect(events.upsertInstallName).not.toHaveBeenCalled();
+    });
+
+    it("every ordinary event also carries the current name (self-healing)", async () => {
+      await call({ ...EVENT, user_name: "Priya Nair" }, AUTH);
+      expect(events.insertEvent).toHaveBeenCalledTimes(1);
+      expect(events.upsertInstallName).toHaveBeenCalledWith(EVENT.install_id, "Priya Nair", expect.any(String));
+    });
+
+    it("strips control characters and caps the length", async () => {
+      await call({ ...EVENT, user_name: "Pri\u0000ya\n\tNair" + "x".repeat(200) }, AUTH);
+      const stored = events.upsertInstallName.mock.calls[0][1] as string;
+      expect(stored.startsWith("Priya Nair")).toBe(true);
+      expect(stored.length).toBeLessThanOrEqual(60);
+      expect(/[\u0000-\u001f]/.test(stored)).toBe(false);
+    });
+
+    it("an event without a name never overwrites one (empty names are ignored by the upsert)", async () => {
+      await call(EVENT, AUTH);
+      expect(events.upsertInstallName).toHaveBeenCalledWith(EVENT.install_id, "", expect.any(String));
+    });
+  });
+
+  describe("run_progress (per-step cost reports)", () => {
+    const AUTH = { authorization: "Bearer cmi_good" };
+    const PROGRESS = {
+      type: "run_progress",
+      event_id: "7c1f9a52-0d3e-4b8a-9a77-3f1d2e6b8c10",
+      install_id: "inst-1234567890",
+      run_id: "run-abc",
+      title: "Market report",
+      step: "step2",
+      duration_s: 41.2,
+      cost_usd: 0.0123,
+      prompt_tokens: 15000,
+      completion_tokens: 2100,
+      cached_tokens: 4000,
+      ts: new Date().toISOString(),
+    };
+
+    it("is accepted and stored with its step, run id and the cost that step added", async () => {
+      const res = await call(PROGRESS, AUTH);
+      expect(res.status).toBe(202);
+      expect(events.insertEvent).toHaveBeenCalledTimes(1);
+      const stored = events.insertEvent.mock.calls[0][0];
+      expect(stored).toMatchObject({ type: "run_progress", run_id: "run-abc", step: "step2", cost_usd: 0.0123, prompt_tokens: 15000 });
+    });
+
+    it("takes the user label from the token, like every other event", async () => {
+      await call({ ...PROGRESS, user_label: "Forged" }, AUTH);
+      expect(events.insertEvent.mock.calls[0][0].user_label).toBe("Priya");
+    });
+
+    it("an unpriced step (null cost) is fine, a negative or absurd cost is not", async () => {
+      expect((await call({ ...PROGRESS, cost_usd: null }, AUTH)).status).toBe(202);
+      expect((await call({ ...PROGRESS, event_id: "7c1f9a52-0d3e-4b8a-9a77-3f1d2e6b8c11", cost_usd: -1 }, AUTH)).status).toBe(400);
+      expect((await call({ ...PROGRESS, event_id: "7c1f9a52-0d3e-4b8a-9a77-3f1d2e6b8c12", cost_usd: 1e9 }, AUTH)).status).toBe(400);
+    });
+
+    it("caps the free-text fields and needs credentials", async () => {
+      await call({ ...PROGRESS, step: "s".repeat(80), title: "t".repeat(500) }, AUTH);
+      const stored = events.insertEvent.mock.calls[0][0];
+      expect(stored.step.length).toBe(24);
+      expect(stored.title.length).toBe(200);
+      expect((await call(PROGRESS)).status).toBe(401);
+    });
+
+    it("also carries the display name, so the Users table updates from a progress event", async () => {
+      await call({ ...PROGRESS, user_name: "Rupen Kumar" }, AUTH);
+      expect(events.upsertInstallName).toHaveBeenCalledWith(PROGRESS.install_id, "Rupen Kumar", expect.any(String));
+    });
   });
 });

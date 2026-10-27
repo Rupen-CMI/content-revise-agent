@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ingestSchema, insertEvent, locationFromHeaders } from "@/lib/events";
+import { ingestSchema, insertEvent, locationFromHeaders, MIN_NAME_LENGTH, upsertInstallName } from "@/lib/events";
 import { secretsMatch } from "@/lib/session";
 import { lookupToken } from "@/lib/tokens";
 
@@ -65,7 +65,15 @@ export async function POST(req: NextRequest) {
 
   const event = label === null ? parsed.data : { ...parsed.data, user_label: label };
   try {
+    if (event.type === "name_updated") {
+      // not an `events` row: it only records the install's display name (current + previous)
+      if (event.user_name.length < MIN_NAME_LENGTH) return json({ error: "user_name required" }, 400);
+      await upsertInstallName(event.install_id, event.user_name, event.ts);
+      return json({ ok: true }, 202);
+    }
     const inserted = await insertEvent(event, locationFromHeaders(req.headers));
+    // every event carries the user's current name; applied only if newer than what is stored
+    await upsertInstallName(event.install_id, event.user_name, event.ts);
     return json({ ok: true, deduped: !inserted }, 202);
   } catch (e) {
     console.error("[ingest] insert failed:", e);

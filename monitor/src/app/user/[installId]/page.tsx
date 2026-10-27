@@ -5,11 +5,13 @@ import { publicError } from "@/lib/errors";
 import {
   userLabel,
   userLocations,
+  userNames,
   userRuns,
+  type InstallNames,
   type LocationRow,
   type RunRow,
 } from "@/lib/events";
-import { fmtCost, fmtDuration, fmtLocation, fmtTime, fmtTokens } from "@/lib/format";
+import { fmtCost, fmtDuration, fmtLocation, fmtRunStatus, fmtTime, fmtTokens } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -24,14 +26,16 @@ export default async function UserPage({
   let runs: RunRow[] = [];
   let locations: LocationRow[] = [];
   let label = "";
+  let names: InstallNames = { current: "", previous: "" };
   let totalCost = 0;
   let totalTokens = 0;
   let error: string | null = null;
   try {
-    [runs, locations, label] = await Promise.all([
+    [runs, locations, label, names] = await Promise.all([
       userRuns(installId),
       userLocations(installId),
       userLabel(installId),
+      userNames(installId),
     ]);
     totalCost = runs.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0);
     totalTokens = runs.reduce(
@@ -56,10 +60,12 @@ export default async function UserPage({
           <div className="page-head">
             <Link href="/" className="back">← All users</Link>
             <h1>
-              {label || "(unlabeled)"}{" "}
+              {names.current || label || "(unlabeled)"}{" "}
               <span className="mono">{installId.slice(0, 8)}</span>
             </h1>
             <p className="sub">
+              {names.previous ? <>Previously “{names.previous}” · </> : null}
+              {label && names.current && label !== names.current ? <>Issued to {label} · </> : null}
               {runs.length} run{runs.length === 1 ? "" : "s"} · {fmtCost(totalCost)} total ·{" "}
               {fmtTokens(totalTokens)} tokens
             </p>
@@ -82,11 +88,11 @@ export default async function UserPage({
                 </thead>
                 <tbody>
                   {runs.map((r) => (
-                    <tr key={r.event_id}>
+                    <tr key={r.run_key}>
                       <td className="wrap">{r.title || "(untitled)"}</td>
                       <td>
-                        <span className={`badge ${r.status === "error" ? "error" : "ok"}`}>
-                          {r.status ?? "?"}
+                        <span className={`badge ${fmtRunStatus(r.status, r.step).cls}`}>
+                          {fmtRunStatus(r.status, r.step).text}
                         </span>
                       </td>
                       <td className="num dim">{r.word_count ?? "—"}</td>
@@ -98,7 +104,7 @@ export default async function UserPage({
                   ))}
                   {runs.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="muted">No completed runs for this install.</td>
+                      <td colSpan={7} className="muted">No runs for this install yet.</td>
                     </tr>
                   )}
                 </tbody>

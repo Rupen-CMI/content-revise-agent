@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { BrandMark } from "@/components/BrandMark";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { loginAction, LoginState } from "./actions";
@@ -10,6 +10,12 @@ export default function LoginPage() {
     loginAction,
     {},
   );
+  // set by middleware / IdleGuard when the session ended on its own; read after mount so the
+  // server-rendered and first client render match
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    setExpired(new URLSearchParams(window.location.search).get("reason") === "expired");
+  }, []);
 
   return (
     <main className="login">
@@ -23,6 +29,11 @@ export default function LoginPage() {
         </div>
         <h1>Usage dashboard</h1>
         <p className="muted">Owner access. Enter the admin password.</p>
+        {expired ? (
+          <p className="muted" role="status">
+            You were signed out after an hour of inactivity. Sign in again to continue.
+          </p>
+        ) : null}
         <form action={formAction}>
           <input
             type="password"
