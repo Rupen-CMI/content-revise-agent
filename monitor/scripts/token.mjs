@@ -39,7 +39,9 @@ try {
       [hash(token), label.slice(0, 120), budget],
     );
     console.log(`id:     ${rows[0].id}\nlabel:  ${label}\nbudget: $${budget}/day (UTC)\ntoken:  ${token}\n`);
-    console.log("Store the token now; it cannot be shown again. Put it in the repo .env as MONITOR_PROXY_TOKEN for this build.");
+    console.log("Store the token now; it cannot be shown again.");
+    console.log('For a customer build: python packaging/build_package.py --user "<Name>" --proxy-token <token> (or set MONITOR_PROXY_TOKEN in the shell).');
+    console.log("Only YOUR OWN dev token goes in the repo .env; build_package.py never bakes that one.");
   } else if (cmd === "list") {
     const { rows } = await pool.query(`
       SELECT t.id, t.label, t.daily_budget_usd, t.revoked_at IS NOT NULL AS revoked,

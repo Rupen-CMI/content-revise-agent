@@ -81,16 +81,27 @@ def test_env_var_cannot_redirect_a_proxy_build(bp, monkeypatch):
     assert cfg.LLM_BASE_URL == "https://mon.example.app/api/v1"
 
 
-def test_token_can_come_from_env_file_but_cli_wins(bp):
-    env_path = bp.REPO / ".env"
-    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MONITOR_PROXY_TOKEN={TOKEN}\n", encoding="utf-8")
-    bp.generate_bpk("Priya", "", direct=False)  # falls back to .env
-    cfg, _ = _load_staged_config_after(bp)
-    assert cfg == TOKEN
+DEV_TOKEN = "cmi_" + "D" * 40
 
-    other = "cmi_" + "Z" * 40
-    bp.generate_bpk("Priya", other, direct=False)  # CLI/process value wins
-    assert _load_staged_config_after(bp)[0] == other
+
+def test_the_dev_token_in_env_is_never_baked_into_a_customer_build(bp):
+    """The repo .env holds the DEVELOPER's token for dev-run telemetry. A build that forgets --proxy-token
+    must fail, not quietly ship the developer's token inside a customer's package."""
+    env_path = bp.REPO / ".env"
+    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MONITOR_PROXY_TOKEN={DEV_TOKEN}\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as e:
+        bp.generate_bpk("Priya", "", direct=False)  # no explicit token: no fallback to .env
+    assert "token" in str(e.value)
+
+    with pytest.raises(SystemExit) as e:
+        bp.generate_bpk("Priya", DEV_TOKEN, direct=False)  # explicitly passing the dev token is refused too
+    assert "dev token" in str(e.value)
+
+    bp.generate_bpk("Priya", TOKEN, direct=False)  # the customer's own token is what gets baked
+    baked_token, bpk = _load_staged_config_after(bp)
+    assert baked_token == TOKEN
+    assert baked_token != DEV_TOKEN
 
 
 def _load_staged_config_after(bp):

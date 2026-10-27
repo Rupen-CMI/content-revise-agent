@@ -169,7 +169,13 @@ What the proxy enforces on every call:
 
    The same operations exist as `GET/POST/DELETE /api/tokens` (dashboard session required), and the
    **LLM tokens** page (`/tokens`) shows spend per token.
-3. Put the token in the repo `.env` as `MONITOR_PROXY_TOKEN` for that user's build.
+3. Build that user's copy with their token, passed explicitly (it is never read from the repo `.env`, whose
+   `MONITOR_PROXY_TOKEN` is only your own dev token and is refused by the build):
+
+   ```powershell
+   $env:MONITOR_PROXY_TOKEN = "cmi_..."          # or: --proxy-token cmi_...
+   python packaging/build_package.py --user "Priya"
+   ```
 
 ### Quick check
 

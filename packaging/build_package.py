@@ -578,9 +578,15 @@ def generate_bpk(user_label: str = "unlabeled", proxy_token: str = "", direct: b
     label. Without MONITOR_URL telemetry is a silent no-op, so the keys are
     then deliberately NOT baked at all."""
     env = read_env_file()
-    # CLI/process-env value wins over .env; either way it is only baked via the validated path below.
-    proxy_token = (proxy_token or env.get("MONITOR_PROXY_TOKEN", "")).strip()
-    env.pop("MONITOR_PROXY_TOKEN", None)
+    # The token must be passed explicitly (--proxy-token, or MONITOR_PROXY_TOKEN in the PROCESS environment).
+    # It is deliberately NOT read from the repo .env: that file's MONITOR_PROXY_TOKEN is the developer's own
+    # token for dev-run telemetry, and falling back to it would silently bake it into a customer's package,
+    # so all of their usage would be reported under the developer's token.
+    proxy_token = (proxy_token or "").strip()
+    dev_token = env.pop("MONITOR_PROXY_TOKEN", "").strip()
+    if not direct and proxy_token and proxy_token == dev_token:
+        die("this token is the one in the repo .env (the developer's own dev token). Mint a separate token for "
+            "this user: cd monitor && npm run token -- create \"<Name>\" <daily budget USD>")
     if direct:
         if "DEEPSEEK_API_KEY" not in env:
             die("local .env must contain DEEPSEEK_API_KEY for a --direct build")
@@ -590,8 +596,9 @@ def generate_bpk(user_label: str = "unlabeled", proxy_token: str = "", direct: b
             die("proxy build needs MONITOR_URL (the deployed monitor/Vercel URL) in the repo .env")
         if not re.fullmatch(r"cmi_[A-Za-z0-9_-]{20,}", proxy_token or ""):
             die("proxy build needs this user's token: pass --proxy-token cmi_... or set "
-                "MONITOR_PROXY_TOKEN in the environment (mint one: cd monitor && "
-                "npm run token -- create \"<Name>\" <daily budget USD>). "
+                "MONITOR_PROXY_TOKEN in the environment (not in .env: that one is your dev token and is "
+                "never baked). Mint one: cd monitor && "
+                "npm run token -- create \"<Name>\" <daily budget USD>. "
                 "Use --direct only for an explicit legacy build that ships the DeepSeek key.")
         env.pop("DEEPSEEK_API_KEY", None)  # never ship the real key in proxy mode
         # Telemetry authenticates with the install's own token too, so the shared ingest key (one value
