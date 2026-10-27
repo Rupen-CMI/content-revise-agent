@@ -311,10 +311,28 @@ window.addEventListener("drop", (e) => {
   dragDepth = 0;
   hideDropOverlay();
   fileDrop.classList.remove("drag-over");
-  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) {
+    // A file dropped on the final screen is a humanized draft to recheck, never a new upload: a new
+    // upload would wipe the very run it is meant to be checked against.
+    if (dropTarget() === "sop") runSopCheck(e.dataTransfer.files[0]);
+    else if (dropTarget() === "recheck") runRecheck(e.dataTransfer.files[0]);
+    else handleFile(e.dataTransfer.files[0]);
+  }
 });
 
+const DROP_TEXT = {
+  revamp: "Drop your .docx file anywhere to upload",
+  sop: "Drop your final draft anywhere to check its SOP compliance",
+  recheck: "Drop your humanized draft anywhere to recheck its SOPs",
+};
+
+function dropTarget() {
+  if (sopOpen) return "sop";
+  return canRecheck() ? "recheck" : "revamp";
+}
+
 function showDropOverlay() {
+  document.getElementById("page-drop-text").textContent = DROP_TEXT[dropTarget()];
   pageDropOverlay.hidden = false;
   // Force a layout flush before adding .visible, so the display:none -> flex change and the
   // opacity transition don't collapse into a single un-animated jump.
@@ -673,13 +691,18 @@ function stepDoneFlags() {
   };
 }
 
+// The SOP Check tool sits outside the revamp steps: opening it never touches the run, and any
+// step navigation (including a new upload) closes it again.
+let sopOpen = false;
+
 function setNav(target) {
+  sopOpen = false;
   state.nav = target;
   closeSidebar();
   saveRunPointer();
 }
 
-document.querySelectorAll(".step-item").forEach((btn) => {
+document.querySelectorAll(".step-item:not(.sop-item)").forEach((btn) => {
   btn.addEventListener("click", () => {
     if (btn.disabled) return;
     setNav(btn.dataset.nav);
@@ -1326,6 +1349,34 @@ function _countOccurrences(sections, phrase) {
   return _findMatches(full.toLowerCase(), phrase.toLowerCase()).length;
 }
 
+// ---------------------------------------------------------------- shared result rendering
+function faqHtml(faq) {
+  return faq.map((qa) => `
+    <div class="faq-item">
+      <p class="faq-question"><strong>${escapeHtml(qa.question)}</strong>${qa.intent
+        ? `<span class="faq-intent" title="Every FAQ entry here is a Most Searched Question from the search-demand pass, answered from the article's own facts.">MSQ &middot; ${escapeHtml(qa.intent)}</span>` : ""}</p>
+      <p class="faq-answer">${escapeHtml(qa.answer)}</p>
+    </div>
+  `).join("");
+}
+
+// The legend's count text for one result's keyword_counts. Tertiary (related) terms exist only on the
+// market-first chain, so that row stays hidden when no terms were ever sent.
+function keywordLegend(result) {
+  const counts = result.keyword_counts || {};
+  const sum = (o) => Object.values(o || {}).reduce((total, n) => total + n, 0);
+  const tertiaryTerms = result.tertiary_terms || [];
+  const longtails = result.long_tail_keywords || [];
+  return {
+    primary: `(${counts.primary || 0}x)`,
+    secondary: `(${sum(counts.secondary)}x, ${Object.keys(counts.secondary || {}).length}/${(result.secondary_keywords || []).length} used)`,
+    tertiary: tertiaryTerms.length ? `(${sum(counts.tertiary)}x, ${Object.keys(counts.tertiary || {}).length}/${tertiaryTerms.length} used)` : "",
+    longtail: `(${sum(counts.longtail)}x, ${Object.keys(counts.longtail || {}).length}/${longtails.length} used)`,
+    hasTertiary: tertiaryTerms.length > 0,
+    hasLongtail: longtails.length > 0,
+  };
+}
+
 // ---------------------------------------------------------------- render: final panel
 function renderFinalPanel() {
   const spinner = document.getElementById("final-spinner");
@@ -1340,6 +1391,11 @@ function renderFinalPanel() {
   if (finalizing || !state.result) return;
 
   const result = state.result;
+  if (recheckEls.forResult !== result) { // a new draft makes an earlier recheck stale
+    recheckEls.forResult = result;
+    recheckEls.result.hidden = true;
+    recheckEls.fileName.textContent = "";
+  }
   const passed = result.checks.filter((c) => c.passed).length;
   document.getElementById("final-checks-passed").textContent = `${passed} / ${result.checks.length}`;
   document.getElementById("final-report-name").textContent = result.report.name;
@@ -1352,36 +1408,18 @@ function renderFinalPanel() {
 
   const faq = result.faq || [];
   document.getElementById("final-faq-block").hidden = faq.length === 0;
-  document.getElementById("final-faq").innerHTML = faq.map((qa) => `
-    <div class="faq-item">
-      <p class="faq-question"><strong>${escapeHtml(qa.question)}</strong>${qa.intent
-        ? `<span class="faq-intent" title="Every FAQ entry here is a Most Searched Question from the search-demand pass, answered from the article's own facts.">MSQ &middot; ${escapeHtml(qa.intent)}</span>` : ""}</p>
-      <p class="faq-answer">${escapeHtml(qa.answer)}</p>
-    </div>
-  `).join("");
+  document.getElementById("final-faq").innerHTML = faqHtml(faq);
 
   // The legend's numbers come from the backend's own highlighting pass (result.keyword_counts, filled by the
   // same spans that produce the marks in the text) so they always match what is highlighted. A literal phrase
   // search here cannot: it misses every secondary keyword the writer reordered or split across a sentence.
-  const counts = result.keyword_counts || {};
-  const secondaryTotal = Object.values(counts.secondary || {}).reduce((sum, n) => sum + n, 0);
-  const secondaryUsed = Object.keys(counts.secondary || {}).length;
-  // Tertiary (related) terms exist only on the market-first chain — the legend row stays hidden on
-  // an old run (no terms and no counts were ever sent for it).
-  const tertiaryTotal = Object.values(counts.tertiary || {}).reduce((sum, n) => sum + n, 0);
-  const tertiaryUsed = Object.keys(counts.tertiary || {}).length;
-  const tertiaryTerms = result.tertiary_terms || [];
-  document.getElementById("legend-tertiary").hidden = !tertiaryTerms.length;
-  document.getElementById("legend-count-tertiary").textContent =
-    tertiaryTerms.length ? `(${tertiaryTotal}x, ${tertiaryUsed}/${tertiaryTerms.length} used)` : "";
-  const longtailTotal = Object.values(counts.longtail || {}).reduce((sum, n) => sum + n, 0);
-  const longtailUsed = Object.keys(counts.longtail || {}).length;
-  document.getElementById("legend-count-primary").textContent = `(${counts.primary || 0}x)`;
-  document.getElementById("legend-count-secondary").textContent =
-    `(${secondaryTotal}x, ${secondaryUsed}/${(result.secondary_keywords || []).length} used)`;
-  document.getElementById("legend-count-longtail").textContent =
-    `(${longtailTotal}x, ${longtailUsed}/${(result.long_tail_keywords || []).length} used)`;
-  document.getElementById("legend-longtail").hidden = (result.long_tail_keywords || []).length === 0;
+  const legend = keywordLegend(result);
+  document.getElementById("legend-tertiary").hidden = !legend.hasTertiary;
+  document.getElementById("legend-count-tertiary").textContent = legend.tertiary;
+  document.getElementById("legend-longtail").hidden = !legend.hasLongtail;
+  document.getElementById("legend-count-primary").textContent = legend.primary;
+  document.getElementById("legend-count-secondary").textContent = legend.secondary;
+  document.getElementById("legend-count-longtail").textContent = legend.longtail;
   document.getElementById("legend-count-evidence").textContent =
     `(${(result.evidence_citations || []).length})`;
 
@@ -1397,11 +1435,142 @@ function renderFinalPanel() {
   };
 }
 
+// ---------------------------------------------------------------- Recheck a humanized draft (final panel)
+// The run's context lives on the server, so this works only while the run is still open in the app: the
+// server maps the uploaded draft back onto the run's own sections and applies the run's checks to it.
+const recheckEls = {
+  input: document.getElementById("recheck-input"),
+  spinner: document.getElementById("recheck-spinner"),
+  result: document.getElementById("recheck-result"),
+  fileName: document.getElementById("recheck-file-name"),
+};
+
+document.getElementById("recheck-btn").addEventListener("click", () => recheckEls.input.click());
+recheckEls.input.addEventListener("change", () => {
+  if (recheckEls.input.files.length) runRecheck(recheckEls.input.files[0]);
+  recheckEls.input.value = ""; // the same file can be chosen again after edits
+});
+
+function canRecheck() {
+  return !sopOpen && state.nav === "final" && !!state.run && !!state.result;
+}
+
+async function runRecheck(file) {
+  hideError();
+  recheckEls.fileName.textContent = file.name;
+  recheckEls.result.hidden = true;
+  recheckEls.spinner.hidden = false;
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const data = await apiPost(`/recheck?run_token=${encodeURIComponent(state.run.token)}`, formData);
+    renderRecheck(data.result);
+  } catch (e) {
+    showError("Could not recheck this file", e);
+  } finally {
+    recheckEls.spinner.hidden = true;
+  }
+}
+
+function renderRecheck(result) {
+  const passed = result.checks.filter((c) => c.passed).length;
+  document.getElementById("recheck-passed").textContent = `${passed} / ${result.checks.length}`;
+  const before = state.result.checks;
+  document.getElementById("recheck-before").textContent =
+    `${before.filter((c) => c.passed).length} / ${before.length}`;
+
+  const notes = document.getElementById("recheck-notes");
+  notes.hidden = !(result.notes || []).length;
+  notes.innerHTML = (result.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join("");
+
+  document.getElementById("recheck-title").textContent = result.title;
+  document.getElementById("recheck-article").innerHTML = renderSectionsHighlighted(result.sections, result);
+  const faq = result.faq || [];
+  document.getElementById("recheck-faq-block").hidden = faq.length === 0;
+  document.getElementById("recheck-faq").innerHTML = faqHtml(faq);
+
+  const l = keywordLegend(result);
+  document.getElementById("recheck-legend").innerHTML = `
+    <span class="legend-item"><i class="legend-swatch legend-swatch--primary"></i> Primary keyword <span class="legend-count">${l.primary}</span></span>
+    <span class="legend-item"><i class="legend-swatch legend-swatch--secondary"></i> Secondary keyword <span class="legend-count">${l.secondary}</span></span>
+    ${l.hasTertiary ? `<span class="legend-item"><i class="legend-swatch legend-swatch--tertiary"></i> Related term <span class="legend-count">${l.tertiary}</span></span>` : ""}
+    ${l.hasLongtail ? `<span class="legend-item"><i class="legend-swatch legend-swatch--longtail"></i> Long-tail keyword <span class="legend-count">${l.longtail}</span></span>` : ""}`;
+
+  // Failures first, so what needs fixing is the first thing read.
+  const rows = [...result.checks.filter((c) => !c.passed), ...result.checks.filter((c) => c.passed)];
+  document.getElementById("recheck-checklist").innerHTML = rows.map((c) => `
+    <li><i data-lucide="${c.passed ? "check" : "x"}" class="${c.passed ? "pass" : "fail"}"></i>
+    <span>${escapeHtml(c.name)}${c.detail ? " — " + escapeHtml(c.detail) : ""}</span></li>
+  `).join("");
+  recheckEls.result.hidden = false;
+  iconify();
+}
+
+// ---------------------------------------------------------------- SOP Check tool
+const sopEls = {
+  input: document.getElementById("sop-file-input"),
+  text: document.getElementById("sop-file-text"),
+  spinner: document.getElementById("sop-spinner"),
+  result: document.getElementById("sop-result"),
+};
+
+function openSopCheck() {
+  sopOpen = true;
+  closeSidebar();
+  render();
+}
+
+document.getElementById("sop-nav-btn").addEventListener("click", openSopCheck);
+document.getElementById("sop-link").addEventListener("click", openSopCheck);
+sopEls.input.addEventListener("change", () => {
+  if (sopEls.input.files.length) runSopCheck(sopEls.input.files[0]);
+  sopEls.input.value = ""; // the same file can be chosen again after edits
+});
+
+async function runSopCheck(file) {
+  hideError();
+  sopEls.text.textContent = file.name;
+  sopEls.result.hidden = true;
+  sopEls.spinner.hidden = false;
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    renderSopResult(await apiPost("/sop-check", formData));
+  } catch (e) {
+    showError("Could not check this file", e);
+  } finally {
+    sopEls.spinner.hidden = true;
+  }
+}
+
+function renderSopResult(data) {
+  const hardFails = data.checks.filter((c) => !c.passed && !c.soft);
+  const softFails = data.checks.filter((c) => !c.passed && c.soft);
+  const passes = data.checks.filter((c) => c.passed);
+  document.getElementById("sop-passed").textContent = `${passes.length} / ${data.checks.length}`;
+  document.getElementById("sop-failed").textContent = String(hardFails.length + softFails.length);
+  document.getElementById("sop-words").textContent = String(data.word_count);
+  const row = (c, icon, cls) => `
+    <li><i data-lucide="${icon}" class="${cls}"></i>
+    <span>${escapeHtml(c.name)}${c.detail ? " — " + escapeHtml(c.detail) : ""}</span></li>`;
+  document.getElementById("sop-checklist").innerHTML =
+    hardFails.map((c) => row(c, "x", "fail")).join("")
+    + softFails.map((c) => row(c, "alert-triangle", "warn")).join("")
+    + passes.map((c) => row(c, "check", "pass")).join("");
+  document.getElementById("sop-skipped").innerHTML = data.skipped.map((s) => `
+    <li><i data-lucide="minus" class="skip"></i>
+    <span>${escapeHtml(s.name)} — ${escapeHtml(s.reason)}</span></li>`).join("");
+  sopEls.result.hidden = false;
+  iconify();
+}
+
 // ---------------------------------------------------------------- master render
 function render() {
   renderRunControls();
   renderStepNav();
-  showPanel(state.article ? state.nav : "empty");
+  document.querySelectorAll(".step-item:not(.sop-item)").forEach((b) => { if (sopOpen) b.classList.remove("active"); });
+  document.getElementById("sop-nav-btn").classList.toggle("active", sopOpen);
+  showPanel(sopOpen ? "sopcheck" : state.article ? state.nav : "empty");
   if (state.article) { renderArticlePanel(); renderSponsorCandidates(); }
   renderStep1Panel();
   renderStep2Panel();

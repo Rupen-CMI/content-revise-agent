@@ -898,6 +898,13 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .checklist li:last-child { border-bottom: none; }
 .checklist .pass { color: var(--success); }
 .checklist .fail { color: var(--danger); }
+.checklist .warn { color: #b7791f; }
+.checklist .skip { color: var(--text-faint); }
+.sop-nav { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+#sop-link { margin-top: 16px; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+#sop-link span { text-decoration: underline; }
+#sop-link svg { width: 14px; height: 14px; flex: none; }
+#sop-result { margin-top: 20px; }
 
 /* Stagger only the first handful — beyond that the delay would make the list feel sluggish
    to finish revealing, so later items just fade in together with the last staggered one. */
