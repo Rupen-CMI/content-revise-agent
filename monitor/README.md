@@ -168,7 +168,7 @@ curl -s "$MONITOR_URL/api/v1/chat/completions" \
 
 | Surface | Who can use it | How |
 |---|---|---|
-| Dashboard pages, `/api/tokens` | the owner | `ADMIN_PASSWORD` login -> signed `__Host-` session cookie (HttpOnly, Secure, SameSite=Lax, 7 days). Checked in middleware **and again** inside every page and admin route. Mutations also refuse cross-site requests (CSRF). |
+| Dashboard pages, `/api/tokens` | the owner | `ADMIN_PASSWORD` login -> signed `__Host-` session cookie (HttpOnly, Secure, SameSite=Lax). Ends after **1 hour of inactivity** (sliding) or **12 hours** since sign-in, whichever comes first. Checked in middleware **and again** inside every page and admin route. Mutations also refuse cross-site requests (CSRF). |
 | `POST /api/ingest` | an install | its own token (`Authorization: Bearer cmi_...`); the user label comes from the token, so one install cannot report as another. `INGEST_KEY` is only a legacy fallback for `--direct` builds and may be left unset. |
 | `POST /api/v1/chat/completions` | an install | its own token; whitelisted params only, model allowlist, `max_tokens` cap, 400k-char prompt cap, per-token daily USD budget, per-token calls/minute limit, optional global daily cap. |
 
@@ -179,6 +179,10 @@ What is deliberately **not** possible:
 - Prompts and document text are never stored; only titles, token counts, costs and city-level location.
   The raw IP address is never stored (login throttling keeps only a salted hash for 24 h).
 - Login is throttled: 5 failures per IP (and 40 overall) per 15 minutes locks login for that window.
+- Idle timeout: every real request renews the session cookie (at most once a minute; `<Link>` prefetches
+  and sign-out do not count). Activity that makes no request (reading, scrolling, moving the mouse) is
+  reported by `IdleGuard` through `POST /api/session/ping` at most every 2 minutes, and an open tab locks
+  itself and signs out once the hour is up. Activity is shared between tabs through `localStorage`.
 - Responses to API routes are `Cache-Control: no-store`; the create-token response contains a live secret.
 - Security headers on every response: CSP (no external scripts, `connect-src 'self'`, no framing), HSTS,
   `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `noindex`. No `X-Powered-By`.
@@ -193,6 +197,7 @@ Things to do on the Vercel side (not code):
 - Revoke a token the moment a PC is lost or a person leaves: `npm run token -- revoke <id>`.
 - Keep `DEEPSEEK_API_KEY` only in Vercel env, with a spend cap set in the DeepSeek console as a last resort.
 
-Known limits: a stolen session cookie stays valid until it expires (stateless sessions); the per-token
+Known limits: a stolen session cookie stays valid until its idle/absolute limit passes (stateless
+sessions: rotate `SESSION_SECRET` to kill all of them at once); the per-token
 budget is checked before a call, so concurrent calls can overshoot it by a few cents; usage events are
 reported by the agent, so only the proxy's `llm_calls` figures are authoritative for cost.

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
+import {
+  renewSessionToken,
+  SESSION_COOKIE,
+  sessionCookieOptions,
+  verifySessionToken,
+} from "@/lib/session";
 
 // Public (not session-protected) paths, matched EXACTLY so a lookalike such as /loginx or /api/ingestx
 // is never accidentally public:
@@ -12,17 +17,40 @@ export function isPublicPath(pathname: string): boolean {
   return pathname === "/login" || pathname === "/api/ingest" || pathname.startsWith("/api/v1/");
 }
 
+// Next's <Link> prefetches routes the user merely has in view. That is the browser guessing, not the
+// admin acting, so it must not keep an idle session alive.
+function isPrefetch(req: NextRequest): boolean {
+  return (
+    req.headers.has("next-router-prefetch") ||
+    /prefetch/i.test(req.headers.get("purpose") ?? "") ||
+    /prefetch/i.test(req.headers.get("sec-purpose") ?? "")
+  );
+}
+
 export async function middleware(req: NextRequest) {
-  if (isPublicPath(req.nextUrl.pathname)) return NextResponse.next();
+  const path = req.nextUrl.pathname;
+  if (isPublicPath(path)) return NextResponse.next();
 
   const secret = process.env.SESSION_SECRET ?? "";
   const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (await verifySessionToken(token, secret)) return NextResponse.next();
+  if (await verifySessionToken(token, secret)) {
+    const res = NextResponse.next();
+    // Sliding idle timeout: any real request from a signed-in admin pushes the idle deadline out. The
+    // renewed cookie rides on this response; the page/route below still sees (and re-checks) the old one.
+    if (path !== "/logout" && !isPrefetch(req)) {
+      const renewed = await renewSessionToken(token, secret);
+      if (renewed) res.cookies.set(SESSION_COOKIE, renewed.value, sessionCookieOptions(renewed.maxAge));
+    }
+    return res;
+  }
 
-  if (req.nextUrl.pathname.startsWith("/api/")) {
+  if (path.startsWith("/api/")) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  return NextResponse.redirect(new URL("/login", req.url));
+  // a cookie that is present but no longer valid means it timed out; say so on the login page
+  const login = new URL("/login", req.url);
+  if (token) login.searchParams.set("reason", "expired");
+  return NextResponse.redirect(login);
 }
 
 export const config = {
