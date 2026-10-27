@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { sameOriginOnly } from "@/lib/auth";
 import { demoEnabled } from "@/lib/demo";
 import { clientIp, ipKey } from "@/lib/throttle";
-import { isPublicPath } from "@/middleware";
+import { config, isPublicPath } from "@/middleware";
 import { SESSION_COOKIE, SESSION_IDLE_S, SESSION_MAX_S } from "@/lib/session";
 
 const req = (headers: Record<string, string>) =>
@@ -19,6 +19,23 @@ describe("middleware public paths", () => {
   it("does NOT treat lookalikes or admin routes as public", () => {
     for (const p of ["/loginx", "/login/x", "/api/ingestx", "/api/ingest/x", "/api/v10/x", "/api/tokens", "/tokens", "/", "/user/abc", "/logout"]) {
       expect(isPublicPath(p), p).toBe(false);
+    }
+  });
+});
+
+describe("middleware matcher", () => {
+  // Next compiles the matcher as path-to-regexp; this pattern is plain enough to test as a regex
+  const re = new RegExp(`^${config.matcher[0]}$`);
+
+  it("lets the favicon through without a session (it has to load on the login page)", () => {
+    expect(re.test("/icon.svg")).toBe(false); // false = middleware is skipped for it
+    expect(re.test("/favicon.ico")).toBe(false);
+    expect(re.test("/_next/static/chunks/main.js")).toBe(false);
+  });
+
+  it("still guards everything else, including lookalikes of the icon path", () => {
+    for (const p of ["/", "/tokens", "/user/abc", "/api/tokens", "/icon.svg/x", "/icon.svgx", "/secret/icon.svg"]) {
+      expect(re.test(p), p).toBe(true); // true = goes through middleware()
     }
   });
 });
