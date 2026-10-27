@@ -18,6 +18,7 @@ import {
   fmtCost,
   fmtDuration,
   fmtLocation,
+  fmtRunStatus,
   fmtTime,
   fmtTokens,
 } from "@/lib/format";
@@ -143,7 +144,7 @@ export default async function DashboardPage() {
                 </thead>
                 <tbody>
                   {runs.map((r) => (
-                    <tr key={r.event_id}>
+                    <tr key={`${r.install_id}:${r.run_key}`}>
                       <td className="wrap">
                         <Link href={`/user/${encodeURIComponent(r.install_id)}`}>
                           {r.title || "(untitled)"}
@@ -151,8 +152,8 @@ export default async function DashboardPage() {
                       </td>
                       <td>{r.user_label || "(unlabeled)"}</td>
                       <td>
-                        <span className={`badge ${r.status === "error" ? "error" : "ok"}`}>
-                          {r.status ?? "?"}
+                        <span className={`badge ${fmtRunStatus(r.status, r.step).cls}`}>
+                          {fmtRunStatus(r.status, r.step).text}
                         </span>
                       </td>
                       <td className="num">{fmtCost(r.cost_usd)}</td>

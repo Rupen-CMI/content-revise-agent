@@ -36,6 +36,7 @@ The report catalog comes from ``catalog.sqlite`` alongside the code (built from
 Postgres by ``scripts/export_catalog_sqlite.py``) — no live database needed.
 """
 
+import functools
 import json
 import logging
 import os
@@ -482,9 +483,10 @@ def _emit_run_completed(run: RunState, run_token: str, status: str, started: flo
                         totals: dict | None = None) -> None:
     """One telemetry run_completed for /finalize. Fire-and-forget (telemetry.send never
     raises or blocks); the totals snapshot must have been taken BEFORE run_cost_summary()
-    popped the tracker, so it's passed in for the success path."""
+    popped the tracker, so it's passed in for the success path. Like run_progress it carries only
+    what was spent since the previous report (llm.run_cost_delta), because the dashboard sums them."""
     if totals is None:
-        totals = llm.run_cost_totals(run.logger)  # error path: tracker is still in place
+        totals = llm.run_cost_delta(run.logger)  # error path: tracker is still in place
     try:
         telemetry.emit_run_completed(
             run_id=run_token,
@@ -499,6 +501,54 @@ def _emit_run_completed(run: RunState, run_token: str, status: str, started: flo
         )
     except Exception:
         pass
+
+
+def _emit_progress(logger: logging.Logger, run_id: str, title: str, step: str, started: float,
+                   only_if_spent: bool = False) -> None:
+    """Tell the dashboard a pipeline step ended and what it cost (only the LLM calls made since the
+    last report). Called for failed steps too: a step that errors out has still spent money
+    (only_if_spent skips the report for a step that failed without making a single call, e.g. one
+    rejected by validation). Telemetry must never affect the pipeline, so nothing in here may raise."""
+    try:
+        if not telemetry.configured():
+            return
+        totals = llm.run_cost_delta(logger)
+        if only_if_spent and not totals.get("calls"):
+            return
+        telemetry.emit_run_progress(
+            run_id=run_id,
+            title=title,
+            step=step,
+            duration_s=round(time.time() - started, 1),
+            cost_usd=totals.get("cost_usd"),
+            prompt_tokens=totals.get("prompt_tokens", 0),
+            completion_tokens=totals.get("completion_tokens", 0),
+            cached_tokens=totals.get("cached_tokens", 0),
+        )
+    except Exception:
+        pass
+
+
+def _reports_step(step: str):
+    """Decorator for the /stepN endpoints (the run already exists): when the step returns OR raises,
+    send a run_progress event with the cost it incurred. A run abandoned after step 2 is therefore on
+    the dashboard, with its real cost, instead of only appearing if /finalize is ever reached."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(req):
+            succeeded = False
+            try:
+                result = fn(req)
+                succeeded = True
+                return result
+            finally:
+                token = getattr(req, "run_token", None) or ""
+                run = _RUNS.get(token)
+                if run is not None:
+                    _emit_progress(run.logger, token, run.title or run.article.title or run.filename, step,
+                                   run.created_at, only_if_spent=not succeeded)
+        return wrapper
+    return decorate
 
 
 # ---------------------------------------------------------------- serialization (frontend shapes; camelCase where the UI expects it)
@@ -867,11 +917,16 @@ def step1(req: Step1Request) -> dict:
     logger, log_path = new_run_logger()
     logger.info(f"ARTICLE TITLE: {article.title}")
     logger.info(f"SPONSOR PARAGRAPH: {sponsor.text}")
+    started = time.time()
+    title = article.title or Path(req.filename).name or "upload.docx"
     try:
         orient = pipeline.run_orient(article, sponsor, logger)
         claim_future = _start_claim_search(orient, logger)
         candidates = pipeline.run_match_catalog(orient, logger)
     except (PipelineError, LLMError) as e:
+        # no run token exists yet (it is minted below, after the LLM work), but the calls that did
+        # happen were paid for, so report them under their own id
+        _emit_progress(logger, secrets.token_hex(16), title, "step1", started)
         raise _pipeline_failure(logger, "Step 1", e)
 
     _prune_runs()
@@ -882,6 +937,7 @@ def step1(req: Step1Request) -> dict:
         candidates=candidates, logger=logger, log_path=log_path, claim_future=claim_future,
     )
     logger.info(f"STEP 1 DONE — run token {token[:8]}…, {len(candidates)} candidates")
+    _emit_progress(logger, token, title, "step1", started)
     return {
         "token": token,
         "run_token": token,
@@ -956,6 +1012,7 @@ def _step2_v2(run: RunState, chosen: reports.CatalogEntry) -> dict:
 
 
 @app.post("/step2")
+@_reports_step("step2")
 def step2(req: Step2Request) -> dict:
     """Step 2: fetch market evidence online. Runs ONLY after the human confirms a market —
     the web search queries are built from the CONFIRMED report's own name, never the LLM's
@@ -1082,6 +1139,7 @@ def _step3_v2(run: RunState) -> dict:
 
 
 @app.post("/step3")
+@_reports_step("step3")
 def step3(req: Step3Request) -> dict:
     """Step 3: fetch market report facts. Call 2 (LLM) selects usable evidence from the Step 2
     web hits, scoped to the confirmed report."""
@@ -1129,6 +1187,7 @@ def _step4_chain(run: RunState) -> dict:
 
 
 @app.post("/step4")
+@_reports_step("step4")
 def step4(req: Step4Request) -> dict:
     """Step 4: write the report (Call 3), then run the SEO/readability revision pass (Call 4)."""
     run = _get_run(req.run_token)
@@ -1212,7 +1271,7 @@ def finalize(req: FinalizeRequest) -> dict:
     # The run is kept alive (not popped) so the final page's "Regenerate draft" button can
     # resend /step4 + /finalize against this same token for a different draft — it's still
     # bounded by the normal RUN_TTL_S/200-run eviction in _prune_runs, same as any other run.
-    run_totals = llm.run_cost_totals(run.logger)  # peek BEFORE run_cost_summary() pops the tracker (telemetry, below)
+    run_totals = llm.run_cost_delta(run.logger)  # what finalize added; taken BEFORE run_cost_summary() pops the tracker (telemetry, below)
     run.logger.info("LLM COST FOR THIS RUN (logs only — not shown in the UI):")
     for line in llm.run_cost_summary(run.logger):
         run.logger.info(line)

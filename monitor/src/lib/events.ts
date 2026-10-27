@@ -62,6 +62,22 @@ const runCompletedSchema = z.object({
   cached_tokens: z.number().int().min(0).max(1e12).nullable().optional(),
 });
 
+// A pipeline step ended (passed or failed). cost_usd / *_tokens are what THAT STEP added, not a running
+// total, so the dashboard can simply sum every event of a run. Sent after each of steps 1-4, which is
+// what lets a run abandoned halfway still show up with what it actually cost.
+const runProgressSchema = z.object({
+  ...baseFields,
+  type: z.literal("run_progress"),
+  run_id: capped(64),
+  title: capped(200),
+  step: capped(24),
+  duration_s: z.number().min(0).max(2_592_000).nullable().optional(),
+  cost_usd: z.number().min(0).max(1_000_000).nullable().optional(),
+  prompt_tokens: z.number().int().min(0).max(1e12).nullable().optional(),
+  completion_tokens: z.number().int().min(0).max(1e12).nullable().optional(),
+  cached_tokens: z.number().int().min(0).max(1e12).nullable().optional(),
+});
+
 const appStartedSchema = z.object({
   ...baseFields,
   type: z.literal("app_started"),
@@ -75,6 +91,7 @@ const nameUpdatedSchema = z.object({
 
 export const ingestSchema = z.discriminatedUnion("type", [
   runCompletedSchema,
+  runProgressSchema,
   appStartedSchema,
   nameUpdatedSchema,
 ]);
@@ -138,13 +155,14 @@ export async function upsertInstallName(installId: string, name: string, ts: str
 
 export async function insertEvent(event: StoredEvent, loc: Location): Promise<boolean> {
   await ensureSchema();
-  const run = event.type === "run_completed" ? event : null;
+  const run = event.type === "run_completed" || event.type === "run_progress" ? event : null;
+  const completed = event.type === "run_completed" ? event : null;
   const res = await getPool().query(
     `INSERT INTO events
        (event_id, type, install_id, user_label, app_version, ts, city, region, country,
         run_id, title, word_count, status, duration_s, cost_usd,
-        prompt_tokens, completion_tokens, cached_tokens)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        prompt_tokens, completion_tokens, cached_tokens, step)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      ON CONFLICT (event_id) DO NOTHING`,
     [
       event.event_id,
@@ -158,19 +176,32 @@ export async function insertEvent(event: StoredEvent, loc: Location): Promise<bo
       loc.country,
       run?.run_id ?? "",
       run?.title ?? "",
-      run?.word_count ?? null,
-      run?.status ?? null,
+      completed?.word_count ?? null,
+      completed?.status ?? null,
       run?.duration_s ?? null,
       run?.cost_usd ?? null,
       run?.prompt_tokens ?? null,
       run?.completion_tokens ?? null,
       run?.cached_tokens ?? null,
+      event.type === "run_progress" ? event.step : completed ? "finalize" : "",
     ],
   );
   return (res.rowCount ?? 0) > 0;
 }
 
 // ---------------------------------------------------------------- dashboard queries
+
+// A run is reported as a series of events that all share its run_id: one run_progress per pipeline step
+// and a run_completed at the end. Each carries only the cost/tokens it ADDED, so a run's cost is simply the
+// SUM over its events, a run abandoned after step 2 still counts what it spent, and a "Regenerate draft"
+// (a second finalize on the same run) adds its cost to the same run instead of inflating the run count.
+// (Events from before run_progress existed have one run_completed per run, which fits the same model.)
+const RUN_EVENT = `type IN ('run_progress', 'run_completed')`;
+const RUN_KEY = `COALESCE(NULLIF(run_id, ''), event_id)`;
+/** A run with no completion whose last event is older than this is shown as "unfinished", not "running". */
+const RUNNING_WINDOW = `interval '30 minutes'`;
+
+export type RunStatus = "ok" | "error" | "running" | "unfinished";
 
 export interface InstallRow {
   install_id: string;
@@ -202,10 +233,11 @@ export async function listInstalls(): Promise<InstallRow[]> {
               FROM events e3
              WHERE e3.install_id = e.install_id AND (e3.city <> '' OR e3.country <> '')
              ORDER BY e3.ts DESC LIMIT 1) AS last_location,
-           COUNT(*) FILTER (WHERE e.type = 'run_completed') AS runs,
-           COALESCE(SUM(e.cost_usd) FILTER (WHERE e.type = 'run_completed'), 0) AS total_cost,
+           COUNT(DISTINCT COALESCE(NULLIF(e.run_id, ''), e.event_id))
+             FILTER (WHERE e.type IN ('run_progress', 'run_completed')) AS runs,
+           COALESCE(SUM(e.cost_usd) FILTER (WHERE e.type IN ('run_progress', 'run_completed')), 0) AS total_cost,
            COALESCE(SUM(COALESCE(e.prompt_tokens, 0) + COALESCE(e.completion_tokens, 0))
-             FILTER (WHERE e.type = 'run_completed'), 0) AS total_tokens
+             FILTER (WHERE e.type IN ('run_progress', 'run_completed')), 0) AS total_tokens
     FROM events e
     GROUP BY e.install_id
     ORDER BY MAX(e.ts) DESC
@@ -226,21 +258,26 @@ export async function dashboardStats(): Promise<Stats> {
   const rows = await q<Stats>(`
     SELECT (SELECT COUNT(DISTINCT install_id) FROM events
               WHERE ts > now() - interval '7 days')::int AS active_users,
-           (SELECT COUNT(*) FROM events WHERE type = 'run_completed')::int AS total_runs,
-           (SELECT COALESCE(SUM(cost_usd), 0) FROM events WHERE type = 'run_completed') AS total_cost,
+           (SELECT COUNT(DISTINCT install_id || ':' || ${RUN_KEY}) FROM events WHERE ${RUN_EVENT})::int AS total_runs,
+           (SELECT COALESCE(SUM(cost_usd), 0) FROM events WHERE ${RUN_EVENT}) AS total_cost,
            (SELECT COALESCE(SUM(cost_usd), 0) FROM events
-              WHERE type = 'run_completed' AND ts > now() - interval '7 days') AS cost_7d
+              WHERE ${RUN_EVENT} AND ts > now() - interval '7 days') AS cost_7d
   `);
   return rows[0];
 }
 
+/** One row per run, folded from all of that run's events. */
 export interface RunRow {
-  event_id: string;
+  run_key: string;
   install_id: string;
   user_label: string;
   title: string;
-  status: string | null;
+  /** ok / error once finalized; running / unfinished while it has no completion (see RUNNING_WINDOW) */
+  status: RunStatus;
+  /** the last pipeline step reported: step1..step4, or finalize */
+  step: string;
   word_count: number | null;
+  /** summed over the run's events; null only if no event carried a price */
   cost_usd: number | null;
   duration_s: number | null;
   prompt_tokens: number | null;
@@ -248,21 +285,42 @@ export interface RunRow {
   city: string;
   region: string;
   country: string;
+  /** time of the run's latest event */
   ts: string;
+}
+
+// `$where` is a fixed SQL fragment from this file (never user input); values go through parameters.
+function runRowsSql(where: string, limitParam: string): string {
+  return `
+    SELECT ${RUN_KEY} AS run_key,
+           install_id,
+           COALESCE((ARRAY_AGG(user_label ORDER BY ts DESC) FILTER (WHERE user_label <> ''))[1], '') AS user_label,
+           COALESCE((ARRAY_AGG(title ORDER BY ts DESC) FILTER (WHERE title <> ''))[1], '') AS title,
+           CASE WHEN BOOL_OR(type = 'run_completed')
+                  THEN COALESCE((ARRAY_AGG(status ORDER BY ts DESC) FILTER (WHERE type = 'run_completed'))[1], 'ok')
+                WHEN MAX(ts) > now() - ${RUNNING_WINDOW} THEN 'running'
+                ELSE 'unfinished' END AS status,
+           COALESCE((ARRAY_AGG(step ORDER BY ts DESC))[1], '') AS step,
+           MAX(word_count) AS word_count,
+           SUM(cost_usd)::float8 AS cost_usd,
+           MAX(duration_s) AS duration_s,
+           SUM(prompt_tokens)::float8 AS prompt_tokens,
+           SUM(completion_tokens)::float8 AS completion_tokens,
+           (ARRAY_AGG(city ORDER BY ts DESC))[1] AS city,
+           (ARRAY_AGG(region ORDER BY ts DESC))[1] AS region,
+           (ARRAY_AGG(country ORDER BY ts DESC))[1] AS country,
+           MAX(ts) AS ts
+      FROM events
+     WHERE ${RUN_EVENT}${where}
+     GROUP BY 1, install_id
+     ORDER BY MAX(ts) DESC
+     LIMIT ${limitParam}`;
 }
 
 export async function recentRuns(limit = 30): Promise<RunRow[]> {
   if (demo.demoEnabled()) return demo.demoRecentRuns(limit);
   await ensureSchema();
-  return q<RunRow>(
-    `SELECT event_id, install_id, user_label, title, status, word_count,
-            cost_usd, duration_s, prompt_tokens, completion_tokens, city, region, country, ts
-       FROM events
-      WHERE type = 'run_completed'
-      ORDER BY ts DESC
-      LIMIT $1`,
-    [limit],
-  );
+  return q<RunRow>(runRowsSql("", "$1"), [limit]);
 }
 
 export interface DailyCost {
@@ -275,11 +333,12 @@ export async function dailyCost(days = 30): Promise<DailyCost[]> {
   if (demo.demoEnabled()) return demo.demoDailyCost(days);
   await ensureSchema();
   return q<DailyCost>(
+    // per-event amounts, so each day shows what was actually spent that day (a run spanning midnight splits)
     `SELECT (ts AT TIME ZONE 'UTC')::date::text AS day,
             COALESCE(SUM(cost_usd), 0) AS cost,
-            COUNT(*)::int AS runs
+            COUNT(DISTINCT install_id || ':' || ${RUN_KEY})::int AS runs
        FROM events
-      WHERE type = 'run_completed' AND ts > now() - ($1 || ' days')::interval
+      WHERE ${RUN_EVENT} AND ts > now() - ($1 || ' days')::interval
       GROUP BY 1
       ORDER BY 1`,
     [String(days)],
@@ -289,15 +348,7 @@ export async function dailyCost(days = 30): Promise<DailyCost[]> {
 export async function userRuns(installId: string, limit = 100): Promise<RunRow[]> {
   if (demo.demoEnabled()) return demo.demoUserRuns(installId).slice(0, limit);
   await ensureSchema();
-  return q<RunRow>(
-    `SELECT event_id, install_id, user_label, title, status, word_count,
-            cost_usd, duration_s, prompt_tokens, completion_tokens, city, region, country, ts
-       FROM events
-      WHERE install_id = $1 AND type = 'run_completed'
-      ORDER BY ts DESC
-      LIMIT $2`,
-    [installId, limit],
-  );
+  return q<RunRow>(runRowsSql(" AND install_id = $1", "$2"), [installId, limit]);
 }
 
 export interface LocationRow {

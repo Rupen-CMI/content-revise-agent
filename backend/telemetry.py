@@ -3,8 +3,9 @@
 Sends these event types:
   app_started   once per server launch
   name_updated  the user typed or changed their display name
-  run_completed at the end of every /finalize (ok or error), with the run's cost/token
-                totals from llm.py's RunCost accumulator
+  run_progress  after every pipeline step (1-4), pass or fail, with the cost/tokens that step added
+  run_completed at the end of every /finalize (ok or error), with the cost/tokens it added
+(cost/token fields are per-event amounts from llm.py's RunCost; the dashboard sums them per run)
 
 Privacy contract (keep to it):
   - only titles and metadata are sent, NEVER document body text
@@ -50,6 +51,7 @@ SEND_TIMEOUT_S = 5
 OUTBOX_MAX_EVENTS = 500
 _TITLE_MAX = 200      # titles only, capped both here and server-side
 _LABEL_MAX = 100
+_STEP_MAX = 24
 
 _null_logger_path: Path | None = None  # only for type clarity below; unused
 
@@ -322,6 +324,32 @@ def emit_app_started() -> None:
 def emit_name_updated() -> None:
     """Tell the dashboard this install's name was just set or changed (it keeps current + previous)."""
     send(_base("name_updated"))
+
+
+def emit_run_progress(
+    run_id: str,
+    title: str,
+    step: str,
+    duration_s: float | None,
+    cost_usd: float | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int,
+) -> None:
+    """A step of a run finished (or failed). cost/token fields are what THIS step added, not a running
+    total: the dashboard sums every event of a run, so a run that is abandoned after step 2 still shows
+    exactly what it cost up to that point."""
+    send({
+        **_base("run_progress"),
+        "run_id": str(run_id)[:64],
+        "title": (title or "")[:_TITLE_MAX],
+        "step": (step or "")[:_STEP_MAX],
+        "duration_s": duration_s,
+        "cost_usd": cost_usd,
+        "prompt_tokens": int(prompt_tokens or 0),
+        "completion_tokens": int(completion_tokens or 0),
+        "cached_tokens": int(cached_tokens or 0),
+    })
 
 
 def emit_run_completed(

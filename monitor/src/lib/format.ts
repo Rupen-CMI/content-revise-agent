@@ -30,6 +30,24 @@ export function fmtTime(iso: string | null | undefined): string {
   return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
+/** "step2" -> "Step 2", "finalize" -> "Finalize"; anything unknown is shown as sent. */
+export function fmtStep(step: string | null | undefined): string {
+  const s = (step ?? "").trim();
+  const m = /^step(\d)$/.exec(s);
+  if (m) return `Step ${m[1]}`;
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+}
+
+/** Badge class + text for a run. A run that never finalized says how far it got, e.g. "unfinished · Step 2". */
+export function fmtRunStatus(status: string | null | undefined, step: string | null | undefined): { cls: string; text: string } {
+  if (status === "error") return { cls: "error", text: "error" };
+  if (status === "running" || status === "unfinished") {
+    const at = fmtStep(step);
+    return { cls: status, text: at ? `${status} · ${at}` : status };
+  }
+  return { cls: "ok", text: status ?? "ok" };
+}
+
 export function fmtLocation(city: string, region: string, country: string): string {
   const parts = [city, country].filter((p) => p && p.trim() !== "");
   return parts.length ? parts.join(", ") : "—";

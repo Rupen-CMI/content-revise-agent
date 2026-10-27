@@ -82,14 +82,27 @@ Then build with a label per customer:
 python packaging/build_package.py --user "Acme Realty"
 ```
 
-The end-user agent then POSTs `app_started` (per launch) and `run_completed`
-(per finalized document) to `<MONITOR_URL>/api/ingest` with header
-`X-Ingest-Key`. Events are idempotent on a client-generated `event_id`, and
-failed sends are queued in a local outbox file and retried when connectivity
-returns.
+The end-user agent then POSTs these events to `<MONITOR_URL>/api/ingest` (per-install token, or the legacy
+`X-Ingest-Key`):
+
+| Event | When | Carries |
+|---|---|---|
+| `app_started` | each launch | install, name, location |
+| `name_updated` | the user typed or changed their display name | the name |
+| `run_progress` | after **every** pipeline step 1-4, pass **or fail** | run id, step, and the cost/tokens **that step added** |
+| `run_completed` | each `/finalize` (ok or error) | run id, status, word count, and the cost/tokens it added |
+
+Cost and token fields are per-event amounts, never running totals, and every event of a run shares its
+`run_id`. The dashboard sums them, so a run abandoned after step 2 still shows up (as `unfinished · Step 2`,
+or `running · Step 3` while its last event is under 30 minutes old) with exactly what it cost, and
+"Regenerate draft" adds to the same run instead of creating a second one. Events are idempotent on a
+client-generated `event_id`, and failed sends are queued in a local outbox file and retried when
+connectivity returns.
 
 Without `MONITOR_URL` in `.env` the build bakes no monitor keys and telemetry
-is a silent no-op (dev builds never send anything).
+is a silent no-op, and that includes running the agent from the project folder: **a dev run is only tracked
+if its `.env` sets `MONITOR_URL` plus `MONITOR_PROXY_TOKEN`** (mint one with
+`npm run token -- create "<your name> (dev)" 5`). Dev runs still call DeepSeek directly with your own key.
 
 ## What is stored (and what is not)
 

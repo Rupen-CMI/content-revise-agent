@@ -11,7 +11,7 @@ import {
   type LocationRow,
   type RunRow,
 } from "@/lib/events";
-import { fmtCost, fmtDuration, fmtLocation, fmtTime, fmtTokens } from "@/lib/format";
+import { fmtCost, fmtDuration, fmtLocation, fmtRunStatus, fmtTime, fmtTokens } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -88,11 +88,11 @@ export default async function UserPage({
                 </thead>
                 <tbody>
                   {runs.map((r) => (
-                    <tr key={r.event_id}>
+                    <tr key={r.run_key}>
                       <td className="wrap">{r.title || "(untitled)"}</td>
                       <td>
-                        <span className={`badge ${r.status === "error" ? "error" : "ok"}`}>
-                          {r.status ?? "?"}
+                        <span className={`badge ${fmtRunStatus(r.status, r.step).cls}`}>
+                          {fmtRunStatus(r.status, r.step).text}
                         </span>
                       </td>
                       <td className="num dim">{r.word_count ?? "—"}</td>
@@ -104,7 +104,7 @@ export default async function UserPage({
                   ))}
                   {runs.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="muted">No completed runs for this install.</td>
+                      <td colSpan={7} className="muted">No runs for this install yet.</td>
                     </tr>
                   )}
                 </tbody>

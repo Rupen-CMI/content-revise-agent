@@ -46,13 +46,17 @@ function allRuns(): RunRow[] {
       const ageMs = (i * 1.7 + rand() * 1.5) * DAY + rand() * 6 * 3_600_000;
       const prompt = Math.round(14_000 + rand() * 9_000);
       const completion = Math.round(2_500 + rand() * 7_500);
+      // the newest run of the first two users never reached finalize: one is still going, one was abandoned
+      const live = i === 0 && u === USERS[0] ? "running" : i === 0 && u === USERS[1] ? "unfinished" : null;
+      const step = live === "running" ? "step3" : live === "unfinished" ? "step2" : "finalize";
       rows.push({
-        event_id: `demo-${n++}`,
+        run_key: `demo-${n++}`,
         install_id: u.id,
         user_label: u.label,
         title: TITLES[Math.floor(rand() * TITLES.length)],
-        status: rand() > 0.93 ? "error" : "ok",
-        word_count: Math.round(1_100 + rand() * 900),
+        status: live ?? (rand() > 0.93 ? "error" : "ok"),
+        step,
+        word_count: live ? null : Math.round(1_100 + rand() * 900),
         cost_usd: (prompt * 0.15 + completion * 0.6) / 1_000_000 * (1.6 + rand() * 1.4),
         duration_s: 40 + rand() * 110,
         prompt_tokens: prompt,
@@ -60,7 +64,7 @@ function allRuns(): RunRow[] {
         city: u.city,
         region: u.region,
         country: u.country,
-        ts: new Date(Date.now() - ageMs).toISOString(),
+        ts: new Date(Date.now() - (live === "running" ? 3 * 60_000 : live === "unfinished" ? 2 * 3_600_000 : ageMs)).toISOString(),
       });
     }
   }
