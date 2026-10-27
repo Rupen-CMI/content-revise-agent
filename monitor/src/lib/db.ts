@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_install_ts_idx ON events (install_id, ts DESC);
 CREATE INDEX IF NOT EXISTS events_type_ts_idx    ON events (type, ts DESC);
+CREATE TABLE IF NOT EXISTS installs (
+    install_id       TEXT PRIMARY KEY,
+    current_name     TEXT NOT NULL DEFAULT '',
+    previous_name    TEXT NOT NULL DEFAULT '',
+    name_updated_at  TIMESTAMPTZ
+);
 `;
 
 let _pool: Pool | null = null;

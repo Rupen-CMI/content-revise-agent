@@ -147,9 +147,12 @@ What to expect:
   - Run start.bat again any time to start a fresh copy. If a first run was
     interrupted (e.g. internet dropped), just run it again: it resumes.
 
-Note: this app reports usage to its provider - how many documents you
-  regenerate and their titles, the estimated API cost, and an approximate
-  city-level location. No document text is ever sent.
+Your name: the first time you open the app it asks for your name. You can change
+  it any time from the sidebar ("Change name").
+
+Note: this app reports usage to its provider - the name you entered, how many
+  documents you regenerate and their titles, the estimated API cost, and an
+  approximate city-level location. No document text is ever sent.
 """
 
 

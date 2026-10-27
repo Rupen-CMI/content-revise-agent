@@ -5,7 +5,9 @@ import { publicError } from "@/lib/errors";
 import {
   userLabel,
   userLocations,
+  userNames,
   userRuns,
+  type InstallNames,
   type LocationRow,
   type RunRow,
 } from "@/lib/events";
@@ -24,14 +26,16 @@ export default async function UserPage({
   let runs: RunRow[] = [];
   let locations: LocationRow[] = [];
   let label = "";
+  let names: InstallNames = { current: "", previous: "" };
   let totalCost = 0;
   let totalTokens = 0;
   let error: string | null = null;
   try {
-    [runs, locations, label] = await Promise.all([
+    [runs, locations, label, names] = await Promise.all([
       userRuns(installId),
       userLocations(installId),
       userLabel(installId),
+      userNames(installId),
     ]);
     totalCost = runs.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0);
     totalTokens = runs.reduce(
@@ -56,10 +60,12 @@ export default async function UserPage({
           <div className="page-head">
             <Link href="/" className="back">← All users</Link>
             <h1>
-              {label || "(unlabeled)"}{" "}
+              {names.current || label || "(unlabeled)"}{" "}
               <span className="mono">{installId.slice(0, 8)}</span>
             </h1>
             <p className="sub">
+              {names.previous ? <>Previously “{names.previous}” · </> : null}
+              {label && names.current && label !== names.current ? <>Issued to {label} · </> : null}
               {runs.length} run{runs.length === 1 ? "" : "s"} · {fmtCost(totalCost)} total ·{" "}
               {fmtTokens(totalTokens)} tokens
             </p>

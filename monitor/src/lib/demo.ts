@@ -9,11 +9,11 @@ export function demoEnabled(): boolean {
 }
 
 const USERS = [
-  { id: "9f1c2a7e-4b1d-4c55-8a10-aaaa00000001", label: "Priya Nair", city: "Mumbai", region: "MH", country: "IN", runs: 14 },
-  { id: "3be8d4f0-77a2-49b6-9d3e-aaaa00000002", label: "Rahul Verma", city: "Bengaluru", region: "KA", country: "IN", runs: 9 },
-  { id: "c04a6e91-2f38-4d7c-b5a1-aaaa00000003", label: "Aisha Khan", city: "Dubai", region: "DU", country: "AE", runs: 6 },
-  { id: "5d7f3b12-90cc-4e84-a6f7-aaaa00000004", label: "Daniel Brooks", city: "London", region: "ENG", country: "GB", runs: 4 },
-  { id: "e2a9c8d5-1f46-4a0b-8c3d-aaaa00000005", label: "Mei Tan", city: "Singapore", region: "SG", country: "SG", runs: 2 },
+  { id: "9f1c2a7e-4b1d-4c55-8a10-aaaa00000001", label: "Priya Nair", name: "Priya Nair", prev: "", city: "Mumbai", region: "MH", country: "IN", runs: 14 },
+  { id: "3be8d4f0-77a2-49b6-9d3e-aaaa00000002", label: "Rahul Verma", name: "Rahul Verma", prev: "Rahul V", city: "Bengaluru", region: "KA", country: "IN", runs: 9 },
+  { id: "c04a6e91-2f38-4d7c-b5a1-aaaa00000003", label: "Aisha Khan", name: "Aisha", prev: "", city: "Dubai", region: "DU", country: "AE", runs: 6 },
+  { id: "5d7f3b12-90cc-4e84-a6f7-aaaa00000004", label: "Daniel Brooks", name: "Daniel Brooks", prev: "Dan B.", city: "London", region: "ENG", country: "GB", runs: 4 },
+  { id: "e2a9c8d5-1f46-4a0b-8c3d-aaaa00000005", label: "Mei Tan", name: "Mei Tan", prev: "", city: "Singapore", region: "SG", country: "SG", runs: 2 },
 ];
 
 const TITLES = [
@@ -74,6 +74,8 @@ export function demoInstalls(): InstallRow[] {
     return {
       install_id: u.id,
       label: u.label,
+      current_name: u.name,
+      previous_name: u.prev,
       last_seen: mine[0].ts,
       last_location: `${u.city}, ${u.country}`,
       runs: mine.length,
@@ -98,6 +100,10 @@ export function demoStats(): Stats {
 export const demoRecentRuns = (limit: number): RunRow[] => allRuns().slice(0, limit);
 export const demoUserRuns = (installId: string): RunRow[] => allRuns().filter((r) => r.install_id === installId);
 export const demoUserLabel = (installId: string): string => USERS.find((u) => u.id === installId)?.label ?? "";
+export const demoUserNames = (installId: string): { current: string; previous: string } => {
+  const u = USERS.find((x) => x.id === installId);
+  return { current: u?.name ?? "", previous: u?.prev ?? "" };
+};
 
 export function demoUserLocations(installId: string): LocationRow[] {
   const u = USERS.find((x) => x.id === installId);

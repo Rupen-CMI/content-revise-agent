@@ -85,6 +85,8 @@ export default async function DashboardPage() {
                 <thead>
                   <tr>
                     <th>User</th>
+                    <th>Current name</th>
+                    <th>Previous name</th>
                     <th>Last seen</th>
                     <th>Location</th>
                     <th className="num">Runs</th>
@@ -103,6 +105,8 @@ export default async function DashboardPage() {
                           {row.install_id.slice(0, 6)}
                         </span>
                       </td>
+                      <td>{row.current_name || <span className="muted">not set yet</span>}</td>
+                      <td className="dim">{row.previous_name || "—"}</td>
                       <td className="dim">{fmtTime(row.last_seen)}</td>
                       <td className="dim">{row.last_location || "—"}</td>
                       <td className="num">{row.runs}</td>
@@ -112,7 +116,7 @@ export default async function DashboardPage() {
                   ))}
                   {installs.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="muted">
+                      <td colSpan={8} className="muted">
                         No events yet. The agent reports here once it is built with MONITOR_URL set.
                       </td>
                     </tr>

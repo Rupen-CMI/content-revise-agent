@@ -30,6 +30,20 @@
   <pre class="error-banner-technical" hidden></pre>
 </div>
 
+<div class="modal-backdrop" id="name-modal" role="dialog" aria-modal="true" aria-labelledby="name-modal-title" hidden>
+  <form class="modal-card" id="name-form" novalidate>
+    <h2 id="name-modal-title">Welcome! What should we call you?</h2>
+    <p class="field-hint" id="name-modal-hint">Enter your name. It is shown to the team that manages this tool in its usage dashboard, so your work can be attributed to you. You can change it any time from the sidebar.</p>
+    <label class="field-label" for="name-input">Your name</label>
+    <input class="text-input" id="name-input" name="name" type="text" maxlength="60" autocomplete="name" spellcheck="false" placeholder="e.g. Priya Nair">
+    <p class="field-error" id="name-error" role="alert" hidden></p>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="name-save" type="submit"><i data-lucide="check"></i> <span id="name-save-label">Continue</span></button>
+      <button class="btn btn-ghost" id="name-cancel" type="button" hidden>Cancel</button>
+    </div>
+  </form>
+</div>
+
 <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="Toggle menu">
   <i data-lucide="menu"></i>
 </button>
@@ -66,6 +80,13 @@
     </nav>
 
     <div class="sidebar-footer">
+      <button class="user-chip" id="user-chip" type="button" aria-label="Change your name" hidden>
+        <i data-lucide="user"></i>
+        <span class="user-chip-text">
+          <span class="user-chip-name" id="user-chip-name"></span>
+          <span class="user-chip-hint">Change name</span>
+        </span>
+      </button>
       <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">
         <span class="theme-icon-stack">
           <i data-lucide="sun" class="theme-icon-light"></i>

@@ -1,7 +1,8 @@
 """Fire-and-forget usage telemetry to the app owner's dashboard (monitor/, deployed on Vercel).
 
-Sends two event types:
+Sends these event types:
   app_started   once per server launch
+  name_updated  the user typed or changed their display name
   run_completed at the end of every /finalize (ok or error), with the run's cost/token
                 totals from llm.py's RunCost accumulator
 
@@ -112,6 +113,66 @@ def install_id() -> str:
                 pass
         _install_id = _install_id or fresh
         return _install_id
+
+
+# ---------------------------------------------------------------- display name (typed in by the user)
+
+NAME_MIN = 2
+NAME_MAX = 60
+_user_name: str | None = None  # None = not read from disk yet; "" = read, nothing set
+_name_lock = threading.Lock()
+
+
+def normalize_name(raw: object) -> str | None:
+    """Trim, drop control characters, collapse runs of whitespace. None unless the result is
+    NAME_MIN-NAME_MAX characters long (so empty / junk / absurdly long input is rejected)."""
+    if not isinstance(raw, str):
+        return None
+    cleaned = " ".join(raw.split())  # tabs/newlines (a pasted name) become single spaces
+    cleaned = " ".join("".join(ch for ch in cleaned if ch.isprintable()).split())  # drop other control chars
+    return cleaned if NAME_MIN <= len(cleaned) <= NAME_MAX else None
+
+
+def _name_path() -> Path | None:
+    d = _data_dir()
+    return (d / "user_name") if d else None
+
+
+def user_name() -> str:
+    """The name this install reports to the dashboard ('' while the user has not set one yet).
+    Persisted next to install_id so it survives restarts; read from disk once per process."""
+    global _user_name
+    with _name_lock:
+        if _user_name is not None:
+            return _user_name
+        value = ""
+        path = _name_path()
+        if path is not None:
+            try:
+                if path.is_file():
+                    value = normalize_name(path.read_text(encoding="utf-8")) or ""
+            except OSError:
+                pass
+        _user_name = value
+        return value
+
+
+def set_user_name(raw: object) -> str:
+    """Validate, persist and return the normalised name. ValueError on invalid input.
+    Does not talk to the network; call emit_name_updated() afterwards to tell the dashboard."""
+    global _user_name
+    name = normalize_name(raw)
+    if name is None:
+        raise ValueError(f"enter a name of {NAME_MIN}-{NAME_MAX} characters")
+    with _name_lock:
+        path = _name_path()
+        if path is not None:
+            try:
+                path.write_text(name + "\n", encoding="utf-8")
+            except OSError:
+                pass  # still usable for this session; the dashboard gets it via the event
+        _user_name = name
+    return name
 
 
 # ---------------------------------------------------------------- outbox (offline resilience)
@@ -240,15 +301,27 @@ def _now_iso() -> str:
 
 # ---------------------------------------------------------------- event builders (the only API main.py uses)
 
-def emit_app_started() -> None:
-    send({
-        "type": "app_started",
+def _base(kind: str) -> dict:
+    """Fields every event carries. user_name rides on all of them so the dashboard heals itself even
+    if a name_updated event was lost; the server only applies a name when its event is the newest."""
+    return {
+        "type": kind,
         "event_id": str(uuid.uuid4()),
         "install_id": install_id(),
         "user_label": _get("MONITOR_USER_LABEL")[:_LABEL_MAX],
+        "user_name": user_name(),
         "app_version": APP_VERSION[:40],
         "ts": _now_iso(),
-    })
+    }
+
+
+def emit_app_started() -> None:
+    send(_base("app_started"))
+
+
+def emit_name_updated() -> None:
+    """Tell the dashboard this install's name was just set or changed (it keeps current + previous)."""
+    send(_base("name_updated"))
 
 
 def emit_run_completed(
@@ -263,12 +336,7 @@ def emit_run_completed(
     cached_tokens: int,
 ) -> None:
     send({
-        "type": "run_completed",
-        "event_id": str(uuid.uuid4()),
-        "install_id": install_id(),
-        "user_label": _get("MONITOR_USER_LABEL")[:_LABEL_MAX],
-        "app_version": APP_VERSION[:40],
-        "ts": _now_iso(),
+        **_base("run_completed"),
         "run_id": str(run_id)[:64],
         "title": (title or "")[:_TITLE_MAX],
         "word_count": word_count,
@@ -294,8 +362,10 @@ def flush_outbox_on_start() -> None:
 
 def _reset_for_tests() -> None:
     """Test-only: clear the cached install id and worker state."""
-    global _install_id, _worker_started
+    global _install_id, _worker_started, _user_name
     with _install_lock:
         _install_id = None
+    with _name_lock:
+        _user_name = None
     with _worker_lock:
         _worker_started = False

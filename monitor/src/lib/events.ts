@@ -28,10 +28,22 @@ const tsSchema = z
     return new Date(epoch > now + 3_600_000 ? now : epoch).toISOString();
   });
 
+/** A person's typed-in display name: control characters dropped, whitespace collapsed, trimmed, capped. */
+function personName(max: number) {
+  return z
+    .string()
+    // tabs/newlines become spaces first (a pasted name), then any remaining control character is dropped
+    .transform((s) => s.replace(/\s+/g, " ").replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, max))
+    .default("");
+}
+
 const baseFields = {
   event_id: z.string().trim().uuid().max(64),
   install_id: z.string().trim().min(8).max(64),
   user_label: capped(120),
+  // The name the user typed into the agent. Carried by EVERY event so the dashboard heals itself if a
+  // name_updated event was lost; the server only applies it when the event is the newest one seen.
+  user_name: personName(60),
   app_version: capped(40),
   ts: tsSchema,
 };
@@ -55,12 +67,23 @@ const appStartedSchema = z.object({
   type: z.literal("app_started"),
 });
 
+// The user typed a new display name into the agent. Not stored in `events`; it only updates `installs`.
+const nameUpdatedSchema = z.object({
+  ...baseFields,
+  type: z.literal("name_updated"),
+});
+
 export const ingestSchema = z.discriminatedUnion("type", [
   runCompletedSchema,
   appStartedSchema,
+  nameUpdatedSchema,
 ]);
 
 export type IngestEvent = z.infer<typeof ingestSchema>;
+/** The event kinds that become rows in `events` (everything except name_updated). */
+export type StoredEvent = Exclude<IngestEvent, { type: "name_updated" }>;
+
+export const MIN_NAME_LENGTH = 2;
 
 /** City/region/country derived by Vercel from the request edge; raw IP is never stored. */
 export interface Location {
@@ -89,7 +112,31 @@ export function locationFromHeaders(headers: Headers): Location {
 }
 
 /** Idempotent insert; returns true when the row was newly inserted. */
-export async function insertEvent(event: IngestEvent, loc: Location): Promise<boolean> {
+/**
+ * Record the display name an install reports. Rule: when the name CHANGES, the old current_name moves
+ * to previous_name and current_name becomes the new one; the very first name leaves previous_name empty.
+ *
+ * Every event carries the name and events can arrive late or twice (offline outbox, retries), so a name is
+ * only applied when its event is NEWER than the one that set the stored name (name_updated_at). A repeat of
+ * the current name just advances that timestamp, so a stale older rename arriving afterwards can't win.
+ */
+export async function upsertInstallName(installId: string, name: string, ts: string): Promise<void> {
+  if (name.length < MIN_NAME_LENGTH) return; // events sent before the user has chosen a name carry ""
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO installs (install_id, current_name, name_updated_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (install_id) DO UPDATE SET
+       previous_name = CASE WHEN installs.current_name <> '' AND installs.current_name <> EXCLUDED.current_name
+                            THEN installs.current_name ELSE installs.previous_name END,
+       current_name = EXCLUDED.current_name,
+       name_updated_at = EXCLUDED.name_updated_at
+     WHERE installs.name_updated_at IS NULL OR EXCLUDED.name_updated_at > installs.name_updated_at`,
+    [installId, name, ts],
+  );
+}
+
+export async function insertEvent(event: StoredEvent, loc: Location): Promise<boolean> {
   await ensureSchema();
   const run = event.type === "run_completed" ? event : null;
   const res = await getPool().query(
@@ -128,6 +175,9 @@ export async function insertEvent(event: IngestEvent, loc: Location): Promise<bo
 export interface InstallRow {
   install_id: string;
   label: string;
+  /** the name the user typed into the agent; previous_name is the one it replaced ('' until they rename) */
+  current_name: string;
+  previous_name: string;
   last_seen: string;
   last_location: string | null;
   runs: number;
@@ -143,6 +193,8 @@ export async function listInstalls(): Promise<InstallRow[]> {
            (SELECT e2.user_label FROM events e2
              WHERE e2.install_id = e.install_id AND e2.user_label <> ''
              ORDER BY e2.ts DESC LIMIT 1) AS label,
+           COALESCE((SELECT i.current_name FROM installs i WHERE i.install_id = e.install_id), '') AS current_name,
+           COALESCE((SELECT i.previous_name FROM installs i WHERE i.install_id = e.install_id), '') AS previous_name,
            MAX(e.ts) AS last_seen,
            (SELECT CASE WHEN e3.city <> '' AND e3.country <> '' THEN e3.city || ', ' || e3.country
                         WHEN e3.city <> '' THEN e3.city
@@ -274,10 +326,25 @@ export async function userLabel(installId: string): Promise<string> {
   if (demo.demoEnabled()) return demo.demoUserLabel(installId);
   await ensureSchema();
   const rows = await q<{ label: string }>(
-    `SELECT user_label FROM events
+    `SELECT user_label AS label FROM events
       WHERE install_id = $1 AND user_label <> ''
       ORDER BY ts DESC LIMIT 1`,
     [installId],
   );
   return rows[0]?.label ?? "";
+}
+
+export interface InstallNames {
+  current: string;
+  previous: string;
+}
+
+export async function userNames(installId: string): Promise<InstallNames> {
+  if (demo.demoEnabled()) return demo.demoUserNames(installId);
+  await ensureSchema();
+  const rows = await q<{ current_name: string; previous_name: string }>(
+    `SELECT current_name, previous_name FROM installs WHERE install_id = $1`,
+    [installId],
+  );
+  return { current: rows[0]?.current_name ?? "", previous: rows[0]?.previous_name ?? "" };
 }

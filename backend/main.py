@@ -152,6 +152,29 @@ def heartbeat(tab: str, closing: int = 0) -> dict:
     return {"ok": True}
 
 
+class UserNameIn(BaseModel):
+    user_name: str
+
+
+@app.get("/app/user")
+def get_user() -> dict:
+    """The name this install reports to the usage dashboard; null until the user has entered one
+    (the UI blocks on a name prompt at startup while this is null)."""
+    return {"user_name": telemetry.user_name() or None}
+
+
+@app.post("/app/user")
+def set_user(body: UserNameIn) -> dict:
+    """Set or change the display name. Persists it locally and tells the dashboard (which keeps the
+    current name and the one before it)."""
+    try:
+        name = telemetry.set_user_name(body.user_name)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    telemetry.emit_name_updated()
+    return {"user_name": name}
+
+
 def _shutdown() -> None:
     log.info("[autoshutdown] no browser tab connected — shutting the server down")
     signal.raise_signal(signal.SIGINT)  # uvicorn's own handler: graceful stop
