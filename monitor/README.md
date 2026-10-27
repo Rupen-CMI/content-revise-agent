@@ -185,6 +185,18 @@ curl -s "$MONITOR_URL/api/v1/chat/completions" \
   -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Say ok"}],"max_tokens":5}'
 ```
 
+## Display currency (USD / INR)
+
+The header has a **$ USD / ₹ INR** switch. Costs are always **stored and billed in USD** (that is what DeepSeek
+charges and what the proxy records); INR is only a way of showing them, so a ₹ figure is an estimate.
+
+- The rate is fetched **on the server** (the browser never contacts a rate provider, so the CSP is unchanged):
+  the ECB reference rate through Frankfurter, with open.er-api.com as a backup. It is cached for 12 hours, a
+  provider outage is not retried for 5 minutes, and a rate outside 10-1000 is rejected as a bad response.
+  If no rate can be had, INR is disabled and the dashboard stays in USD.
+- Set `USD_INR_RATE` (e.g. `95`) in Vercel to pin a fixed rate instead of the live one.
+- The choice is a plain `cmi-currency` cookie (whitelisted on read; it is only a display preference), so the
+  server renders the right currency on first paint. A note under each page title states the rate in use.
 
 ## Security model
 

@@ -133,6 +133,33 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   font-weight: 600;
 }
 
+.currency-toggle {
+  display: inline-flex;
+  height: 34px;
+  padding: 3px;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.currency-toggle button {
+  border: 0;
+  background: none;
+  padding: 0 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.currency-toggle button:hover:not(:disabled):not([aria-pressed="true"]) { color: var(--text); background: var(--bg-sunken); }
+.currency-toggle button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); cursor: default; }
+.currency-toggle button:disabled { opacity: 0.45; cursor: not-allowed; }
+.currency-toggle[aria-busy="true"] { opacity: 0.7; }
+.currency-note { margin: 6px 0 0; }
+
 .theme-toggle {
   display: grid;
   place-items: center;

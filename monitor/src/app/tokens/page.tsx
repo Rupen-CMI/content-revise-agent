@@ -1,6 +1,8 @@
+import { CurrencyNote } from "@/components/CurrencyNote";
 import { Header } from "@/components/Header";
 import { requireAdminPage } from "@/lib/auth";
 import { publicError } from "@/lib/errors";
+import { getMoney } from "@/lib/money";
 import { budgetsEnforced } from "@/lib/proxy";
 import { listTokens, type TokenListRow } from "@/lib/tokens";
 import { fmtCost, fmtTime } from "@/lib/format";
@@ -10,6 +12,8 @@ export const dynamic = "force-dynamic";
 export default async function TokensPage() {
   await requireAdminPage();
   const enforced = budgetsEnforced();
+  const ctx = await getMoney();
+  const { money } = ctx;
   let tokens: TokenListRow[] = [];
   let error: string | null = null;
   try {
@@ -29,6 +33,7 @@ export default async function TokensPage() {
           <code>npm run token -- create &quot;Name&quot; 5</code> and{" "}
           <code>npm run token -- revoke &lt;id&gt;</code>.
         </p>
+        <CurrencyNote ctx={ctx} />
       </div>
 
       {error ? (
@@ -66,10 +71,10 @@ export default async function TokensPage() {
                         {t.revoked_at ? "revoked" : over ? "budget reached" : "active"}
                       </span>
                     </td>
-                    <td className="num dim">{fmtCost(t.daily_budget_usd)}</td>
-                    <td className="num">{fmtCost(t.spend_today)}</td>
-                    <td className="num">{fmtCost(t.spend_30d)}</td>
-                    <td className="num">{fmtCost(t.spend_total)}</td>
+                    <td className="num dim">{fmtCost(t.daily_budget_usd, money)}</td>
+                    <td className="num">{fmtCost(t.spend_today, money)}</td>
+                    <td className="num">{fmtCost(t.spend_30d, money)}</td>
+                    <td className="num">{fmtCost(t.spend_total, money)}</td>
                     <td className="num dim">{t.calls}</td>
                     <td className="dim">{fmtTime(t.last_used_at)}</td>
                     <td className="mono" title={t.id}>{t.id.slice(0, 8)}</td>
