@@ -1,17 +1,48 @@
+# --- secrets (never commit; .env.example is the template)
 .env
+.env.local
+
+# --- Python
 venv/
-packaging/_build/
-dist/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# --- Node / Next.js (monitor/ also has its own .gitignore)
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# --- Vercel CLI link + local deployment settings
+.vercel/
+
+# --- build and run output
+packaging/_build/
+dist/
 backend/logs/
 backend/output/
 backend/.search_cache/
-node_modules/
-.claude
-input_docs/
 backend/catalog.sqlite
-devtools
+output/
 
+# --- generated or sample documents (client work product / scratch, not source)
+input_docs/
+/Revised_*.docx
+/content.html
+/out_teen.md
+
+# --- local tooling and scratch
+.claude
+.code-review-graph/
+devtools
+*.tmp.*
+*.log
+
+# --- OS / editor
+.DS_Store
+Thumbs.db
+
+# --- JSON is ignored by default (large generated fixtures); allow the few real manifests/configs
 *.json
 !backend/source_registry.json
