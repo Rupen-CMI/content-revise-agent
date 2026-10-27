@@ -70,10 +70,12 @@ import freshness
 import llm
 import pipeline
 import planning
+import recheck as recheck_mod
 import prompts
 import publisher
 import reports
 import search
+import sopcheck
 import telemetry
 import writer
 from docx_io import OUTPUT_DIR, Link, Paragraph, SourceArticle, read_docx
@@ -901,6 +903,27 @@ async def upload(file: UploadFile = File(...)) -> dict:
     return {"filename": Path(name).name, "article": _article_dict(article)}
 
 
+@app.post("/sop-check")
+async def sop_check(file: UploadFile = File(...)) -> dict:
+    """Checks a finished draft against the SOP rules that can be judged from its own text. Standalone:
+    it touches no run state and makes no LLM or network call."""
+    name = file.filename or "draft.docx"
+    if not name.lower().endswith(".docx"):
+        raise HTTPException(400, "Please upload a Word document (.docx).")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "File too large — please upload a .docx under 20MB.")
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty.")
+    try:
+        result = sopcheck.check_draft(raw)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"sop-check could not read {name}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(400, "This file could not be read as a Word document (.docx). "
+                                 "If it came from Google Docs or an older .doc file, re-save it as .docx and try again.")
+    return {"filename": Path(name).name, **result}
+
+
 @app.post("/step1")
 def step1(req: Step1Request) -> dict:
     """Step 1: identify the market. Orient (LLM) + catalog match only — no web search yet, since
@@ -1247,6 +1270,63 @@ def get_run(run_token: str) -> dict:
     }
 
 
+def _keyword_view(run: RunState, report: reports.Report, sponsor: Paragraph, title: str, sections: list[dict]) -> dict:
+    """The keyword side of a draft's display: its sections with the keyword spans marked, the keyword lists
+    and the use counts the highlighting itself found. Shared by the final screen and the recheck of a
+    humanized draft, so the two can never count a keyword differently."""
+    primary_kw, secondary_plan = pipeline._seo_keyword_plan(report.name)
+    secondary_kws = [kw for kw, _ in secondary_plan]
+    # Market-first chain extras: the search demand's related (tertiary) terms are highlighted and
+    # counted the same way, and the plan's MSQ headings are reported so the final view can mark them.
+    tertiary_terms = [t for t in (getattr(run.plan_inputs, "terms", []) or [])] if run.plan_inputs is not None else []
+    msq_headings = [ps["heading"] for ps in ((run.plan or {}).get("sections") or []) if ps.get("msq")]
+    # Whether each generated long-tail phrase survived into the finished draft — a literal,
+    # whitespace-normalised match, since WRITE freezes a phrase's word order. Reported to the UI
+    # and logged; an unused candidate is fine by design (the writer was told to use at most 3 and
+    # only where they genuinely fit), so this is visibility, never a failure gate.
+    longtail_usage = pipeline._longtail_usage(title, sections, run.longtails)
+    used = [t for t in longtail_usage if t["used"]]
+    run.logger.info(
+        f"[long-tail] the final draft uses {len(used)}/{len(longtail_usage)} candidate phrase(s): "
+        + (", ".join(t["keyword"] for t in used) or "(none)")
+    )
+    # Keyword spans are found server-side (checks.secondary_keyword_spans_in_paragraph — same
+    # paragraph-scoped, section-scoped matching the pipeline's own coverage check uses) rather
+    # than left to the frontend to re-search for the literal phrase, which finds nothing once a
+    # keyword has been naturally reworded (e.g. "the size of the market" for "market size") or
+    # when the market's name isn't repeated in every sentence that touches one of its keywords.
+    keyword_counts: dict = {}
+    display_sections = _display_sections(
+        sections, sponsor, report.url, primary_kw, secondary_plan,
+        longtails=[t["keyword"] for t in longtail_usage], counts=keyword_counts,
+        tertiary_terms=tertiary_terms,
+    )
+    tertiary_total = sum(keyword_counts.get("tertiary", {}).values())
+    tertiary_used = len(keyword_counts.get("tertiary", {}))
+    run.logger.info(
+        f"[keywords] highlighted uses — primary x{keyword_counts.get('primary', 0)}, "
+        f"secondary {sum(keyword_counts.get('secondary', {}).values())}x "
+        f"({len(keyword_counts.get('secondary', {}))}/{len(secondary_kws)} keywords), "
+        f"tertiary {tertiary_total}x ({tertiary_used}/{len(tertiary_terms)} terms), "
+        f"long-tail {sum(keyword_counts.get('longtail', {}).values())}x "
+        f"({len(keyword_counts.get('longtail', {}))}/{len(longtail_usage)} phrases)"
+    )
+    if msq_headings:
+        run.logger.info("[plan] MSQ headings: " + "; ".join(msq_headings))
+    return {
+        "sections": display_sections,
+        "primary_keyword": primary_kw,
+        "secondary_keywords": secondary_kws,
+        "tertiary_terms": tertiary_terms,
+        "msq_headings": msq_headings,
+        "keyword_counts": keyword_counts,
+        "long_tail_keywords": [
+            {"keyword": t["keyword"], "intent": t["intent"], "used": t["used"]}
+            for t in longtail_usage
+        ],
+    }
+
+
 @app.post("/finalize")
 def finalize(req: FinalizeRequest) -> dict:
     t0 = time.time()
@@ -1291,67 +1371,63 @@ def finalize(req: FinalizeRequest) -> dict:
         {"id": c["id"], "paragraph": c["paragraph"], "fact": facts_by_id.get(c["id"], "")}
         for c in result.evidence_citations
     ]
-    primary_kw, secondary_plan = pipeline._seo_keyword_plan(result.report.name)
-    secondary_kws = [kw for kw, _ in secondary_plan]
-    # Market-first chain extras: the search demand's related (tertiary) terms are highlighted and
-    # counted the same way, and the plan's MSQ headings are reported so the final view can mark them.
-    tertiary_terms = [t for t in (getattr(run.plan_inputs, "terms", []) or [])] if run.plan_inputs is not None else []
-    msq_headings = [ps["heading"] for ps in ((run.plan or {}).get("sections") or []) if ps.get("msq")]
-    # Whether each generated long-tail phrase survived into the finished draft — a literal,
-    # whitespace-normalised match, since WRITE freezes a phrase's word order. Reported to the UI
-    # and logged; an unused candidate is fine by design (the writer was told to use at most 3 and
-    # only where they genuinely fit), so this is visibility, never a failure gate.
-    longtail_usage = pipeline._longtail_usage(result.title, result.sections, run.longtails)
-    used = [t for t in longtail_usage if t["used"]]
-    run.logger.info(
-        f"[long-tail] the final draft uses {len(used)}/{len(longtail_usage)} candidate phrase(s): "
-        + (", ".join(t["keyword"] for t in used) or "(none)")
-    )
-    # Keyword spans are found server-side (checks.secondary_keyword_spans_in_paragraph — same
-    # paragraph-scoped, section-scoped matching the pipeline's own coverage check uses) rather
-    # than left to the frontend to re-search for the literal phrase, which finds nothing once a
-    # keyword has been naturally reworded (e.g. "the size of the market" for "market size") or
-    # when the market's name isn't repeated in every sentence that touches one of its keywords.
-    keyword_counts: dict = {}
-    display_sections = _display_sections(
-        result.sections, result.sponsor, result.report.url, primary_kw, secondary_plan,
-        longtails=[t["keyword"] for t in longtail_usage], counts=keyword_counts,
-        tertiary_terms=tertiary_terms,
-    )
-    tertiary_total = sum(keyword_counts.get("tertiary", {}).values())
-    tertiary_used = len(keyword_counts.get("tertiary", {}))
-    run.logger.info(
-        f"[keywords] highlighted uses — primary x{keyword_counts.get('primary', 0)}, "
-        f"secondary {sum(keyword_counts.get('secondary', {}).values())}x "
-        f"({len(keyword_counts.get('secondary', {}))}/{len(secondary_kws)} keywords), "
-        f"tertiary {tertiary_total}x ({tertiary_used}/{len(tertiary_terms)} terms), "
-        f"long-tail {sum(keyword_counts.get('longtail', {}).values())}x "
-        f"({len(keyword_counts.get('longtail', {}))}/{len(longtail_usage)} phrases)"
-    )
-    if msq_headings:
-        run.logger.info("[plan] MSQ headings: " + "; ".join(msq_headings))
+    view = _keyword_view(run, result.report, result.sponsor, result.title, result.sections)
     return {
         "result": {
             "title": result.title,
-            "sections": display_sections,
+            **view,
             "report": _report_dict(result.report),
             "checks": [
                 {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
             ],
             "evidence_citations": citations_out,
-            "primary_keyword": primary_kw,
-            "secondary_keywords": secondary_kws,
-            "tertiary_terms": tertiary_terms,
-            "msq_headings": msq_headings,
-            "keyword_counts": keyword_counts,
-            "long_tail_keywords": [
-                {"keyword": t["keyword"], "intent": t["intent"], "used": t["used"]}
-                for t in longtail_usage
-            ],
             "output_filename": result.output_path.name if result.output_path else None,
             "faq": result.faq,
         }
     }
+
+
+@app.post("/recheck")
+async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
+    """Rechecks a humanized draft of a finished run: the .docx is mapped back onto the run's own draft
+    shape (recheck.parse), then the run's SOP checks and keyword highlighting are applied to it with
+    everything the run knows — plan, fact sheet, evidence, sponsor, report. No LLM or network call."""
+    run = _get_run(run_token)
+    if run.plan is None or run.plan_inputs is None or not run.title or not run.sections:
+        raise HTTPException(400, "Rechecking needs a finished run — finish this run's draft first.")
+    assert run.report is not None and run.selection is not None and run.hits is not None
+    name = file.filename or "draft.docx"
+    if not name.lower().endswith(".docx"):
+        raise HTTPException(400, "Please upload a Word document (.docx).")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "File too large — please upload a .docx under 20MB.")
+    if not raw:
+        raise HTTPException(400, "Uploaded file is empty.")
+    try:
+        parsed = recheck_mod.parse(raw, run.title, run.sections, run.faq, run.sponsor.text)
+    except Exception as e:
+        run.logger.error(f"recheck could not read {name}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(400, "This file could not be read as a Word document (.docx). "
+                                 "If it came from Google Docs or an older .doc file, re-save it as .docx and try again.")
+    check_results = checks.run_checks_v2(
+        parsed["title"], parsed["sections"], run.plan, run.plan_inputs, faq=parsed["faq"],
+        sponsor_brand_terms=pipeline._brand_terms(run.sponsor), sponsor_text=run.sponsor.text,
+        report_text=pipeline._report_text(run.report), report_name=run.report.name,
+        selection=run.selection, hits=run.hits, humanized=True,
+    )
+    run.logger.info(f"[recheck] humanized draft {name!r}: "
+                    f"{sum(1 for c in check_results if c.passed)}/{len(check_results)} checks pass")
+    view = _keyword_view(run, run.report, run.sponsor, parsed["title"], parsed["sections"])
+    return {"result": {
+        "title": parsed["title"],
+        **view,
+        "report": _report_dict(run.report),
+        "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in check_results],
+        "faq": parsed["faq"],
+        "notes": parsed["notes"],
+        "filename": Path(name).name,
+    }}
 
 
 @app.get("/download/{filename}")

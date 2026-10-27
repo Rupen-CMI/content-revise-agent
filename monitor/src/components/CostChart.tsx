@@ -10,12 +10,12 @@ import {
   YAxis,
 } from "recharts";
 import { axisCost, shortDay, type ChartPoint } from "@/lib/chart";
-import { fmtCost } from "@/lib/format";
+import { fmtMoney, type Currency } from "@/lib/currency";
 
 // Colours come from the theme tokens through CSS (see ".cost-chart" in globals.css), so the chart
-// follows light/dark without any JavaScript.
+// follows light/dark without any JavaScript. `data` is already converted to `currency`.
 
-function Tip({ active, payload }: { active?: boolean; payload?: ReadonlyArray<{ payload: ChartPoint }> }) {
+function Tip({ active, payload, currency }: { active?: boolean; payload?: ReadonlyArray<{ payload: ChartPoint }>; currency: Currency }) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
   return (
@@ -23,7 +23,7 @@ function Tip({ active, payload }: { active?: boolean; payload?: ReadonlyArray<{ 
       <div className="chart-tip-day">{shortDay(p.day)}</div>
       <div className="chart-tip-row">
         <span>Cost</span>
-        <strong>{fmtCost(p.cost)}</strong>
+        <strong>{fmtMoney(p.cost, currency)}</strong>
       </div>
       <div className="chart-tip-row">
         <span>Runs</span>
@@ -33,7 +33,7 @@ function Tip({ active, payload }: { active?: boolean; payload?: ReadonlyArray<{ 
   );
 }
 
-export function CostChart({ data }: { data: ChartPoint[] }) {
+export function CostChart({ data, currency = "USD" }: { data: ChartPoint[]; currency?: Currency }) {
   const total = data.reduce((s, d) => s + d.cost, 0);
   if (total <= 0) {
     return <p className="muted">No completed runs in the last 30 days yet.</p>;
@@ -59,15 +59,15 @@ export function CostChart({ data }: { data: ChartPoint[] }) {
             tickMargin={8}
           />
           <YAxis
-            width={44}
-            tickFormatter={axisCost}
+            width={48}
+            tickFormatter={(v: number) => axisCost(v, currency)}
             tickLine={false}
             axisLine={false}
             allowDecimals
             domain={[0, "auto"]}
             tickCount={4}
           />
-          <Tooltip content={<Tip />} cursor={{ className: "chart-cursor" }} isAnimationActive={false} />
+          <Tooltip content={<Tip currency={currency} />} cursor={{ className: "chart-cursor" }} isAnimationActive={false} />
           <Area
             type="monotone"
             dataKey="cost"

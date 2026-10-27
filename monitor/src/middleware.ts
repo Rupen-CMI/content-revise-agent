@@ -54,6 +54,7 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // only static assets are skipped here; everything else goes through middleware()
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // only static assets are skipped here (the favicon must load on the login page too); everything else
+  // goes through middleware()
+  matcher: ["/((?!_next/static|_next/image|favicon\\.ico|icon\\.svg$).*)"],
 };

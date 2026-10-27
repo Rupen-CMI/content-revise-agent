@@ -1233,17 +1233,24 @@ def v2_structure_problems(title: str, sections: list[dict], plan: dict, inp) -> 
     return problems
 
 
-def v2_keyword_problems(sections: list[dict], plan: dict, market_name: str) -> list[str]:
+def v2_keyword_problems(sections: list[dict], plan: dict, market_name: str, anywhere: bool = False) -> list[str]:
     """Assigned keyword use in the draft (§3.7/§3.9): 4-6 secondary keywords assigned, each used in its
-    section (its own words together with the market's), and at most one per paragraph."""
+    section (its own words together with the market's), and at most one per paragraph. `anywhere` is for a
+    draft a person has edited: the plan's section for a keyword is the generator's own assignment, so the
+    keyword is then looked for in the market sections as a whole."""
     assigned = [p["secondary"] for p in plan["sections"] if p.get("secondary")]
     out: list[str] = []
     if not 4 <= len(assigned) <= 6:
         out.append(f"{len(assigned)} secondary keyword(s) assigned, want 4-6")
+    market_text = " ".join(w for s in sections if _is_market_section(s) for w in " ".join(s["paragraphs"]).split())
     for ps in plan["sections"]:
         if not ps.get("secondary"):
             continue
         sec = next((s for s in sections if _is_market_section(s) and s["sop"][0] == ps["sop"]), None)
+        if anywhere:
+            if not secondary_keyword_in_paragraph(market_text, market_name, ps["secondary"]):
+                out.append(f'the secondary keyword "{ps["secondary"]}" is not used in the article')
+            continue
         if sec and not secondary_keyword_in_paragraph(
                 " ".join(" ".join(sec["paragraphs"]).split()), market_name, ps["secondary"]):
             # A keyword use can be missing two ways: the market name it must lean on is absent from
@@ -1463,7 +1470,7 @@ def _names_source(low_sentence: str, source: str) -> bool:
     return any(t.lower() in low_sentence for t in toks)
 
 
-def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict]) -> list[str]:
+def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], planned_only: bool = True) -> list[str]:
     """The FAQ is MSQs only (§3.8): every question is the verbatim text of a planned, answerable MSQ from
     the plan's faq list, and every figure in an answer traces to that question's own facts or the draft."""
     out: list[str] = []
@@ -1471,7 +1478,7 @@ def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict]) -> l
     if inp is not None:
         q_by_id = {q["id"]: q for q in inp.questions}
         planned_questions = {q_by_id[qid]["question"].strip() for qid in (plan.get("faq") or []) if qid in q_by_id}
-    for qa in faq:
+    for qa in faq if planned_only else ():
         if str(qa.get("question") or "").strip() not in planned_questions:
             out.append(f"the FAQ question {str(qa.get('question'))[:70]!r} is not a planned MSQ")
     if inp is None:
@@ -1620,7 +1627,10 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
 # ('remove all these SOPs'): the code that produces them is kept untouched above, the results just no
 # longer surface in the draft's checks list. Re-enable by emptying this set. The names are derived
 # from the same constants that build them inside run_checks_v2, so the strings keep matching there.
+V2_VAGUE_CHECK_NAME = "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)"
+
 V2_DISCONNECTED_CHECKS = frozenset({
+    V2_VAGUE_CHECK_NAME,
     f"Uses {LONGTAIL_MIN_USED}-{LONGTAIL_MAX_USED} long-tail keywords (soft)",
     "Every assigned long-tail is used in its own section (soft)",
     "No long-tail phrase is pasted as a noun pile (soft)",
@@ -1643,8 +1653,12 @@ def run_checks_v2(
     sponsor_brand_terms: list[str] = (), sponsor_text: str = "",
     report_text: str = "", report_name: str = "",
     selection: dict | None = None, hits: list | None = None,
-    include_disconnected: bool = False,
+    include_disconnected: bool = False, humanized: bool = False,
 ) -> list[CheckResult]:
+    """`humanized` is for a draft a person has edited after the run: the checks that only prove the generator
+    followed its own plan (the plan's title, headings and order, planned FAQ questions, a keyword in its assigned
+    section) are replaced by the SOP rules they stand for — 2-3 question headings, every keyword used somewhere —
+    because an editor may legitimately change any of those. Every content rule runs unchanged."""
     import planning
 
     faq = list(faq or [])
@@ -1708,27 +1722,34 @@ def run_checks_v2(
             "Title soft notes (soft)", True, "; ".join(title_soft),
         ))
 
-    # ---- hard (§3.9): the draft carries the plan's validated structure ...
-    structure = v2_structure_problems(title, sections, plan, inp)
-    results.append(CheckResult(
-        "Draft structure matches the validated plan (title, SOP order, 2-3 MSQ headings)",
-        not structure,
-        "; ".join(structure) if structure else "",
-    ))
+    if humanized:
+        # the SOP's own rule behind the plan's structure: 2-3 of the market headings are questions (MSQs)
+        question_headings = [s for s in sections if _is_market_section(s) and (s.get("heading") or "").strip().endswith("?")]
+        results.append(CheckResult(
+            "2-3 headings are questions (most searched questions)",
+            2 <= len(question_headings) <= 3, f"{len(question_headings)} question heading(s)"))
+    else:
+        # ---- hard (§3.9): the draft carries the plan's validated structure ...
+        structure = v2_structure_problems(title, sections, plan, inp)
+        results.append(CheckResult(
+            "Draft structure matches the validated plan (title, SOP order, 2-3 MSQ headings)",
+            not structure,
+            "; ".join(structure) if structure else "",
+        ))
 
-    # ---- hard (§3.9): the SHAPE of each heading — question headings are their planned MSQ's text,
-    # every other heading a short SOP-topic phrase naming the market and never a question
-    heading_problems = v2_heading_shape_problems(sections, plan, inp, market_name)
-    results.append(CheckResult(
-        "Headings: question headings are planned MSQs, every other heading names its SOP topic and the market",
-        not heading_problems,
-        "; ".join(heading_problems) if heading_problems else "",
-    ))
+        # ---- hard (§3.9): the SHAPE of each heading — question headings are their planned MSQ's text,
+        # every other heading a short SOP-topic phrase naming the market and never a question
+        heading_problems = v2_heading_shape_problems(sections, plan, inp, market_name)
+        results.append(CheckResult(
+            "Headings: question headings are planned MSQs, every other heading names its SOP topic and the market",
+            not heading_problems,
+            "; ".join(heading_problems) if heading_problems else "",
+        ))
 
     # ---- hard (§3.9): every sentence names what it refers to — none opens with a pointing word
     vague_problems = v2_vague_reference_problems(sections, faq)
     results.append(CheckResult(
-        "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)",
+        V2_VAGUE_CHECK_NAME,
         not vague_problems,
         "; ".join(vague_problems[:6]) + (f" (+{len(vague_problems) - 6} more)" if len(vague_problems) > 6 else "")
         if vague_problems else "",
@@ -1743,9 +1764,10 @@ def run_checks_v2(
     ))
 
     # ---- hard (§3.7): secondary keywords — 4-6 assigned, each used in its section, one per paragraph
-    keyword_problems = v2_keyword_problems(sections, plan, market_name)
+    keyword_problems = v2_keyword_problems(sections, plan, market_name, anywhere=humanized)
     results.append(CheckResult(
-        "Secondary keywords: 4-6 assigned, each used in its own section, no paragraph stuffed with them",
+        "Secondary keywords: 4-6 assigned, each used in the article, no paragraph stuffed with them" if humanized
+        else "Secondary keywords: 4-6 assigned, each used in its own section, no paragraph stuffed with them",
         not keyword_problems,
         "; ".join(keyword_problems) if keyword_problems else "",
     ))
@@ -1799,9 +1821,9 @@ def run_checks_v2(
     ))
 
     # ---- hard (§3.8): every FAQ question is a planned answerable MSQ, its figures traced
-    faq_problems = v2_faq_problems(faq, plan, inp, sections)
+    faq_problems = v2_faq_problems(faq, plan, inp, sections, planned_only=not humanized)
     results.append(CheckResult(
-        "FAQ questions are planned MSQs and their figures trace",
+        "FAQ answers' figures trace" if humanized else "FAQ questions are planned MSQs and their figures trace",
         not faq_problems,
         "; ".join(faq_problems) if faq_problems else "",
     ))

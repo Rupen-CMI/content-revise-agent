@@ -13,7 +13,7 @@
 <div class="page-drop-overlay" id="page-drop-overlay" hidden>
   <div class="page-drop-overlay-inner">
     <i data-lucide="upload-cloud"></i>
-    <p>Drop your .docx file anywhere to upload</p>
+    <p id="page-drop-text">Drop your .docx file anywhere to upload</p>
   </div>
 </div>
 
@@ -79,6 +79,12 @@
       </button>
     </nav>
 
+    <nav class="step-nav sop-nav" aria-label="Tools">
+      <button class="step-item sop-item" id="sop-nav-btn" type="button">
+        <i data-lucide="clipboard-check"></i> <span>SOP Check</span>
+      </button>
+    </nav>
+
     <div class="sidebar-footer">
       <button class="user-chip" id="user-chip" type="button" aria-label="Change your name" hidden>
         <i data-lucide="user"></i>
@@ -110,6 +116,34 @@
           <i data-lucide="upload-cloud"></i>
           <span id="file-drop-text">Click or drop a .docx file</span>
         </label>
+        <button class="link-btn" id="sop-link" type="button"><span>Already have a final draft? Check SOP compliance</span> <i data-lucide="arrow-right"></i></button>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="sopcheck" hidden>
+      <h2 class="panel-title">SOP compliance check</h2>
+      <p class="panel-sub">Upload your final, humanized draft (.docx) to see which SOP rules it passes. Fix what is flagged, then upload it again to re-check.</p>
+      <input type="file" id="sop-file-input" accept=".docx" hidden>
+      <label class="file-drop" for="sop-file-input">
+        <i data-lucide="upload-cloud"></i>
+        <span id="sop-file-text">Click or drop a .docx file</span>
+      </label>
+      <div class="spinner-block" id="sop-spinner" hidden>
+        <i data-lucide="loader-circle" class="spin"></i>
+        <span>Checking the draft…</span>
+      </div>
+      <div id="sop-result" hidden>
+        <div class="metric-row">
+          <div class="metric-card"><span class="metric-label">Passed</span><span class="metric-value" id="sop-passed"></span></div>
+          <div class="metric-card"><span class="metric-label">To fix</span><span class="metric-value" id="sop-failed"></span></div>
+          <div class="metric-card"><span class="metric-label">Words</span><span class="metric-value" id="sop-words"></span></div>
+        </div>
+        <p class="field-hint">Only the rules that can be judged from the draft's own text and headings run here. Rules that need the revamp run's report, evidence or keywords are listed as not checked. For headings to be detected, the draft must use Word's Heading styles.</p>
+        <div class="content-card"><ul class="checklist" id="sop-checklist"></ul></div>
+        <details class="preview-box">
+          <summary><i data-lucide="chevron-right"></i> Not checked here</summary>
+          <ul class="checklist" id="sop-skipped"></ul>
+        </details>
       </div>
     </section>
 
@@ -386,6 +420,49 @@
           <summary><i data-lucide="chevron-right"></i> SOP compliance checklist</summary>
           <ul class="checklist" id="final-checklist"></ul>
         </details>
+
+        <hr class="divider">
+        <div class="content-card" id="recheck-card">
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Humanized this draft?</span>
+            <p class="field-hint">Upload the humanized .docx to recheck it against every SOP of this run and see where the keywords landed in it. It works while this run is still open in the app.</p>
+            <input type="file" id="recheck-input" accept=".docx" hidden>
+            <div class="btn-row">
+              <button class="btn btn-primary" id="recheck-btn" type="button"><i data-lucide="clipboard-check"></i> Recheck SOPs</button>
+              <span class="field-hint" id="recheck-file-name"></span>
+            </div>
+            <div class="spinner-block" id="recheck-spinner" hidden>
+              <i data-lucide="loader-circle" class="spin"></i>
+              <span>Rechecking the humanized draft…</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="recheck-result" hidden>
+          <div class="metric-row">
+            <div class="metric-card">
+              <span class="metric-label">SOP checks passed (humanized)</span>
+              <span class="metric-value" id="recheck-passed"></span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Before humanizing</span>
+              <span class="metric-value" id="recheck-before"></span>
+            </div>
+          </div>
+          <ul class="plain-list recheck-notes" id="recheck-notes" hidden></ul>
+          <h2 class="panel-title" id="recheck-title"></h2>
+          <div class="highlight-legend" id="recheck-legend"></div>
+          <div class="scroll-box article-render" id="recheck-article"></div>
+          <div class="content-card" id="recheck-faq-block" hidden>
+            <div class="kv-block kv-block-last">
+              <span class="kv-label">Frequently Asked Questions</span>
+              <div id="recheck-faq"></div>
+            </div>
+          </div>
+          <div class="content-card">
+            <ul class="checklist" id="recheck-checklist"></ul>
+          </div>
+        </div>
       </div>
     </section>
 

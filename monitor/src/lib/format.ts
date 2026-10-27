@@ -1,10 +1,8 @@
-export function fmtCost(usd: number | string | null | undefined): string {
-  if (usd == null || usd === "") return "—";
-  const n = typeof usd === "string" ? Number(usd) : usd;
-  if (!Number.isFinite(n)) return "—";
-  if (n === 0) return "$0.0000";
-  // 4 decimals for the small per-run / per-user values these costs actually are
-  return n < 10 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+import { fmtMoney, toDisplay, USD_MONEY, type Money } from "./currency";
+
+/** A cost STORED in USD, shown in the visitor's currency (USD when `money` is omitted). */
+export function fmtCost(usd: number | string | null | undefined, money: Money = USD_MONEY): string {
+  return fmtMoney(toDisplay(usd, money), money.currency);
 }
 
 export function fmtTokens(n: number | string | null | undefined): string {

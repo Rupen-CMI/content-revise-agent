@@ -563,40 +563,46 @@ check("flesch: dense graduate-level prose measures below the Flesch floor", scor
 
 # ------------------------------------------------------------------ vague-reference openers
 
+# The pointing-word check is disconnected from the default results (like the soft checks below), so
+# this section asks for the disconnected checks too.
+def run_v2_all(title, sections, **kw):
+    return run_v2(title, sections, include_disconnected=True, **kw)
+
+
 VAGUE_NAME = "Every sentence names what it refers to"
 
 d = good_draft()
 d[2]["paragraphs"][0] += " This shows how fast the market grows."
-run = run_v2(TITLE, d)
+run = run_v2_all(TITLE, d)
 r = by_name(run, VAGUE_NAME)
 check("vague: 'This shows how fast the market grows.' fails", not r.passed, r.detail)
 check("vague: the detail names the pointing-word pattern", "opens with a pointing word" in r.detail, r.detail)
 
 d = good_draft()
 d[4]["paragraphs"][1] = "That is why buyers pay less."
-run = run_v2(TITLE, d)
+run = run_v2_all(TITLE, d)
 check("vague: 'That is why buyers pay less.' fails", not by_name(run, VAGUE_NAME).passed,
       by_name(run, VAGUE_NAME).detail)
 
 d = good_draft()
 d[5]["paragraphs"][1] = "It means buyers pay less."
-run = run_v2(TITLE, d)
+run = run_v2_all(TITLE, d)
 check("vague: 'It means buyers pay less.' fails (bare pronoun)", not by_name(run, VAGUE_NAME).passed,
       by_name(run, VAGUE_NAME).detail)
 
 d = good_draft()
 d[6]["paragraphs"][1] = "It is the largest region today."
-run = run_v2(TITLE, d)
+run = run_v2_all(TITLE, d)
 check("vague: 'It is the largest region today.' states its subject and passes",
       by_name(run, VAGUE_NAME).passed, by_name(run, VAGUE_NAME).detail)
 
 d = good_draft()
 d[4]["paragraphs"][1] = d[4]["paragraphs"][1] + "\n- This keeps costs low."
-run = run_v2(TITLE, d)
+run = run_v2_all(TITLE, d)
 r = by_name(run, VAGUE_NAME)
 check("vague: a bullet line opening with This fails", not r.passed, r.detail)
 
-run = run_v2(TITLE, good_draft(),
+run = run_v2_all(TITLE, good_draft(),
              sponsor_text="This approach keeps the stack simple for every team that uses it.")
 check("vague: the retained sponsor paragraph is exempt from the pointing-word check",
       by_name(run, VAGUE_NAME).passed, by_name(run, VAGUE_NAME).detail)
@@ -604,7 +610,7 @@ check("vague: the retained sponsor paragraph is exempt from the pointing-word ch
 d = good_draft()
 faq2 = copy.deepcopy(GOOD_FAQ)
 faq2[0]["answer"] = "That is because the market grows."
-run = run_v2(TITLE, d, faq=faq2)
+run = run_v2_all(TITLE, d, faq=faq2)
 r = by_name(run, VAGUE_NAME)
 check("vague: an FAQ answer opening with That fails", not r.passed, r.detail)
 check("vague: the FAQ hit is labelled with its question", "FAQ answer to" in r.detail, r.detail)
@@ -905,6 +911,7 @@ check("pile extended: the same words spread across the clause raise no pile note
 # builds them stays in checks.py, and include_disconnected=True is the only way to get them back.
 
 DISC_NAMES = {
+    checks.V2_VAGUE_CHECK_NAME,
     "Uses 2-3 long-tail keywords (soft)",
     "Every assigned long-tail is used in its own section (soft)",
     "No long-tail phrase is pasted as a noun pile (soft)",
@@ -912,9 +919,9 @@ DISC_NAMES = {
     "Readability Flesch >= 50 (soft)",
 }
 
-check("disconnected: the set holds exactly five names", len(checks.V2_DISCONNECTED_CHECKS) == 5,
+check("disconnected: the set holds exactly six names", len(checks.V2_DISCONNECTED_CHECKS) == 6,
       str(checks.V2_DISCONNECTED_CHECKS))
-check("disconnected: the set holds exactly the five disconnected names",
+check("disconnected: the set holds exactly the six disconnected names",
       set(checks.V2_DISCONNECTED_CHECKS) == DISC_NAMES, str(sorted(checks.V2_DISCONNECTED_CHECKS)))
 check("disconnected: the set entries derive from the constants that build the names",
       f"Uses {checks.LONGTAIL_MIN_USED}-{checks.LONGTAIL_MAX_USED} long-tail keywords (soft)" in checks.V2_DISCONNECTED_CHECKS

@@ -1,3 +1,4 @@
+import { SYMBOL, type Currency } from "./currency";
 import type { DailyCost } from "./events";
 
 export interface ChartPoint {
@@ -30,10 +31,16 @@ export function shortDay(day: string): string {
   return `${MONTHS[Number(m) - 1] ?? m} ${Number(d)}`;
 }
 
-/** Compact y-axis label: $0.05, $1.2, $12. */
-export function axisCost(v: number): string {
-  if (v === 0) return "$0";
-  if (v < 1) return `$${v.toFixed(2)}`;
-  if (v < 10) return `$${v.toFixed(1)}`;
-  return `$${Math.round(v)}`;
+/** The same points with their cost multiplied by `rate`, to plot in another currency. */
+export function scaleCosts(points: ChartPoint[], rate: number): ChartPoint[] {
+  return rate === 1 ? points : points.map((p) => ({ ...p, cost: p.cost * rate }));
+}
+
+/** Compact y-axis label for a value already in `currency`: $0.05, $1.2, $12 or ₹0.05, ₹1.2, ₹12. */
+export function axisCost(v: number, currency: Currency = "USD"): string {
+  const s = SYMBOL[currency];
+  if (v === 0) return `${s}0`;
+  if (v < 1) return `${s}${v.toFixed(2)}`;
+  if (v < 10) return `${s}${v.toFixed(1)}`;
+  return `${s}${Math.round(v)}`;
 }

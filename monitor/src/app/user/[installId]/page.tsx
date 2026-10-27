@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { CurrencyNote } from "@/components/CurrencyNote";
 import { Header } from "@/components/Header";
 import { requireAdminPage } from "@/lib/auth";
 import { publicError } from "@/lib/errors";
+import { getMoney } from "@/lib/money";
 import {
   userLabel,
   userLocations,
@@ -22,6 +24,8 @@ export default async function UserPage({
 }) {
   await requireAdminPage();
   const { installId } = await params;
+  const ctx = await getMoney();
+  const { money } = ctx;
 
   let runs: RunRow[] = [];
   let locations: LocationRow[] = [];
@@ -66,9 +70,10 @@ export default async function UserPage({
             <p className="sub">
               {names.previous ? <>Previously “{names.previous}” · </> : null}
               {label && names.current && label !== names.current ? <>Issued to {label} · </> : null}
-              {runs.length} run{runs.length === 1 ? "" : "s"} · {fmtCost(totalCost)} total ·{" "}
+              {runs.length} run{runs.length === 1 ? "" : "s"} · {fmtCost(totalCost, money)} total ·{" "}
               {fmtTokens(totalTokens)} tokens
             </p>
+            <CurrencyNote ctx={ctx} />
           </div>
 
           <section className="section">
@@ -96,7 +101,7 @@ export default async function UserPage({
                         </span>
                       </td>
                       <td className="num dim">{r.word_count ?? "—"}</td>
-                      <td className="num">{fmtCost(r.cost_usd)}</td>
+                      <td className="num">{fmtCost(r.cost_usd, money)}</td>
                       <td className="num dim">{fmtDuration(r.duration_s)}</td>
                       <td className="dim">{fmtLocation(r.city, r.region, r.country)}</td>
                       <td className="dim">{fmtTime(r.ts)}</td>

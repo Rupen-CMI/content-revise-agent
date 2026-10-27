@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { CostChart } from "@/components/CostChart";
+import { CurrencyNote } from "@/components/CurrencyNote";
 import { Header } from "@/components/Header";
 import { requireAdminPage } from "@/lib/auth";
-import { fillDays } from "@/lib/chart";
+import { fillDays, scaleCosts } from "@/lib/chart";
+import { getMoney } from "@/lib/money";
 import { publicError } from "@/lib/errors";
 import {
   dailyCost,
@@ -36,6 +38,8 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 export default async function DashboardPage() {
   await requireAdminPage();
+  const ctx = await getMoney();
+  const { money } = ctx;
   let installs: InstallRow[] = [];
   let stats: Stats | undefined;
   let runs: RunRow[] = [];
@@ -70,13 +74,14 @@ export default async function DashboardPage() {
           <div className="page-head">
             <h1>Usage</h1>
             <p className="sub">Who is using the agent, what they regenerated, and what it cost.</p>
+            <CurrencyNote ctx={ctx} />
           </div>
 
           <div className="stats">
             <Stat label="Active users · 7d" value={String(stats?.active_users ?? 0)} />
             <Stat label="Total runs" value={String(stats?.total_runs ?? 0)} />
-            <Stat label="Total cost" value={fmtCost(stats?.total_cost)} />
-            <Stat label="Cost · last 7d" value={fmtCost(stats?.cost_7d)} />
+            <Stat label="Total cost" value={fmtCost(stats?.total_cost, money)} />
+            <Stat label="Cost · last 7d" value={fmtCost(stats?.cost_7d, money)} />
           </div>
 
           <section className="section">
@@ -111,7 +116,7 @@ export default async function DashboardPage() {
                       <td className="dim">{fmtTime(row.last_seen)}</td>
                       <td className="dim">{row.last_location || "—"}</td>
                       <td className="num">{row.runs}</td>
-                      <td className="num">{fmtCost(row.total_cost)}</td>
+                      <td className="num">{fmtCost(row.total_cost, money)}</td>
                       <td className="num dim">{fmtTokens(row.total_tokens)}</td>
                     </tr>
                   ))}
@@ -156,7 +161,7 @@ export default async function DashboardPage() {
                           {fmtRunStatus(r.status, r.step).text}
                         </span>
                       </td>
-                      <td className="num">{fmtCost(r.cost_usd)}</td>
+                      <td className="num">{fmtCost(r.cost_usd, money)}</td>
                       <td className="num dim">{fmtDuration(r.duration_s)}</td>
                       <td className="dim">{fmtLocation(r.city, r.region, r.country)}</td>
                       <td className="dim">{fmtTime(r.ts)}</td>
@@ -174,7 +179,7 @@ export default async function DashboardPage() {
 
           <section className="section">
             <h2>Daily cost · last 30 days (UTC)</h2>
-            <CostChart data={fillDays(costs, 30)} />
+            <CostChart data={scaleCosts(fillDays(costs, 30), money.rate)} currency={money.currency} />
           </section>
         </>
       )}
