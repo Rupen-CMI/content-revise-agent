@@ -513,6 +513,7 @@ def _derive_packaged_start_bat() -> None:
         'if not exist "%~dp0.env" (\n'
         '    echo WARNING: no .env file found next to this script -- the app needs one\n'
         '    echo ^(DB_URL and LLM settings^) to start. Ask whoever gave you this folder for it.\n'
+        '    call :log "no .env file next to start.bat"\n'
         '    pause\n'
         '    exit /b 1\n'
         ')\n'
@@ -812,6 +813,46 @@ def stage_pyruntime() -> None:
         PYRUNTIME, dest,
         ignore=shutil.ignore_patterns("__pycache__", "*.log", "*.pyc"),
     )
+    _bundle_vc_runtime(dest)
+
+
+# The Microsoft Visual C++ runtime torch needs. Clean or older Windows PCs carry a too-old copy in
+# System32 (e.g. 14.11 from 2017) and torch then fails with "WinError 1114 ... c10.dll". Microsoft
+# allows these DLLs to be shipped app-local, and Windows loads the copy next to python.exe before
+# the System32 one, so the package needs neither admin rights nor an installer on the user's PC.
+# Found by scanning the import tables of every DLL/.pyd in the installed packages (torch 2.14.1): torch_cpu.dll
+# needs msvcp140 + msvcp140_atomic_wait + vcruntime140 + vcruntime140_1 + vcruntime140_threads; nothing else
+# outside Windows itself. The rest are shipped too because they are small and keep the set coherent.
+VC_RUNTIME_REQUIRED = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_atomic_wait.dll",
+                       "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll")
+VC_RUNTIME_OPTIONAL = ("msvcp140_codecvt_ids.dll", "concrt140.dll", "vcomp140.dll")
+VC_RUNTIME_MIN = (14, 38)
+
+
+def _file_version(path: Path) -> tuple[int, int]:
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", f"(Get-Item -LiteralPath '{path}').VersionInfo.FileVersion"],
+        capture_output=True, text=True,
+    )
+    m = re.match(r"\s*(\d+)\.(\d+)", r.stdout)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def _bundle_vc_runtime(dest: Path) -> None:
+    sysdir = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    missing = [n for n in VC_RUNTIME_REQUIRED if not (sysdir / n).is_file()]
+    if missing:
+        die(f"Visual C++ runtime DLLs missing on the build machine: {missing}. Install the latest "
+            "vc_redist.x64.exe (https://aka.ms/vs/17/release/vc_redist.x64.exe) and rebuild.")
+    ver = _file_version(sysdir / "msvcp140.dll")
+    if ver < VC_RUNTIME_MIN:
+        die(f"build machine's Visual C++ runtime is {ver[0]}.{ver[1]}, too old to ship (need "
+            f"{VC_RUNTIME_MIN[0]}.{VC_RUNTIME_MIN[1]}+). Install the latest vc_redist.x64.exe and rebuild.")
+    # copied over the embeddable's own vcruntime140*.dll too, so the whole set is one coherent version
+    for name in VC_RUNTIME_REQUIRED + VC_RUNTIME_OPTIONAL:
+        if (sysdir / name).is_file():
+            shutil.copy2(sysdir / name, dest / name)
+    log(f"bundled Visual C++ runtime {ver[0]}.{ver[1]} into pyruntime")
 
 
 # ---------------------------------------------------------------- audit
@@ -855,6 +896,8 @@ def audit_stage() -> None:
     rt = STAGE / "pyruntime"
     if not (rt / "python.exe").is_file() or not (rt / "Lib" / "site-packages" / "pip").is_dir():
         problems.append("pyruntime missing python.exe or pip")
+    elif not all((rt / n).is_file() for n in VC_RUNTIME_REQUIRED):
+        problems.append("pyruntime lacks the bundled Visual C++ runtime DLLs")
     else:
         files = [f for f in rt.rglob("*") if f.is_file()]
         size = sum(f.stat().st_size for f in files)
