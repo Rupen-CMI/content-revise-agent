@@ -28,9 +28,11 @@ output/
 
 # --- generated or sample documents (client work product / scratch, not source)
 input_docs/
-/Revised_*.docx
+/*.docx
+/*.doc
 /content.html
 /out_teen.md
+user_errors/
 
 # --- local tooling and scratch
 .claude
