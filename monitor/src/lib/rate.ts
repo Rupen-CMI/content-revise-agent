@@ -14,7 +14,7 @@ export interface RateInfo {
 // A USD->INR rate outside this range is a bad response, not a market move. Refuse it rather than show nonsense.
 const MIN_RATE = 10;
 const MAX_RATE = 1000;
-const REVALIDATE_S = 12 * 3600; // ECB publishes once per working day
+const REVALIDATE_S = 3600; // the providers publish daily; hourly keeps the header badge current after each publish
 const TIMEOUT_MS = 3000;
 // After both providers fail, do not retry for a few minutes: a provider outage must not slow every page view.
 const RETRY_AFTER_FAILURE_MS = 5 * 60_000;

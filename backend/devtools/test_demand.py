@@ -55,6 +55,10 @@ check("questions: too long is dropped",
       demand.normalize_questions([q("size", "How big is the Zzz Widget Services Market " + "and so on " * 8 + "?")], MARKET, LOG) == [])
 check("questions: a missing question mark is added",
       demand.normalize_questions([q("size", "How big is the Zzz Widget Services Market today")], MARKET, LOG)[0]["question"].endswith("?"))
+lower = demand.normalize_questions([q("size", "how big is the Zzz Widget Services Market today")], MARKET, LOG)
+check("questions: a lowercase question starts with a capital letter", lower and lower[0]["question"] == "How big is the Zzz Widget Services Market today?", str(lower))
+check("questions: only the first letter changes",
+      demand.normalize_questions([q("size", "how big is the Zzz Widget Services Market in the U.S.?")], MARKET, LOG)[0]["question"].endswith("in the U.S.?"))
 check("questions: a natural short form of the market's name is accepted",
       len(demand.normalize_questions([q("drivers", "What is driving the widget services market?")], MARKET, LOG)) == 1)
 

@@ -160,6 +160,46 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .currency-toggle[aria-busy="true"] { opacity: 0.7; }
 .currency-note { margin: 6px 0 0; }
 
+.rate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+.rate-pair { color: var(--text-muted); font-weight: 500; margin-right: 2px; }
+.rate-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 6px 1px var(--success);
+}
+.rate-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--success);
+  animation: rate-pulse 2s ease-out infinite;
+}
+.rate-badge[data-live="false"] .rate-dot { background: var(--text-faint); box-shadow: none; }
+.rate-badge[data-live="false"] .rate-dot::after { animation: none; display: none; }
+@keyframes rate-pulse {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(3.2); opacity: 0; }
+}
+
 .theme-toggle {
   display: grid;
   place-items: center;
@@ -193,7 +233,7 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .back { display: inline-block; margin-bottom: 10px; color: var(--text-muted); font-size: 13px; }
 
 /* ---------- Stat cards ---------- */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 40px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 40px; }
 .stat {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -371,4 +411,5 @@ input:focus-visible { outline: none; }
   .stat .value { font-size: 22px; }
   .page-head h1 { font-size: 20px; }
   .demo-pill { display: none; }
+  .rate-pair { display: none; }
 }

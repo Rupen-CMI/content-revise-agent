@@ -104,6 +104,15 @@ def test_the_dev_token_in_env_is_never_baked_into_a_customer_build(bp):
     assert baked_token != DEV_TOKEN
 
 
+def test_the_shipped_vc_runtime_covers_what_torch_loads(bp):
+    """Torch fails to import ('WinError 1114 c10.dll' / 'WinError 126 shm.dll') on PCs with an old Visual C++
+    runtime. torch_cpu.dll imports exactly these (found by scanning the installed wheel's import tables), so a
+    package that omits any of them is broken on such PCs even though it works on a developer machine."""
+    needed_by_torch = {"msvcp140.dll", "msvcp140_atomic_wait.dll", "vcruntime140.dll",
+                       "vcruntime140_1.dll", "vcruntime140_threads.dll"}
+    assert needed_by_torch <= set(bp.VC_RUNTIME_REQUIRED)
+
+
 def _load_staged_config_after(bp):
     backend = str(bp.STAGE / "backend")
     sys.path.insert(0, backend)

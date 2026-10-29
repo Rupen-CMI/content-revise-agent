@@ -81,6 +81,7 @@ export default async function DashboardPage() {
             <Stat label="Active users · 7d" value={String(stats?.active_users ?? 0)} />
             <Stat label="Total runs" value={String(stats?.total_runs ?? 0)} />
             <Stat label="Total cost" value={fmtCost(stats?.total_cost, money)} />
+            <Stat label="Cost · today" value={fmtCost(stats?.cost_today, money)} />
             <Stat label="Cost · last 7d" value={fmtCost(stats?.cost_7d, money)} />
           </div>
 

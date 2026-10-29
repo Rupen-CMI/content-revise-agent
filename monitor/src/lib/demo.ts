@@ -98,6 +98,9 @@ export function demoStats(): Stats {
     total_runs: runs.length,
     total_cost: runs.reduce((s, r) => s + (r.cost_usd ?? 0), 0),
     cost_7d: recent.reduce((s, r) => s + (r.cost_usd ?? 0), 0),
+    cost_today: runs
+      .filter((r) => r.ts.slice(0, 10) === new Date().toISOString().slice(0, 10))
+      .reduce((s, r) => s + (r.cost_usd ?? 0), 0),
   };
 }
 

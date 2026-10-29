@@ -7,9 +7,26 @@ rem APP_PORT / APP_NO_BROWSER exist so the launcher can be tested without touchi
 rem already running; a normal double-click uses port 8000 and opens the browser.
 if not defined APP_PORT set "APP_PORT=8000"
 
+rem Startup log: logs\startup-YYYY-MM-DD.log, a new file each day (launches on the same day append).
+rem The server's own output goes to logs\server-YYYY-MM-DD.log and pip's to logs\pip-YYYY-MM-DD.log.
+rem If these cannot be written (read-only folder) logging is skipped and the launcher still runs.
+if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
+for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "TODAY=%%D"
+if not defined TODAY set "TODAY=undated"
+set "LOGFILE=%~dp0logs\startup-%TODAY%.log"
+set "PIP_LOG=%~dp0logs\pip-%TODAY%.log"
+set "SERVER_LOG=%~dp0logs\server-%TODAY%.log"
+for /f "delims=" %%V in ('ver') do set "OSVER=%%V"
+(>>"%LOGFILE%" echo.) 2>nul
+call :log "===== launch ====="
+call :log "folder: %~dp0"
+call :log "user: %USERNAME% on %COMPUTERNAME%, port %APP_PORT%"
+call :log "windows: %OSVER%"
+
 echo ============================================
 echo   CMI Blog Revamp Agent - starting up
 echo ============================================
+echo   Log: %LOGFILE%
 echo.
 
 rem ==== PACKAGING BLOCK-START (replaced in the package) ====
@@ -75,6 +92,7 @@ exit /b 1
 :have_python
 echo Using Python: %PY_EXE%
 echo.
+call :log "using python: %PY_EXE%"
 
 rem ---------------------------------------------------------------
 rem 2. Create the venv once; reused on every future run.
@@ -109,13 +127,15 @@ if defined FIRST_RUN (
 ) else (
     echo Checking components...
 )
-"%VENV_PY%" -m pip install %PIP_FLAGS% --disable-pip-version-check -r "%~dp0backend\requirements.txt"
+"%VENV_PY%" -m pip install %PIP_FLAGS% --disable-pip-version-check --log "%PIP_LOG%" -r "%~dp0backend\requirements.txt"
 if errorlevel 1 (
     echo.
-    echo Could not install dependencies. Check your internet connection and try again.
+    call :say "Could not install dependencies. Check your internet connection and try again."
+    call :log "pip failed, details: %PIP_LOG%"
     pause
     exit /b 1
 )
+call :log "components installed or already present"
 echo.
 rem ==== PACKAGING BLOCK-END ====
 
@@ -125,6 +145,7 @@ rem ---------------------------------------------------------------
 if not exist "%~dp0.env" (
     echo WARNING: no .env file found next to this script -- the app needs one
     echo ^(DB_URL and LLM settings^) to start. Ask whoever gave you this folder for it.
+    call :log "no .env file next to start.bat"
     pause
     exit /b 1
 )
@@ -133,6 +154,7 @@ rem The language model used to match your article to CMI reports lives in a per-
 rem this folder. Checked on every launch: instant and silent when it is already there, downloaded
 rem (with progress) only when it is missing. Not fatal if it fails -- the app falls back to
 rem text matching -- so a missing connection doesn't stop you from starting.
+call :log "checking the language model"
 "%VENV_PY%" -c "import sys; sys.path.insert(0, r'%~dp0backend'); import reports; reports.ensure_embedding_model(say=print)"
 if errorlevel 1 (
     echo.
@@ -140,6 +162,9 @@ if errorlevel 1 (
     echo reports to your article will be less accurate. Check the internet connection and run
     echo this file again to retry.
     echo.
+    call :log "language model: could not be downloaded or loaded (app falls back to text matching)"
+) else (
+    call :log "language model: ready"
 )
 
 rem Every run starts a fresh server: stop a previous copy of THIS app still holding the port
@@ -149,19 +174,27 @@ echo Closing any previous copy of the app...
 powershell -NoProfile -Command "$c = Get-NetTCPConnection -LocalPort %APP_PORT% -State Listen -ErrorAction SilentlyContinue; foreach ($x in $c) { $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $x.OwningProcess); if ($p.CommandLine -like '*main:app*' -and $p.CommandLine -like '*%~dp0backend*') { taskkill /PID $x.OwningProcess /T /F | Out-Null } else { exit 2 } }; exit 0"
 if errorlevel 2 (
     echo.
-    echo Port %APP_PORT% is being used by another program, not by this app.
+    call :say "Port %APP_PORT% is being used by another program, not by this app."
     echo Close that program and run this file again.
     pause
     exit /b 1
 )
 ping -n 2 127.0.0.1 >nul
 
-echo Starting the server...
+call :say "Starting the server..."
 set "CMI_AUTOSHUTDOWN=1"
-start "CMI Blog Revamp Agent - server (do not close while using the app)" /min ^
-    "%VENV_PY%" -m uvicorn main:app --host 127.0.0.1 --port %APP_PORT% --app-dir "%~dp0backend"
+rem The server window shows the live output AND the same lines are appended to the server log (UTF-8;
+rem Tee-Object would write UTF-16, unreadable in most viewers).
+rem PYTHONUNBUFFERED makes python flush every line through the pipe so the window is live, not delayed.
+set "PYTHONUNBUFFERED=1"
+rem The pipe and redirect are passed in variables (expanded late with !..!) so THIS script does not try to
+rem act on them; the new window's own cmd does.
+set "PIPE=|"
+set "ERR2OUT=2>&1"
+(>>"%SERVER_LOG%" echo ===== server start %TODAY% %time:~0,8% =====) 2>nul
+start "CMI Blog Revamp Agent - server (do not close while using the app)" /min cmd /c ""%VENV_PY%" -m uvicorn main:app --host 127.0.0.1 --port %APP_PORT% --app-dir "%~dp0backend" !ERR2OUT! !PIPE! powershell -NoProfile -Command "$input !PIPE! ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding UTF8 }""
 
-echo Waiting for the server to come up...
+call :say "Waiting for the server to come up..."
 set "READY="
 for /l %%i in (1,1,30) do (
     powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:%APP_PORT%/health' -UseBasicParsing -TimeoutSec 1).StatusCode } catch { exit 1 }" >nul 2>nul
@@ -175,12 +208,15 @@ for /l %%i in (1,1,30) do (
 :server_ready
 if not defined READY (
     echo.
-    echo The server did not start in time. A window titled "CMI Blog Revamp Agent - server"
-    echo should still be open minimized in your taskbar -- check it for an error message.
+    call :say "The server did not start in time. Its output is saved in:"
+    call :say "%SERVER_LOG%"
+    echo A window titled "CMI Blog Revamp Agent - server" may still be open minimized
+    echo in your taskbar too. Send both log files from the logs folder to get help.
     pause
     exit /b 1
 )
 
+call :log "server is up on port %APP_PORT%"
 if not defined APP_NO_BROWSER start "" "http://127.0.0.1:%APP_PORT%"
 
 echo.
@@ -189,3 +225,18 @@ echo When you close the browser tab the app shuts itself down a few seconds late
 echo Running this file again always starts a fresh copy.
 echo.
 ping -n 7 127.0.0.1 >nul
+exit /b 0
+
+rem ---- helpers -------------------------------------------------------------------------------
+rem :log writes one timestamped line to the startup log; :say also prints it. Messages are passed
+rem through a variable with delayed expansion so characters like & ( ) in them cannot break the line.
+:log
+set "LOGMSG=%~1"
+(>>"%LOGFILE%" echo [%TODAY% %time:~0,8%] !LOGMSG!) 2>nul
+exit /b 0
+
+:say
+set "LOGMSG=%~1"
+echo(!LOGMSG!
+(>>"%LOGFILE%" echo [%TODAY% %time:~0,8%] !LOGMSG!) 2>nul
+exit /b 0

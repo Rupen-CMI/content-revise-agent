@@ -69,6 +69,7 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
             continue
         if not q.endswith("?"):
             q = q.rstrip(".!") + "?"
+        q = q[0].upper() + q[1:]
         words = q.split()
         if not _MSQ_MIN_WORDS <= len(words) <= _MSQ_MAX_WORDS:
             logger.info(f"[demand] dropped question (length {len(words)}): {q!r}")

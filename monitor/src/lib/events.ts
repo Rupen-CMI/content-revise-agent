@@ -250,6 +250,8 @@ export interface Stats {
   total_runs: number;
   total_cost: number;
   cost_7d: number;
+  /** spend since 00:00 UTC today, the same day boundary the daily chart uses */
+  cost_today: number;
 }
 
 export async function dashboardStats(): Promise<Stats> {
@@ -261,7 +263,9 @@ export async function dashboardStats(): Promise<Stats> {
            (SELECT COUNT(DISTINCT install_id || ':' || ${RUN_KEY}) FROM events WHERE ${RUN_EVENT})::int AS total_runs,
            (SELECT COALESCE(SUM(cost_usd), 0) FROM events WHERE ${RUN_EVENT}) AS total_cost,
            (SELECT COALESCE(SUM(cost_usd), 0) FROM events
-              WHERE ${RUN_EVENT} AND ts > now() - interval '7 days') AS cost_7d
+              WHERE ${RUN_EVENT} AND ts > now() - interval '7 days') AS cost_7d,
+           (SELECT COALESCE(SUM(cost_usd), 0) FROM events
+              WHERE ${RUN_EVENT} AND (ts AT TIME ZONE 'UTC')::date = (now() AT TIME ZONE 'UTC')::date) AS cost_today
   `);
   return rows[0];
 }
