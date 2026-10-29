@@ -6,6 +6,7 @@ import { SESSION_IDLE_S } from "@/lib/session";
 import { BrandMark } from "./BrandMark";
 import { CurrencyToggle } from "./CurrencyToggle";
 import { IdleGuard } from "./IdleGuard";
+import { RateBadge } from "./RateBadge";
 import { ThemeToggle } from "./ThemeToggle";
 
 export async function Header({ active }: { active: "usage" | "tokens" }) {
@@ -23,6 +24,7 @@ export async function Header({ active }: { active: "usage" | "tokens" }) {
       </nav>
       <div className="header-right">
         {demoEnabled() ? <span className="demo-pill">demo data</span> : null}
+        {info ? <RateBadge rate={info.rate} label={describeRate(info)} /> : null}
         <CurrencyToggle
           currency={money.currency}
           inrAvailable={info !== null}

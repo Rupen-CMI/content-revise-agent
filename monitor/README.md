@@ -191,7 +191,7 @@ The header has a **$ USD / ₹ INR** switch. Costs are always **stored and bille
 charges and what the proxy records); INR is only a way of showing them, so a ₹ figure is an estimate.
 
 - The rate is fetched **on the server** (the browser never contacts a rate provider, so the CSP is unchanged):
-  the ECB reference rate through Frankfurter, with open.er-api.com as a backup. It is cached for 12 hours, a
+  the ECB reference rate through Frankfurter, with open.er-api.com as a backup. It is cached for 1 hour (the header badge re-reads it every 5 minutes through `/api/rate`), a
   provider outage is not retried for 5 minutes, and a rate outside 10-1000 is rejected as a bad response.
   If no rate can be had, INR is disabled and the dashboard stays in USD.
 - Set `USD_INR_RATE` (e.g. `95`) in Vercel to pin a fixed rate instead of the live one.
