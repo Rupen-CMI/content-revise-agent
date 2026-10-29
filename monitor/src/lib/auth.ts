@@ -27,6 +27,10 @@ export function sameOriginOnly(req: NextRequest): NextResponse | null {
   if (site && site !== "same-origin" && site !== "none") {
     return NextResponse.json({ error: "cross-site request refused" }, { status: 403 });
   }
+  // Our Referrer-Policy is no-referrer, and with that policy browsers send "Origin: null" even on a
+  // same-origin POST (this is what broke Sign out). Sec-Fetch-Site is set by the browser and cannot be
+  // forged by a page, so when it says same-origin the Origin header adds nothing and is not consulted.
+  if (site === "same-origin") return null;
   const origin = req.headers.get("origin");
   if (origin) {
     const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "";

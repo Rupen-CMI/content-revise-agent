@@ -53,6 +53,17 @@ describe("sameOriginOnly (CSRF)", () => {
     ).toBeNull();
     expect(sameOriginOnly(req({ host: "dash.example.app" }))).toBeNull();
   });
+
+  it("allows a same-origin POST whose Origin is the string \"null\" (what no-referrer makes browsers send)", () => {
+    expect(
+      sameOriginOnly(req({ "sec-fetch-site": "same-origin", origin: "null", host: "dash.example.app" })),
+    ).toBeNull();
+  });
+
+  it("still refuses \"Origin: null\" when the browser does not vouch for same-origin", () => {
+    expect(sameOriginOnly(req({ origin: "null", host: "dash.example.app" }))?.status).toBe(403);
+    expect(sameOriginOnly(req({ "sec-fetch-site": "cross-site", origin: "null", host: "dash.example.app" }))?.status).toBe(403);
+  });
 });
 
 describe("login throttle keys", () => {
