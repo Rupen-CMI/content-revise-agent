@@ -1108,7 +1108,8 @@ FIELDS
 - size: the market's value in a stated year ("value" as the page writes it, "year" the year the value is for).
 - forecast: the market's expected value in a later year (same shape).
 - cagr: the market's compound annual growth rate ("value" as written, "period" the years it covers).
-- segments: how the report splits the market. Each entry names the segment type as the page names it and lists its categories as the page lists them. Leave out a split the page only mentions in passing.
+- segments: how the report splits the market. Each entry names the segment type as the page names it and lists its categories as the page lists them. Leave out a split the page only mentions in passing. Each category is an object with its "name" and, ONLY when the page states a market share or a value for that category, its "figure" as written (for example a percentage or an amount with its unit) and the "quote" that states it. A category with no stated figure has no "figure" and no "quote".
+- dominant: for each split, the category the page says leads it (dominates, holds the largest share, is the biggest or leading one). Give the split's "split" name as in segments, the category "name", and the "quote" that says it. Leave a split out when the page does not say which category leads; never choose one yourself, and never name the fastest-growing category here unless the page also says it is the largest.
 - regions: "leader" is the region the page says holds the largest share or dominates; "fastest" is the region the page says grows fastest. Each gives the region "name", the "basis" the page gives for it (a year, a share, a reason) and the "quote". Either is null when the page does not say.
 - us: statements the page makes about the United States specifically (not about North America or the world).
 - drivers: what the page says pushes the market's growth, one entry per distinct driver.
@@ -1128,7 +1129,8 @@ Return JSON in exactly this shape:
 {{"size": {{"value": "<as written>", "year": "<year>", "quote": "<sentence from the page>"}} or null,
  "forecast": {{"value": "<as written>", "year": "<year>", "quote": "<sentence from the page>"}} or null,
  "cagr": {{"value": "<as written>", "period": "<years>", "quote": "<sentence from the page>"}} or null,
- "segments": [{{"type": "<segment type>", "items": ["<category>", "..."]}}],
+ "segments": [{{"type": "<segment type>", "items": [{{"name": "<category>", "figure": "<as written>", "quote": "<sentence>"}}, {{"name": "<category>"}}]}}],
+ "dominant": [{{"split": "<segment type>", "name": "<category>", "quote": "<sentence>"}}],
  "regions": {{"leader": {{"name": "<region>", "basis": "<basis>", "quote": "<sentence>"}} or null, "fastest": {{"name": "<region>", "basis": "<basis>", "quote": "<sentence>"}} or null}},
  "us": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "drivers": [{{"text": "<statement>", "quote": "<sentence>"}}],

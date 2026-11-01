@@ -48,8 +48,13 @@ _LIST_SHAPED = frozenset({"trends", "segmentation"})
 
 # ------------------------------------------------------------------------------------------------- prompt
 
+REQUIRED_KINDS = frozenset({"size", "forecast", "cagr", "segment_item"})     # the figures every post must state (checks.v2_report_figure_problems)
+
+
 def _fact_text(item: dict) -> str:
     note = " [historical: state its year, never as current]" if item.get("historical") else ""
+    if item["kind"] in REQUIRED_KINDS:
+        note += " [REQUIRED: state this figure in the section]"
     if item["kind"] == "evidence":
         line = f"- [{item['id']}] {item['text']} (source: {item['source']}){note}"
         if item.get("detail"):

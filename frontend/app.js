@@ -893,7 +893,7 @@ function renderFactSheet(fs) {
       return `<li>${label}: <strong>${escapeHtml(entry.value)}</strong>${entry.when ? ` <span class="option-caption">(${escapeHtml(entry.when)})</span>` : ""}` +
         ` <span class="option-caption">source: ${sourceEl(entry)}</span>${hist(entry)}</li>`;
     }
-    return `<li class="factsheet-gap">${label}: <strong>gap</strong> <span class="option-caption">the report is silent — ` +
+    return `<li class="factsheet-gap">${label}: <strong>gap</strong> <span class="option-caption">no figure could be confirmed from the report page —` +
       (gaps.includes(key)
         ? "no outside page filled it, so the article states no figure for it"
         : "the figure gap search ran for this") + `</span></li>`;
@@ -916,8 +916,13 @@ function renderFactSheet(fs) {
       ` <span class="option-caption">source: <a href="${escapeHtml(fsrc.url)}" target="_blank" rel="noopener">${escapeHtml(fsrc.name)}</a></span></li>`);
   }
   for (const seg of fs.segments || []) {
-    out.push(`<li>Segmentation — ${escapeHtml(seg.type)}: <strong>${escapeHtml((seg.items || []).join(", "))}</strong> ` +
-      `<span class="option-caption">source: CMI report</span></li>`);
+    const figs = seg.figures || {};
+    const names = (seg.items || []).map((n) => figs[n] ? `${n} (${figs[n].figure})` : n).join(", ");
+    const lead = seg.dominant
+      ? ` <span class="option-caption">leader: ${escapeHtml(seg.dominant.name)} (${seg.dominant.basis === "stated" ? "stated by the source" : "worked out from its figures"})</span>`
+      : "";
+    out.push(`<li>Segmentation — ${escapeHtml(seg.type)}: <strong>${escapeHtml(names)}</strong>${lead} ` +
+      `<span class="option-caption">source: ${base}</span></li>`);
   }
   const regions = fs.regions || {};
   if (regions.leader || regions.fastest) {

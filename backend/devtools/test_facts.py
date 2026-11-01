@@ -118,6 +118,45 @@ raw = good_raw()
 raw["size"] = None
 check("gaps: one missing figure is listed alone", facts.validate_fact_sheet(raw, PAGE, MARKET, LOG, TODAY)["gaps"] == ["size"])
 
+# A forecast sentence that starts "It is expected to reach ..." names no market itself; the sentence before it does. The model
+# quoting only the second sentence must not turn the forecast and the growth rate into gaps (seen on the Language Services page).
+LANG_PAGE = ("Language Services Market Size and Forecast\n\nGlobal language services market is estimated to be valued at USD 86.08 Bn in 2026. "
+             "It is expected to reach USD 145.97 Bn by 2033, growing at a compound annual growth rate (CAGR) of 9.2% from 2026 to 2033.\n\n"
+             "The strong growth is attributed to increasing demand from various industries.")
+lang_raw = {
+    "size": {"value": "USD 86.08 Bn", "year": "2026", "quote": "Global language services market is estimated to be valued at USD 86.08 Bn in 2026."},
+    "forecast": {"value": "USD 145.97 Bn", "year": "2033", "quote": "It is expected to reach USD 145.97 Bn by 2033, growing at a compound annual growth rate (CAGR) of 9.2% from 2026 to 2033."},
+    "cagr": {"value": "9.2%", "period": "2026-2033", "quote": "It is expected to reach USD 145.97 Bn by 2033, growing at a compound annual growth rate (CAGR) of 9.2% from 2026 to 2033."},
+}
+fs = facts.validate_fact_sheet(lang_raw, LANG_PAGE, "Language Services Market", LOG, TODAY)
+check("pronoun quote: the forecast and growth rate are kept, not turned into gaps", fs["gaps"] == [], str(fs["gaps"]))
+check("pronoun quote: the kept quote starts at the sentence that names the market",
+      fs["forecast"] and fs["forecast"]["quote"].startswith("Global language services market"), str(fs["forecast"] and fs["forecast"]["quote"][:60]))
+# The report's own coverage table gives the headline figures by label, whatever the model quoted (or got wrong).
+TABLE_PAGE = ("Language Services Market Size and Forecast\n\nIt is expected to reach USD 145.97 Bn by 2033.\n\n"
+              "| Report Coverage | Details |  |  | \n|---|---|---|---|\n"
+              "| Base Year: | 2025 | Market Size in 2026: | USD 86.08 Bn | \n"
+              "| Historical Data for: | 2020 To 2024 | Forecast Period: | 2026 To 2033 | \n"
+              "| Forecast Period 2026 to 2033 CAGR: | 9.2% | 2033 Value Projection: | USD 145.97 Bn | \n")
+tab = facts.table_headline(TABLE_PAGE, LOG)
+check("table: size, CAGR and projection are read off their labels",
+      tab.get("size", {}).get("value") == "USD 86.08 Bn" and tab.get("cagr", {}).get("value") == "9.2%"
+      and tab.get("forecast", {}).get("value") == "USD 145.97 Bn", str(tab))
+check("table: the years come from the labels", (tab["size"]["when"], tab["cagr"]["when"], tab["forecast"]["when"]) == ("2026", "2026-2033", "2033"))
+fs = facts.validate_fact_sheet({}, TABLE_PAGE, "Language Services Market", LOG, TODAY)
+check("table: with no answer from the model, nothing is a gap", fs["gaps"] == [], str(fs["gaps"]))
+wrong = {"forecast": {"value": "USD 150 Bn", "year": "2033", "quote": "It is expected to reach USD 145.97 Bn by 2033."}}
+fs = facts.validate_fact_sheet(wrong, TABLE_PAGE, "Language Services Market", LOG, TODAY)
+check("table: it wins over a figure the model got wrong", fs["forecast"]["value"] == "USD 145.97 Bn", str(fs["forecast"]))
+check("table: an outside report never takes this route", facts.validate_fact_sheet({}, TABLE_PAGE, "Language Services Market", LOG, TODAY,
+      outside={"name": "X", "url": "https://x.example"})["gaps"] == ["size", "forecast", "cagr"])
+check("table: a page without the table gives nothing", facts.table_headline(LANG_PAGE, LOG) == {})
+
+alone = {"forecast": {"value": "USD 9 Bn", "year": "2033", "quote": "It is expected to reach USD 9 Bn by 2033 across all regions."}}
+fs = facts.validate_fact_sheet(alone, "Intro line about nothing in particular here. It is expected to reach USD 9 Bn by 2033 across all regions.",
+                               "Language Services Market", LOG, TODAY)
+check("pronoun quote: with no market named before it, the figure is still a gap", fs["gaps"] == ["size", "forecast", "cagr"])
+
 # ------------------------------------------------------------------ statements, segments, regions
 raw = good_raw()
 raw["drivers"].append({"text": "Demand grows 12% a year.", "quote": "Rising adoption of digital marketing is expected to drive the growth of the market"})

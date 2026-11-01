@@ -25,7 +25,7 @@ HEADING_QUESTIONS_MIN, HEADING_QUESTIONS_MAX = 2, 3
 SECONDARY_MIN, SECONDARY_MAX = 4, 6
 LONGTAIL_MIN, LONGTAIL_MAX = 2, 3
 TERMS_PER_SECTION, SNIPPETS_MAX, INTRO_POINTS_MIN, INTRO_POINTS_MAX = 3, 3, 2, 3
-_FACTS_MAX = {"report_context": 4, "trends": 7, "segmentation": 3, "subsegment": 5, "country_us": 6, "key_players": 6, "conclusion": 3}
+_FACTS_MAX = {"report_context": 6, "trends": 9, "segmentation": 12, "subsegment": 5, "country_us": 4, "key_players": 4, "conclusion": 3}
 _TRANSITION_MAX_WORDS = 40
 
 # Block word budgets (plan section 3.6b): hard caps on the share of the article body, met by construction.
@@ -37,9 +37,9 @@ TARGET_WORDS = 1350               # §3.6b: the SOP's 1,200-1,500 lands the targ
 INTRO_SHARE, INTRO_CAP = 0.18, 0.20   # the intro budgets to ~18% of the target, hard-capped at 20%
 TRANSITION_SHARE = 0.075          # inside the 5-10% band
 MIN_OWN_INTRO_WORDS = 20          # one lead-in sentence carrying the report link, beside the retained paragraph
-_SECTION_WEIGHTS = {"report_context": 110, "trends": 190, "segmentation": 70, "subsegment": 190,
+_SECTION_WEIGHTS = {"report_context": 130, "trends": 450, "segmentation": 110, "subsegment": 190,
                     "country_us": 150, "key_players": 150, "conclusion": 100}
-_FACTS_FOR_FULL_BUDGET = {"report_context": 3, "trends": 5, "segmentation": 3, "subsegment": 4, "country_us": 4, "key_players": 4}
+_FACTS_FOR_FULL_BUDGET = {"report_context": 5, "trends": 7, "segmentation": 5, "subsegment": 4, "country_us": 4, "key_players": 4}
 _MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
 _SECTION_BOUNDS = {"country_us": (110, 165)}  # the U.S. SOP is 100-200 words; the writer overshoots a budget a little
 _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sections run short of their SOP shapes
@@ -51,6 +51,7 @@ _FACT_SECTIONS = {
     "drivers": {"trends", "report_context", "subsegment", "country_us"},
     "restraints": {"trends", "subsegment", "country_us"},
     "opportunities": {"conclusion", "trends", "subsegment"},
+    "segment_item": {"subsegment", "segmentation"},   # one category's stated share or value; added by code (see validate_plan)
     "players": {"key_players"},
 }
 _EVIDENCE_TAG_SECTIONS = {
@@ -216,7 +217,7 @@ def _fmt_questions(inp: PlanInputs) -> str:
 def _fmt_items(inp: PlanInputs, evidence: bool) -> str:
     rows = []
     for i in inp.items.values():
-        if (i["kind"] == "evidence") != evidence:
+        if (i["kind"] == "evidence") != evidence or i.get("auto"):
             continue
         if evidence:
             suits = ", ".join(sorted(i["sections"] & set(ORDER))) or "any"
@@ -275,6 +276,14 @@ def fallback_title(market_name: str, plan_sections: list[dict]) -> str:
 
 
 # --------------------------------------------------------------------------------------------- validate and repair
+
+_REGION_SPLIT_RE = re.compile(r"region|geograph|countr|area|location", re.I)
+
+
+def _is_region_split(name: str) -> bool:
+    """A geographic split ("By Region"): regions are the report-context and U.S. sections' business, never a sub-segment."""
+    return bool(_REGION_SPLIT_RE.search(name or ""))
+
 
 def _split_key(name: str) -> str:
     """A segment split's name without the words the fact list wraps around it ("Segmentation type", "By type")."""
@@ -406,12 +415,15 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             picks.append((str(it.get("split") or "").strip(), str(it.get("name") or "").strip()))
     valid: list[dict] = []
     for split, name in picks:
-        seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(split)), None)
+        seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(split) and not _is_region_split(g["type"])), None)
         cat = next((i for i in seg["items"] if facts._norm(i) == facts._norm(name)), None) if seg else None
         if seg and cat and all(v["split"] != seg["type"] for v in valid):
             valid.append({"split": seg["type"], "name": cat})
     if len(valid) < 2 and len(inp.segments) >= 1:
-        defaults = [{"split": g["type"], "name": g["items"][0]} for g in inp.segments if g.get("items")]
+        ordered = sorted((g for g in inp.segments if not _is_region_split(g["type"])),
+                         key=lambda g: not g.get("dominant"))     # splits with a known leader first
+        defaults = [{"split": g["type"], "name": (g.get("dominant") or {}).get("name") or g["items"][0]}
+                    for g in ordered if g.get("items")]
         for d in defaults:
             if len(valid) >= 2:
                 break
@@ -419,7 +431,61 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
                 valid.append(d)
         if valid != [{"split": s, "name": n} for s, n in picks][:len(valid)]:
             repair("the two sub-segments were not valid choices from different splits; defaults from the report were used")
-    sub["sub_segments"] = valid[:2]
+    valid = valid[:2]
+    # The sub-segment of a split is its DOMINANT category whenever the report states it or its figures show it; the
+    # planner's taste never overrides that. A pick from a split with no known leader gives way to a split that has one.
+    spare = [g for g in inp.segments
+             if g.get("dominant") and not _is_region_split(g["type"]) and all(v["split"] != g["type"] for v in valid)]
+    for v in valid:
+        seg = next(g for g in inp.segments if g["type"] == v["split"])
+        if not seg.get("dominant") and spare:
+            g = spare.pop(0)
+            repair(f"sub-segment pick from {v['split']!r}, whose leading category is unknown, moved to {g['type']!r}, whose leader is known")
+            v["split"], v["name"], seg = g["type"], g["dominant"]["name"], g
+        if seg.get("dominant") and v["name"] != seg["dominant"]["name"]:
+            repair(f"sub-segment {v['name']!r} of {v['split']!r} replaced by the split's dominant category {seg['dominant']['name']!r}")
+            v["name"] = seg["dominant"]["name"]
+    sub["sub_segments"] = valid
+    for v in valid:                  # its split, the split's leader and its own stated figure all travel with the pick
+        seg = next(g for g in inp.segments if g["type"] == v["split"])
+        wanted = [seg["id"]]
+        if seg.get("dominant"):
+            wanted.append(f"{seg['id']}.dominant")
+        wanted += [f"{seg['id']}.i{k}" for k, n in enumerate(seg["items"]) if n == v["name"] and n in (seg.get("figures") or {})]
+        for fid in wanted:
+            if fid in inp.items and fid not in sub["facts"]:
+                sub["facts"].append(fid)
+                used_facts.add(fid)
+
+    # ---- the report's main figures always reach the article, whatever the planner chose: the headline figures and the
+    # leading and fastest-growing regions in report_context; every segment split, every leading category and every stated
+    # category share in segmentation, except those of the two sub-segments, which sit beside their pick in subsegment
+    ctx = by_sop["report_context"]
+    headline = [f for f, it in inp.items.items() if it["kind"] in ("size", "forecast", "cagr") and "report_context" in it["sections"]]
+    regions = [f for f, it in inp.items.items() if it["kind"] == "regions" and "report_context" in it["sections"]]
+    ordered = (headline + regions + [f for f in ctx["facts"] if f not in headline and f not in regions])[:_FACTS_MAX["report_context"]]
+    for fid in headline + regions:
+        if fid in ordered and fid not in ctx["facts"]:
+            repair(f"report_context: the report's figure {fid} was added (the market's main figures always reach the article)")
+    ctx["facts"] = ordered
+    used_facts.update(ordered)
+    seg_sec = by_sop["segmentation"]
+    picked_split = {v["split"]: v["name"] for v in valid}
+    needed: list[str] = []
+    for seg in inp.segments:
+        needed.append(seg["id"])
+        pick = picked_split.get(seg["type"])
+        if seg.get("dominant") and pick is None:
+            needed.append(f"{seg['id']}.dominant")
+        for k, name in enumerate(seg["items"]):
+            if name in (seg.get("figures") or {}) and name != pick:
+                needed.append(f"{seg['id']}.i{k}")
+    for fid in needed:
+        if fid in inp.items and "segmentation" in inp.items[fid]["sections"] and fid not in seg_sec["facts"]:
+            seg_sec["facts"].append(fid)
+            used_facts.add(fid)
+            repair(f"segmentation: the report's segment fact {fid} was added (every segment split and stated figure reaches the article)")
+
 
     # ---- question headings: 2-3, each an answerable question that can head its section
     used_q: set[str] = set()

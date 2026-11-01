@@ -271,7 +271,9 @@ check("facts: a fact used twice stays in the first section only", "W1" not in S(
 raw = good_plan()
 raw["sections"][0]["facts"] = ["fs.size", "fs.cagr", "fs.drivers.0", "W2", "fs.opportunities.0"]
 p = plan_of(raw)
-check("facts: at most four per section", len(S(p, "report_context")["facts"]) <= 4, str(S(p, "report_context")["facts"]))
+check("facts: at most six in the opening section, the headline figures always among them",
+      len(S(p, "report_context")["facts"]) <= 6 and {"fs.size", "fs.cagr"} <= set(S(p, "report_context")["facts"]),
+      str(S(p, "report_context")["facts"]))
 
 raw = good_plan()
 raw["sections"][2]["facts"] = ["fs.segments.0", "fs.segments.1"]
@@ -454,6 +456,41 @@ check("prompt: lists report facts and evidence with their ids", "fs.size" in tex
 check("prompt: marks a historical fact", "historical: give its year" in text)
 bad = [l for l in prompts.PLAN_USER.splitlines() if "Key Trends" in l or "Zzz" in l]
 check("prompt: contains no sample titles or placeholder markets", not bad, str(bad))
+
+# ------------------------------------------------------------------ the report's main figures always reach the plan
+big = make_inputs()
+big.items["fs.forecast"] = item("fs.forecast", "forecast", "Market forecast: USD 3.4 billion (2032)", {"report_context"})
+big.items["fs.regions.leader"] = item("fs.regions.leader", "regions", "Leading region: North America (42.6% share in 2026)", {"report_context"})
+big.items["fs.regions.fastest"] = item("fs.regions.fastest", "regions", "Fastest-growing region: Asia Pacific", {"report_context"})
+big.segments = [
+    {"id": "fs.segments.0", "type": "By Type", "items": ["Browser Extension", "Cloud Based"],
+     "figures": {"Cloud Based": {"figure": "48.2%"}}, "dominant": {"name": "Cloud Based", "basis": "stated"}},
+    {"id": "fs.segments.1", "type": "By Application", "items": ["Data Aggregation", "Market Research"],
+     "figures": {"Market Research": {"figure": "37%"}}, "dominant": {"name": "Market Research", "basis": "stated"}},
+    {"id": "fs.segments.2", "type": "By Mode", "items": ["Online", "Offline"],
+     "figures": {"Online": {"figure": "55.9%"}}, "dominant": {"name": "Online", "basis": "stated"}},
+]
+big.items["fs.segments.2"] = item("fs.segments.2", "segments", "Segmentation By Mode: Online, Offline", {"segmentation", "subsegment"})
+for g in big.segments:
+    big.items[f"{g['id']}.dominant"] = item(f"{g['id']}.dominant", "segments", f"Dominant category in {g['type']}: {g['dominant']['name']}", {"segmentation", "subsegment"})
+    for k, name in enumerate(g["items"]):
+        if name in g["figures"]:
+            big.items[f"{g['id']}.i{k}"] = item(f"{g['id']}.i{k}", "segment_item", f"{name} ({g['type']}): {g['figures'][name]['figure']}",
+                                                {"subsegment", "segmentation"})
+raw = good_plan()
+raw["sections"][0]["facts"] = ["fs.size"]                 # the planner left the forecast, growth rate and regions out
+raw["sections"][2]["facts"] = ["fs.segments.0"]           # and most segment splits
+p = plan_of(raw, big)
+ctx_facts, seg_facts, sub_facts = S(p, "report_context")["facts"], S(p, "segmentation")["facts"], S(p, "subsegment")["facts"]
+check("figures: size, forecast, growth rate and both regions always reach report_context",
+      {"fs.size", "fs.forecast", "fs.cagr", "fs.regions.leader", "fs.regions.fastest"} <= set(ctx_facts), str(ctx_facts))
+check("figures: every segment split is in segmentation", {"fs.segments.0", "fs.segments.1", "fs.segments.2"} <= set(seg_facts), str(seg_facts))
+check("figures: the split with no sub-segment pick has its leader and share in segmentation",
+      {"fs.segments.2.dominant", "fs.segments.2.i0"} <= set(seg_facts), str(seg_facts))
+check("figures: the two sub-segments keep their leader and share in subsegment, stated once",
+      {"fs.segments.0.dominant", "fs.segments.0.i1", "fs.segments.1.dominant", "fs.segments.1.i1"} <= set(sub_facts)
+      and not ({"fs.segments.0.i1", "fs.segments.1.i1"} & set(seg_facts)), f"{sub_facts} / {seg_facts}")
+check("figures: the facts that were added are logged as repairs", any("fs.forecast" in r for r in p["repairs"]) and any("fs.segments.2.i0" in r for r in p["repairs"]))
 
 print()
 if FAILURES:

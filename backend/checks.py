@@ -1545,6 +1545,50 @@ def v2_vague_reference_problems(sections: list[dict], faq: list[dict] = ()) -> l
     return out
 
 
+_CATEGORY_FILLER = frozenset({"and", "the", "of", "for", "other", "others"})
+
+
+def _category_words(name: str) -> set[str]:
+    """The words a category must show in the article. A parenthesis only lists what the category holds ("Others (Banking and
+    Finance, ...)"), so it is not required, and "Others" itself names no category."""
+    import facts
+    name = re.sub(r"\([^)]*\)", " ", name)
+    return {w for w in facts._norm(name).split() if w not in _CATEGORY_FILLER and len(w) > 1}
+
+
+def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
+    """The market's main CMI figures reach the article: the size, forecast and growth rate, every stated segment share and
+    value, every segment split's categories and its leading category. A figure counts when its number is in the market
+    sections (a year does not count); a category counts when all its words sit in the segmentation or sub-segment text."""
+    import facts
+    import planning
+    if inp is None:
+        return []
+    market = " ".join(p for s in sections if _is_market_section(s) for p in s["paragraphs"])
+    market_numbers = _fact_numbers(market)
+    seg_text = facts._norm(" ".join(p for s in sections if s.get("sop") and s["sop"][0] in ("segmentation", "subsegment")
+                                    for p in s["paragraphs"]))
+    seg_words = set(seg_text.split())
+    out: list[str] = []
+    for fid, it in inp.items.items():
+        if it["kind"] not in ("size", "forecast", "cagr", "segment_item"):
+            continue
+        figures = {n for n in _fact_numbers_with_words(it["text"]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+        if it["kind"] == "segment_item":                      # "<category> (<split>): <figure>": the figure is after the colon
+            figures = {n for n in _fact_numbers_with_words(it["text"].split(":", 1)[-1]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+        missing = sorted(figures - market_numbers)
+        if missing:
+            out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the article")
+    for seg in inp.segments:
+        absent = [c for c in seg["items"] if _category_words(c) and not _category_words(c) <= seg_words]
+        if absent:
+            out.append(f"segmentation by {seg['type']}: {', '.join(absent)} not named in the segmentation or sub-segment text")
+        dom = seg.get("dominant")
+        if dom and _category_words(dom["name"]) and not _category_words(dom["name"]) <= seg_words:
+            out.append(f"segmentation by {seg['type']}: the leading category {dom['name']} is not named")
+    return out
+
+
 def v2_heading_shape_problems(sections: list[dict], plan: dict, inp, market_name: str) -> list[str]:
     """The shape of every market section's heading (§3.9): a planned MSQ's heading IS its question's
     text, and any other heading is a short SOP-topic phrase naming the market — never a question."""
@@ -1833,6 +1877,9 @@ def run_checks_v2(
     results.append(CheckResult("Two sub-segment analyses", sub_paragraphs >= 2, f"found {sub_paragraphs} sub-segment paragraph(s)"))
     trend_paragraphs = sum(count_items_in(s["paragraphs"]) for s in sections if "trends" in s["sop"])
     results.append(CheckResult("Three trends (at least 3 trend paragraphs)", trend_paragraphs >= 3, f"{trend_paragraphs} paragraph(s)"))
+    figure_problems = v2_report_figure_problems(sections, inp)
+    results.append(CheckResult("CMI report figures stated: market size, forecast, growth rate and every segment figure",
+                               not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
 
