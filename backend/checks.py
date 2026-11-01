@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+import subheads
 import freshness
 from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
 
@@ -1589,6 +1590,27 @@ def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
     return out
 
 
+def v2_trend_shape_problems(sections: list[dict]) -> list[str]:
+    """The trends section is a lead-in paragraph, then three trends, each a sub-heading followed by three paragraphs, the
+    first of which carries a figure or a year (the dated development the trend rests on). Reads the sections WITH their
+    sub-headings."""
+    sec = next((s for s in sections if "trends" in (s.get("sop") or [])), None)
+    if sec is None:
+        return ["there is no trends section"]
+    lead, blocks = subheads.split_blocks(sec.get("paragraphs") or [])
+    out: list[str] = []
+    if not lead:
+        out.append("the trends section has no lead-in paragraph")
+    if len(blocks) != subheads.TRENDS_PER_SECTION:
+        out.append(f"the trends section has {len(blocks)} sub-headed trend(s), not {subheads.TRENDS_PER_SECTION}")
+    for i, (heading, paras) in enumerate(blocks, 1):
+        if len(paras) != subheads.PARAGRAPHS_PER_TREND:
+            out.append(f"trend {i} ({heading[:50]!r}) has {len(paras)} paragraph(s), not {subheads.PARAGRAPHS_PER_TREND}")
+        elif not re.search(r"\d", paras[0]):
+            out.append(f"trend {i} ({heading[:50]!r}) opens with no figure or year to anchor it")
+    return out
+
+
 def v2_heading_shape_problems(sections: list[dict], plan: dict, inp, market_name: str) -> list[str]:
     """The shape of every market section's heading (§3.9): a planned MSQ's heading IS its question's
     text, and any other heading is a short SOP-topic phrase naming the market — never a question."""
@@ -1706,6 +1728,10 @@ def run_checks_v2(
     import planning
 
     faq = list(faq or [])
+    # the trends' sub-headings live inside `paragraphs`; every check below reads the sections without them, and only
+    # the trend-shape check reads the raw ones
+    raw_sections = sections
+    sections = subheads.strip_subheads(sections)
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
     market_name = getattr(inp, "market_name", "") or report_name
@@ -1888,8 +1914,8 @@ def run_checks_v2(
     # ---- kept: the market sections carry the SOPs' own requirements
     sub_paragraphs = sum(len(s["paragraphs"]) for s in sections if "subsegment" in s["sop"])
     results.append(CheckResult("Two sub-segment analyses", sub_paragraphs >= 2, f"found {sub_paragraphs} sub-segment paragraph(s)"))
-    trend_paragraphs = sum(count_items_in(s["paragraphs"]) for s in sections if "trends" in s["sop"])
-    results.append(CheckResult("Three trends (at least 3 trend paragraphs)", trend_paragraphs >= 3, f"{trend_paragraphs} paragraph(s)"))
+    trend_problems = v2_trend_shape_problems(raw_sections)
+    results.append(CheckResult("Trends: three sub-headed trends, three paragraphs each", not trend_problems, "; ".join(trend_problems)))
     figure_problems = v2_report_figure_problems(sections, inp)
     results.append(CheckResult("CMI report figures stated: market size, forecast, growth rate and every segment figure",
                                not figure_problems, "; ".join(figure_problems[:8])))
@@ -1961,9 +1987,9 @@ def run_checks_v2(
         ", ".join(brand_leaks),
     ))
 
-    # ---- soft (§3.9): body length 1,200-1,500 words
+    # ---- soft (§3.9): body length 1,300-1,700 words (the trends carry three detailed paragraphs each)
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
-    results.append(CheckResult("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words"))
+    results.append(CheckResult("Length is 1,300-1,700 words (soft)", 1300 <= total <= 1700, f"{total} words"))
 
     # ---- soft (§3.9): 2-3 long-tail keywords used — counted against the phrases the PLAN assigned when it assigned at
     # least one (the writer is only on the hook for its own sections; the pool holds spares the plan never handed out).

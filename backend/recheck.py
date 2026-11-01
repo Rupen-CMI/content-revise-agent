@@ -18,6 +18,7 @@ import docx
 from docx.oxml.ns import qn
 
 import checks
+import subheads
 from config import CMI_HOST
 from prompts import SPONSOR_TOKEN
 
@@ -68,7 +69,8 @@ def read_blocks(raw: bytes) -> list[dict]:
         runs = [r for r in p.runs if r.text.strip()]
         blocks.append({
             "text": text,
-            "heading": style.startswith("Heading") or style == "Title",
+            "heading": (style.startswith("Heading") or style == "Title") and style != "Heading 3",
+            "subhead": style == "Heading 3",
             "bullet": bool(bullet),
             "bold": bool(runs) and all(r.bold for r in runs),
         })
@@ -95,7 +97,9 @@ def _paragraphs(blocks: list[dict]) -> list[str]:
     '\\n- item' lines (checks and renderers treat that as one paragraph with a bulleted list)."""
     out: list[str] = []
     for b in blocks:
-        if b["bullet"]:
+        if b.get("subhead"):
+            out.append(subheads.make_subhead(b["text"]))
+        elif b["bullet"]:
             if out:
                 out[-1] += "\n- " + b["text"]
             else:
@@ -185,7 +189,7 @@ def parse(raw: bytes, run_title: str, run_sections: list[dict], run_faq: list[di
     owner: dict[int, int] = {}   # block index -> run index (-1 = FAQ)
     pairs = []
     for bi, b in enumerate(blocks):
-        if b["bullet"] or len(b["text"].split()) > 25:
+        if b["bullet"] or b.get("subhead") or len(b["text"].split()) > 25:
             continue
         floor = _HEADING_MIN_RATIO if b["heading"] else _PLAIN_HEADING_MIN_RATIO
         for k, h in unused.items():

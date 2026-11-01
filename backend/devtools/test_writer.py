@@ -542,7 +542,16 @@ check("prompt: the retained paragraph's own words are shown to the writer (no Ke
 check("prompt: the placeholder token is still shown for placement and no unformatted sponsor_text key is left",
       prompts.SPONSOR_TOKEN in text and "{sponsor_text}" not in text)
 check("prompt: the new voice rules are present and the writer persona lives in the system prompt",
-      "Clear reference" in text and "Actors" in text and "highly trained content writer" in prompts.WRITE_SYSTEM)
+      "Continuity" in text and "Analysis" in text and "Actors" in text
+      and "senior market-research analyst" in prompts.WRITE_SYSTEM)
+_HUMANIZING = ("everyday", "Contractions are fine", "Flesch", "ordinary people", "general reader", "human editor",
+               "experienced human", "Prefer the everyday word", "plain English")
+check("prompt: no humanizing or layman wording is left in the live write prompts (the writer, the FAQ answers)",
+      not [w for w in _HUMANIZING if w in text or w in prompts.WRITE_SYSTEM or w in prompts.FAQ_MSQ_USER or w in prompts.FAQ_MSQ_SYSTEM],
+      str([w for w in _HUMANIZING if w in text or w in prompts.WRITE_SYSTEM or w in prompts.FAQ_MSQ_USER]))
+check("prompt: the register is formal market-research language, third person, with a sentence-length band and a continuity rule",
+      "formal market-research and consulting language" in text and "No contractions" in text
+      and "average about 18 words" in text and "12 to 24" in text and "previous two sentences" in text, "")
 check("prompt: the keyword rule never lets a REQUIRED keyword be skipped as covered by meaning",
       "A keyword a section is REQUIRED to carry" in text and "no synonym and no dropped word" in text
       and "cannot sit naturally" not in text,
@@ -559,8 +568,10 @@ check("shapes: the segmentation shape never calls the division a split",
       "split" not in writer._SHAPES["segmentation"], writer._SHAPES["segmentation"])
 check("shapes: the segmentation lead-in must state how many segment types the report uses",
       "how many segment types" in writer._SHAPES["segmentation"], writer._SHAPES["segmentation"])
-check("shapes: the trends lead-in must name the market itself, never 'this market'",
-      'names the market by its full name (never "this market")' in writer._SHAPES["trends"],
+check("shapes: the trends are a lead-in naming the market, then three sub-headed trends of three paragraphs",
+      'names the market by its full name' in writer._SHAPES["trends"] and "exactly 13" in writer._SHAPES["trends"]
+      and '"### "' in writer._SHAPES["trends"] and "three paragraphs" in writer._SHAPES["trends"]
+      and "commercial implication" in writer._SHAPES["trends"] and "mechanism" in writer._SHAPES["trends"],
       writer._SHAPES["trends"])
 
 # A list-shaped section's REQUIRED secondary keyword must be covered in the lead-in sentence (the "\n- "
@@ -574,7 +585,7 @@ block_list = writer._section_block(1, _list_sec, inp, points)
 block_nonlist = writer._section_block(2, _nonlist_sec, inp, points)
 block_plain = writer._section_block(3, {**_list_sec, "secondary": None}, inp, points)
 check("prompt: a list-shaped section with a secondary keyword carries the lead-in instruction",
-      LEAD_IN in block_list and RESERVED in block_list and writer._LIST_SHAPED == {"trends", "segmentation"},
+      LEAD_IN in block_list and RESERVED in block_list and writer._LIST_SHAPED == {"segmentation"},
       str([l for l in block_list.splitlines() if "REQUIRED" in l]))
 check("prompt: a non-list section with a secondary keyword carries no lead-in instruction",
       LEAD_IN not in block_nonlist and RESERVED not in block_nonlist,
@@ -609,8 +620,8 @@ llm.chat_json = lambda *a, **k: written_pointing
 try:
     _, _, secs_pt, _ = writer.run_write_v2(plan, inp, sponsor, report, LOG)
     para = next(s for s in secs_pt if s["sop"] == ["report_context"])["paragraphs"][0]
-    check("call: a leading pointing word in the write output reaches the returned sections as 'The + noun'",
-          para.startswith("The figure covers"), para)
+    check("call: a leading 'That + noun' in the write output is kept as written (the continuity rule allows it; code no longer rewrites it)",
+          para.startswith("That figure covers"), para)
 finally:
     llm.chat_json = orig
 
@@ -629,8 +640,8 @@ llm.chat_json = lambda *a, **k: written_join
 try:
     _, _, secs_j, _ = writer.run_write_v2(plan, inp, sponsor, report, LOG)
     para = next(s for s in secs_j if s["sop"] == ["trends"])["paragraphs"][0]
-    check("call: a bare pointing sentence in the write output is joined to the sentence before with ', which'",
-          "by 2034, which works out to 7.3% a year." in para, para)
+    check("call: a bare pointing sentence in the write output is kept as its own sentence (no ', which' joining by code)",
+          "by 2034. That works out to 7.3% a year." in para, para)
 finally:
     llm.chat_json = orig
 
@@ -669,6 +680,89 @@ try:
                     "Alpha sentence one. Delta sentence.", prompts.SPONSOR_TOKEN], str(intro))
 finally:
     llm.chat_json = orig
+
+# ------------------------------------------------------------------ the trends are written from per-trend fact groups
+check("prompt: the trends section lists its facts trend by trend, each trend only from its own facts",
+      "Facts to use, by trend" in text and "Trend 1:" in text and "Trend 3:" in text, "")
+_no_groups = {**next(s for s in plan["sections"] if s["sop"] == "trends"), "trend_groups": []}
+check("prompt: a trends section without groups falls back to one plain facts list",
+      "Facts to use, by trend" not in writer._section_block(1, _no_groups, inp, {}), "")
+
+# ------------------------------------------------------------------ trend sub-headings survive every cleanup step
+import subheads  # noqa: E402
+
+trend_secs = [{"heading": "Trends in the Zzz Widget Services Market", "sop": ["trends"], "paragraphs": [
+    "Lead-in sentence about the Zzz Widget Services Market and its three trends.",
+    subheads.make_subhead("Adaptive Testing Is Raising Demand For Online Platforms"),
+    "In 2026 a named study reported a change. The study covered one sample.",
+    "That change shifts demand toward platforms. Providers can build adaptive banks.",
+    "The commercial implication is a larger role for validation.",
+    subheads.make_subhead("Analytics Are Raising Demand For Quality Assurance"),
+    "In 2025 a pilot reported a result. The pilot was exploratory.",
+]}]
+steps = (writer.strip_meta_sentences, writer.strip_reader_filler)
+after = trend_secs
+for step in steps:
+    after = step(after, LOG)
+after = writer.strip_untraced_figures(after, inp, "", LOG)
+after = writer.strip_repeat_figures(after, inp, LOG)
+after = writer.name_outside_sources(after, inp, LOG)
+heads = [p for p in after[0]["paragraphs"] if subheads.is_subhead(p)]
+check("trend sub-headings: both survive the writer's whole cleanup pipeline, text unchanged",
+      heads == [subheads.make_subhead("Adaptive Testing Is Raising Demand For Online Platforms"),
+                subheads.make_subhead("Analytics Are Raising Demand For Quality Assurance")], str(after[0]["paragraphs"]))
+lead, blocks = subheads.split_blocks(after[0]["paragraphs"])
+check("trend sub-headings: split_blocks returns the lead-in and the paragraphs under each heading",
+      len(lead) == 1 and [len(b[1]) for b in blocks] == [3, 1], str((lead, blocks)))
+check("trend sub-headings: strip_subheads leaves the prose only and does not touch the original",
+      all(not subheads.is_subhead(p) for p in subheads.strip_subheads(after)[0]["paragraphs"])
+      and any(subheads.is_subhead(p) for p in after[0]["paragraphs"]))
+# ------------------------------------------------------------------ the style anchors switch
+import config as _config  # noqa: E402
+
+_saved = _config.WRITE_STYLE_ANCHORS
+try:
+    _config.WRITE_STYLE_ANCHORS = True
+    with_anchors = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-31")
+    _config.WRITE_STYLE_ANCHORS = False
+    without = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-31")
+finally:
+    _config.WRITE_STYLE_ANCHORS = _saved
+check("anchors: on, the prompt ends with the four reference passages and the register-only instruction",
+      with_anchors.startswith(without) and "STYLE REFERENCE" in with_anchors and with_anchors.count("Passage ") == 4
+      and "Never reuse their wording" in with_anchors)
+check("anchors: off, the prompt is exactly the plain write prompt", "STYLE REFERENCE" not in without)
+check("anchors: they are on by default", _saved is True)
+
+# ------------------------------------------------------------------ the trend shape is enforced in code
+def _trend_section(n_trends, paras_each, lead=1):
+    ps = [f"Lead-in {i}." for i in range(lead)]
+    for k in range(n_trends):
+        ps.append(subheads.make_subhead(f"Trend {k + 1} Is Raising Demand"))
+        ps += [f"Trend {k + 1} paragraph {j + 1}." for j in range(paras_each)]
+    return [{"heading": "Trends", "sop": ["trends"], "paragraphs": ps}]
+
+
+shaped = writer.enforce_trend_shape(_trend_section(5, 4, lead=2), LOG)[0]["paragraphs"]
+lead_, blocks_ = subheads.split_blocks(shaped)
+check("trend shape: five trends of four paragraphs and two lead-ins are cut to one lead-in and three trends of three",
+      len(lead_) == 1 and len(blocks_) == 3 and all(len(b[1]) == 3 for b in blocks_), str(shaped))
+check("trend shape: the first paragraphs of each trend are the ones kept",
+      blocks_[2][1] == ["Trend 3 paragraph 1.", "Trend 3 paragraph 2.", "Trend 3 paragraph 3."], str(blocks_[2]))
+exact = _trend_section(3, 3)
+check("trend shape: a section already in shape is left exactly as it is",
+      writer.enforce_trend_shape(exact, LOG)[0]["paragraphs"] == _trend_section(3, 3)[0]["paragraphs"])
+short = writer.enforce_trend_shape(_trend_section(2, 2), LOG)[0]["paragraphs"]
+check("trend shape: a section with too little is not padded (the check reports it)", len(subheads.split_blocks(short)[1]) == 2)
+other = [{"heading": "x", "sop": ["conclusion"], "paragraphs": ["### not a trend", "text"]}]
+check("trend shape: only the trends section is touched", writer.enforce_trend_shape(other, LOG) == other)
+check("meta: a sentence that comments on what a source does not quantify is cut",
+      writer._META_RE.search("The observation is qualitative and describes the demand side rather than any measured volume.") is not None
+      and writer._META_RE.search("Demand rose 12% in 2026.") is None)
+
+check("pointing words are no longer rewritten by code: the write pipeline no longer calls the two backstops",
+      "fix_pointing_determiners(sections" not in __import__("inspect").getsource(writer.run_write_v2)
+      and "join_bare_pointers(sections" not in __import__("inspect").getsource(writer.run_write_v2))
 
 print()
 if FAILURES:

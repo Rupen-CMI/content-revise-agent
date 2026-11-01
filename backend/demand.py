@@ -71,6 +71,7 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
         if not q.endswith("?"):
             q = q.rstrip(".!") + "?"
         q = q[0].upper() + q[1:]
+        q = re.sub(r"\bai\b", "AI", q)
         words = q.split()
         if not _MSQ_MIN_WORDS <= len(words) <= _MSQ_MAX_WORDS:
             logger.info(f"[demand] dropped question (length {len(words)}): {q!r}")
@@ -215,7 +216,7 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
     return out
 
 
-def run_search_demand(market_name: str, fs: dict, logger: logging.Logger) -> dict:
+def run_search_demand(market_name: str, fs: dict, logger: logging.Logger, real_queries: list[str] = ()) -> dict:
     """CALL: what people search about this market. Best-effort: a failure returns empty pools, logged, never fatal.
     Returns {"questions": [...], "terms": [...], "long_tail": [...]}."""
     section(logger, "CALL: SEARCH DEMAND")
@@ -223,7 +224,9 @@ def run_search_demand(market_name: str, fs: dict, logger: logging.Logger) -> dic
     try:
         raw = llm.chat_json(
             prompts.SEARCH_DEMAND_SYSTEM,
-            prompts.SEARCH_DEMAND_USER.format(market_name=market_name, facts=_format_facts(flat)),
+            prompts.SEARCH_DEMAND_USER.format(
+                market_name=market_name, facts=_format_facts(flat),
+                real_queries="\n".join(f"- {q}" for q in list(real_queries)[:25]) or "(none found)"),
             temperature=0.3, call_name="search_demand", logger=logger,
         )
     except llm.LLMError:

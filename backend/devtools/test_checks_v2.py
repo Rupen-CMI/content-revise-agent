@@ -63,6 +63,13 @@ def pad(words_target: int, sentences: list[str]) -> str:
     return (t + " " + filler(words_target - have)).strip()
 
 
+def trend_block(n: int) -> list[str]:
+    """One trend: a sub-heading entry, then three paragraphs; the first carries a year (the dated development)."""
+    return [f"### Trend {n} Is Raising Demand For Widget Services",
+            pad(40, [f"In 2026 a named study reported change {'ABC'[n - 1]} in widget demand."]),
+            filler(40), filler(40)]
+
+
 def good_draft() -> list[dict]:
     """A deliberate draft for PLAN: intro (link + sponsor + filler), transition, plan's market
     sections in order with the plan's headings, every keyword/key/long-tail placed by hand."""
@@ -83,7 +90,7 @@ def good_draft() -> list[dict]:
         ]},
         {"heading": plan_sec["trends"]["heading"], "sop": ["trends"], "paragraphs": [
             pad(30, [f"What is changing the {MARKET} first shows in its trends, and {ls['L2']} leads the list."]),
-            "\n".join(f"- {filler(57)}" for _ in range(3)),
+            *[p for n in (1, 2, 3) for p in trend_block(n)],
         ]},
         {"heading": plan_sec["segmentation"]["heading"], "sop": ["segmentation"], "paragraphs": [
             pad(50, [f"How the {MARKET} is divided: a segmentation into Browser Extension and Cloud Based types."]),
@@ -507,10 +514,29 @@ check("faq: an unbacked figure in an answer fails", not by_name(run, "FAQ questi
 
 # ------------------------------------------------------------------ SOP specifics: trends, sub-segments, U.S.
 
+check("trends: the good draft's three sub-headed trends of three paragraphs pass",
+      by_name(run_v2(TITLE, good_draft()), "Trends: three sub-headed").passed)
+
 d = good_draft()
 d[3]["paragraphs"].pop()
 run = run_v2(TITLE, d)
-check("trends: only 2 trend items fail", not by_name(run, "Three trends").passed)
+check("trends: a trend with only two paragraphs fails", not by_name(run, "Trends: three sub-headed").passed,
+      by_name(run, "Trends: three sub-headed").detail)
+
+d = good_draft()
+d[3]["paragraphs"] = [p for p in d[3]["paragraphs"] if p != "### Trend 3 Is Raising Demand For Widget Services"]
+run = run_v2(TITLE, d)
+check("trends: a missing sub-heading fails (two trends, one of six paragraphs)", not by_name(run, "Trends: three sub-headed").passed,
+      by_name(run, "Trends: three sub-headed").detail)
+
+d = good_draft()
+d[3]["paragraphs"][2] = filler(40)
+run = run_v2(TITLE, d)
+check("trends: a trend whose first paragraph has no figure or year fails", not by_name(run, "Trends: three sub-headed").passed,
+      by_name(run, "Trends: three sub-headed").detail)
+
+check("trends: the sub-headings are not counted as prose (word counts and sentence checks read the sections without them)",
+      all(not p.startswith("### ") for s in checks.subheads.strip_subheads(good_draft()) for p in s["paragraphs"]))
 
 d = good_draft()
 d[4]["paragraphs"] = d[4]["paragraphs"][:1]
@@ -723,6 +749,7 @@ d[2]["paragraphs"].append(
     "The hours are spent on review. The notes are kept in one drawer. The wins are counted by the office. "
     "The lines are built from one template. The leads are found by hand. The fees are paid by the buyer. "
     "The goods are bought in pairs. The checks are done each week. The trends are seen in every chart.")
+d[2]["paragraphs"] += [d[2]["paragraphs"][-1]] * 2    # the trends now carry nine filler paragraphs: keep the passive share well above 1 in 6
 run = run_v2(TITLE, d)
 r = by_name(run, VOICE_NAME)
 check("voice: a draft with mostly passive sentences fails (soft)", not r.passed, r.detail)
@@ -941,7 +968,7 @@ check("disconnected: the active-voice soft check still runs by default",
 check("disconnected: hard checks still run by default",
       any(n.startswith("Draft structure matches") for n in default_names))
 check("disconnected: other soft checks still run by default (length band, tertiary terms)",
-      any(n == "Length is 1,200-1,500 words (soft)" for n in default_names))
+      any(n == "Length is 1,300-1,700 words (soft)" for n in default_names))
 
 flagged = run_v2(TITLE, d, include_disconnected=True)
 flagged_names = [r.name for r in flagged]

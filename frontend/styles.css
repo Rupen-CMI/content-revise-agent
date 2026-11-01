@@ -1493,3 +1493,10 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 
 #step1-confirm-block .selection-summary { margin-top: 6px; }
 
+/* ---------- A trend's own heading inside the Trends section ---------- */
+.trend-head { margin: 22px 0 6px; font-size: 1rem; font-weight: 650; line-height: 1.35; color: inherit; }
+
+/* ---------- Keyword research card ---------- */
+.kw-subhead { margin: 18px 0 4px; font-size: 0.95rem; font-weight: 650; }
+.kw-list li { margin: 4px 0; }
+

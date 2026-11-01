@@ -1418,6 +1418,20 @@ function renderStep2Panel() {
   document.getElementById("step2-factsheet-block").hidden = !factSheet;
   if (factSheet) document.getElementById("step2-factsheet").innerHTML = renderFactSheet(factSheet);
 
+  // How the keywords were found: the real phrases people type, and the keyword forms in the order they will be offered to the planner.
+  const kw = (state.run.demand && state.run.demand.keyword_research) || null;
+  document.getElementById("step2-keywords-block").hidden = !kw;
+  if (kw) {
+    const sourceLabel = { search: "typed in searches", "ranking pages": "used by the pages that rank", standard: "standard keyword" };
+    document.getElementById("step2-keywords-method").textContent = kw.method || "";
+    document.getElementById("step2-keywords-pool").innerHTML = (kw.pool || []).slice(0, 10).map((r) =>
+      `<li><strong>${escapeHtml(r.key)}</strong> <span class="option-caption">${escapeHtml(sourceLabel[r.source] || r.source)} &middot; fits the ${escapeHtml(r.section.replace("_", " "))} section</span></li>`).join("");
+    const phrases = (kw.suggestions || []).slice(0, 12);
+    document.getElementById("step2-keywords-phrases").innerHTML = phrases.length
+      ? phrases.map((s) => `<li>${escapeHtml(s.query)} <span class="option-caption">${(s.engines || []).length > 1 ? "both Google and Bing" : escapeHtml(((s.engines || [])[0] || "search").replace(/^./, (c) => c.toUpperCase()))}</span></li>`).join("")
+      : `<li class="empty-note">The search boxes returned nothing for this market, so the standard keyword forms are used.</li>`;
+  }
+
   const msqs = (state.run.demand && state.run.demand.questions) || [];
   document.getElementById("step2-msqs-block").hidden = msqs.length === 0;
   const answerableLabel = { size: "size", growth: "growth", trends: "trend", drivers: "drivers",
@@ -1620,7 +1634,14 @@ function _splitBulletSegments(segments) {
 // Shared by the plain and highlighted renderers: `renderInline(segments)` turns one line's
 // segments into inline HTML (escaping/highlighting is the caller's job), this just decides
 // whether a paragraph becomes <p> or <p>+<ul><li>.
+// A trend's own heading travels as a paragraph starting with "### " (the backend's subheads.SUBHEAD_PREFIX).
+const SUBHEAD_PREFIX = "### ";
 function _renderParagraph(segments, renderInline) {
+  const first = (segments && segments[0] && segments[0].text) || "";
+  if (first.startsWith(SUBHEAD_PREFIX)) {
+    const text = segments.map((s) => s.text).join("").slice(SUBHEAD_PREFIX.length);
+    return `<h5 class="trend-head">${escapeHtml(text)}</h5>`;
+  }
   const split = _splitBulletSegments(segments);
   if (!split) return `<p>${renderInline(segments)}</p>`;
   const leadHtml = split.lead.some((s) => s.text.trim()) ? `<p>${renderInline(split.lead)}</p>` : "";

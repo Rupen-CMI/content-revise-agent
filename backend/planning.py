@@ -29,11 +29,11 @@ _FACTS_MAX = {"report_context": 6, "trends": 9, "segmentation": 12, "subsegment"
 _TRANSITION_MAX_WORDS = 40
 
 # Block word budgets (plan section 3.6b): hard caps on the share of the article body, met by construction.
-# The article targets 1,350 words whatever the market carries (a short section fills its gap with plain
+# The article targets 1,550 words whatever the market carries (a short section fills its gap with plain
 # explanation), the intro budgets to ~18% (hard-capped 20%, growing-article exception for a long retained
 # paragraph), and the transition and market block take fixed shares of that target.
-MAX_WORDS = 1500
-TARGET_WORDS = 1350               # §3.6b: the SOP's 1,200-1,500 lands the target at its middle
+MAX_WORDS = 1700
+TARGET_WORDS = 1550               # §3.6b: three detailed paragraphs per trend lift the SOP band to 1,300-1,700
 INTRO_SHARE, INTRO_CAP = 0.18, 0.20   # the intro budgets to ~18% of the target, hard-capped at 20%
 TRANSITION_SHARE = 0.075          # inside the 5-10% band
 MIN_OWN_INTRO_WORDS = 20          # one lead-in sentence carrying the report link, beside the retained paragraph
@@ -93,11 +93,11 @@ _TITLE_HARD_MIN, _TITLE_HARD_MAX, _TITLE_SOFT_MIN, _TITLE_SOFT_MAX = 30, 80, 40,
 # --------------------------------------------------------------------------------------------------- budgets
 
 def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, fact_counts: dict[str, int] | None = None) -> dict:
-    """Word budgets per block (§3.6b). The article targets 1,350 words regardless of how much material
+    """Word budgets per block (§3.6b). The article targets 1,550 words regardless of how much material
     the market carries — a section with fewer facts gets a smaller slice of the same market block and
     fills its gap with plain explanation, not a shorter article. The intro budgets to about 18% of the
     target (never below the retained paragraph plus one lead-in sentence), and the article grows inside
-    the 1,500-word ceiling when a long retained paragraph would otherwise break the 20% intro cap; the
+    the 1,700-word ceiling when a long retained paragraph would otherwise break the 20% intro cap; the
     transition takes 7.5%; the market block takes the remainder, split by each SOP section's weight
     scaled by its fact count, with the SOP minimums clamped (U.S. 110-190) and any clamp redistributed
     across the other sections.
@@ -113,7 +113,7 @@ def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, f
         eff[s] = _SECTION_WEIGHTS[s] * factor
     if sum(eff.values()) < _THIN_MATERIAL_SHARE * sum(_SECTION_WEIGHTS.values()):
         notes.append("the material is thin: several market sections carry few facts; their budgets shrink "
-                     "inside the same 1,350-word target, and the writing fills the gap with explanation")
+                     f"inside the same {TARGET_WORDS:,}-word target, and the writing fills the gap with explanation")
     total = TARGET_WORDS
     need = sponsor_words + MIN_OWN_INTRO_WORDS
     cap_total = math.ceil(need / (INTRO_CAP - 0.01))
@@ -202,10 +202,23 @@ def build_inputs(
         market_name=market_name, intro_angle=publisher_result.get("intro_angle", ""), points=list(publisher_result.get("points") or []),
         questions=list(demand_result.get("questions") or []), items=items, segments=list(fs.get("segments") or []),
         terms=list(demand_result.get("terms") or []), longtails=longtails,
-        secondary_pool=[(suffix, sec) for suffix, sec in _SECONDARY_KEYWORD_SUFFIXES],
+        secondary_pool=_secondary_pool(demand_result),
         sponsor_words=sponsor_words, has_us_facts=us,
         link_report=fs.get("report_mode", "cmi") != "external", report_mode=fs.get("report_mode", "cmi"),
     )
+
+
+def _secondary_pool(demand_result: dict) -> list[tuple[str, str]]:
+    """The secondary-keyword pool, most searched first: the keyword research's own ranking (real searches and the forms the
+    ranking pages target) when it ran, else the fixed list."""
+    rows = ((demand_result or {}).get("keyword_research") or {}).get("pool") or []
+    pool, seen = [], set()
+    for r in rows:
+        key = str(r.get("key") or "").strip()
+        if key and r.get("section") in ORDER and key.lower() not in seen:
+            pool.append((key, r["section"]))
+            seen.add(key.lower())
+    return pool[:14] or [(suffix, sec) for suffix, sec in _SECONDARY_KEYWORD_SUFFIXES]
 
 
 def _fmt_points(inp: PlanInputs) -> str:
@@ -404,6 +417,52 @@ def _longtail_restates_heading(lt: dict, s: dict, msq_by_id: dict) -> bool:
     return all(checks._stem(w) in qstems for w in content)
 
 
+_TREND_COUNT, _TREND_FACTS_MAX = 3, 3
+
+
+def _trend_groups(raw_groups, kept: list[str], inp: PlanInputs, repair) -> list[dict]:
+    """Three trends, each with its own facts. Starts from the planner's groups (only facts the trends section kept, none
+    twice, at most three a trend), hands every kept fact the planner left ungrouped to the trend that needs it most, then
+    makes sure no trend lacks dated news evidence while another holds two. Returns exactly three {trend, facts} groups;
+    a trend with no fact at all is possible when the section has too few (the writer then reasons from the section's point)."""
+    groups: list[dict] = []
+    seen: set[str] = set()
+    for g in raw_groups if isinstance(raw_groups, list) else []:
+        if not isinstance(g, dict) or len(groups) >= _TREND_COUNT:
+            continue
+        ids = []
+        for fid in g.get("facts") if isinstance(g.get("facts"), list) else []:
+            fid = str(fid).strip()
+            if fid in kept and fid not in seen and len(ids) < _TREND_FACTS_MAX:
+                ids.append(fid)
+                seen.add(fid)
+        groups.append({"trend": " ".join(str(g.get("trend") or "").split()), "facts": ids})
+    if len(groups) < _TREND_COUNT:
+        repair(f"trends: the planner named {len(groups)} trend group(s); the rest were added empty")
+        groups += [{"trend": "", "facts": []} for _ in range(_TREND_COUNT - len(groups))]
+    is_news = lambda fid: inp.items[fid]["kind"] == "evidence"  # noqa: E731
+    leftover = [f for f in kept if f not in seen]
+    # news evidence first, to the trend with the fewest news items; then everything else to the smallest group
+    for fid in sorted(leftover, key=lambda f: not is_news(f)):
+        pool = [g for g in groups if len(g["facts"]) < _TREND_FACTS_MAX]
+        if not pool:
+            repair(f"trends: fact {fid} dropped (at most {_TREND_FACTS_MAX} per trend)")
+            continue
+        key = (lambda g: (sum(is_news(f) for f in g["facts"]), len(g["facts"]))) if is_news(fid) else (lambda g: len(g["facts"]))
+        min(pool, key=key)["facts"].append(fid)
+        repair(f"trends: fact {fid} was not in any trend group and was given to one")
+    for _ in range(_TREND_COUNT):       # no trend without dated news while another holds two
+        bare = next((g for g in groups if not any(is_news(f) for f in g["facts"])), None)
+        donor = next((g for g in groups if sum(is_news(f) for f in g["facts"]) >= 2), None)
+        if bare is None or donor is None or bare is donor or len(bare["facts"]) >= _TREND_FACTS_MAX:
+            break
+        moved = [f for f in donor["facts"] if is_news(f)][-1]
+        donor["facts"].remove(moved)
+        bare["facts"].append(moved)
+        repair(f"trends: news item {moved} moved to a trend that had none")
+    return groups
+
+
 def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     """Turn the planner's raw answer into a plan that satisfies every structural rule. Pure: no network, no model.
     Returns {title, title_basis, intro, transition, sections, faq, budgets, repairs}."""
@@ -462,6 +521,12 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             "secondary": None, "longtail": None, "terms": [], "snippet": None, "_raw": r,
         })
     by_sop = {s["sop"]: s for s in sections}
+
+    # ---- trends: three trends, each resting on its own facts (the section's fact list is their union)
+    trends = by_sop["trends"]
+    trends["trend_groups"] = _trend_groups(trends["_raw"].get("trend_groups"), trends["facts"], inp, repair)
+    grouped = {f for g in trends["trend_groups"] for f in g["facts"]}
+    trends["facts"] = [f for f in trends["facts"] if f in grouped]      # the section keeps the planner's order
 
     # ---- sub-segments (the subsegment section): two categories from different splits of the report
     sub = by_sop["subsegment"]

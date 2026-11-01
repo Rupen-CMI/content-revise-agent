@@ -425,9 +425,39 @@ check("robustness: a missing plan still promotes two question headings", sum(1 f
 p = plan_of({"sections": "nope", "title": 5})
 check("robustness: nonsense input is survived", len(p["sections"]) == 7)
 
+# ------------------------------------------------------------------ trend groups: three trends, each with its own facts
+class _TrendInp:
+    items = {"fs.drivers.0": {"kind": "drivers"}, "fs.drivers.1": {"kind": "drivers"}, "fs.drivers.2": {"kind": "drivers"},
+             "W1": {"kind": "evidence"}, "W2": {"kind": "evidence"}, "W3": {"kind": "evidence"}, "W4": {"kind": "evidence"}}
+
+
+def _groups(raw_groups, kept):
+    notes = []
+    return planning._trend_groups(raw_groups, kept, _TrendInp, notes.append), notes
+
+
+kept = ["fs.drivers.0", "fs.drivers.1", "fs.drivers.2", "W1", "W2", "W3"]
+g, notes = _groups([{"trend": "A", "facts": ["fs.drivers.0", "W1"]}, {"trend": "B", "facts": ["fs.drivers.1", "W2"]},
+                    {"trend": "C", "facts": ["fs.drivers.2", "W3"]}], kept)
+check("trend groups: a valid grouping passes through untouched", [x["facts"] for x in g] == [["fs.drivers.0", "W1"], ["fs.drivers.1", "W2"], ["fs.drivers.2", "W3"]] and notes == [], str(notes))
+g, notes = _groups([{"trend": "A", "facts": ["W1", "W2", "W3", "fs.drivers.0"]}, {"trend": "B", "facts": ["fs.drivers.1"]}], kept)
+check("trend groups: at most three facts a trend, a missing third group is added, ungrouped facts are given out",
+      len(g) == 3 and all(len(x["facts"]) <= 3 for x in g) and sorted(f for x in g for f in x["facts"]) == sorted(kept), str(g))
+check("trend groups: no trend is left without dated news while another holds two",
+      all(any(f.startswith("W") for f in x["facts"]) for x in g), str(g))
+g, _ = _groups([{"trend": "A", "facts": ["W1", "W1", "ghost"]}, {"trend": "B", "facts": ["W1", "W2"]}, {"trend": "C", "facts": []}], ["W1", "W2", "fs.drivers.0"])
+check("trend groups: unknown ids and a fact in two groups are dropped (one fact, one trend)",
+      sum(x["facts"].count("W1") for x in g) == 1 and not any("ghost" in x["facts"] for x in g), str(g))
+g, _ = _groups(None, [])
+check("trend groups: no groups and no facts still gives three empty trends", len(g) == 3 and all(x["facts"] == [] for x in g))
+tplan = planning.validate_plan(good_plan(), make_inputs(), LOG)
+tsec = next(s for s in tplan["sections"] if s["sop"] == "trends")
+check("trend groups: validate_plan always returns three groups and the section's facts are their union",
+      len(tsec["trend_groups"]) == 3 and sorted(tsec["facts"]) == sorted(f for x in tsec["trend_groups"] for f in x["facts"]), str(tsec["trend_groups"]))
+
 # ------------------------------------------------------------------ budgets
 b = planning.compute_budgets(84)
-check("budgets: the target is the SOP's middle, 1,350", b["target"] == planning.TARGET_WORDS, str(b["target"]))
+check("budgets: the target is the raised SOP middle, 1,550", b["target"] == planning.TARGET_WORDS, str(b["target"]))
 check("budgets: the intro share is under its cap, the transition inside its band",
       b["intro_total"] / b["target"] <= planning.INTRO_CAP and 0.05 <= b["transition"] / b["target"] <= 0.10, str(b))
 total = b["intro_total"] + b["transition"] + b["market_total"]
@@ -435,13 +465,13 @@ check("budgets: the blocks add up to the target within rounding", abs(total - b[
 check("budgets: the market block is at least 70%", b["market_total"] / total >= 0.70, str(b["market_total"] / total))
 check("budgets: the U.S. section stays inside the SOP's 100-200 words", 100 <= b["sections"]["country_us"] <= 200, str(b["sections"]))
 check("budgets: the intro's own words are its budget minus the retained paragraph", b["intro_own"] == b["intro_total"] - 84)
-big = planning.compute_budgets(260)
+big = planning.compute_budgets(300)
 check("budgets: a very long retained paragraph lengthens the article, within the ceiling, and keeps the intro cap",
       big["target"] > b["target"] and big["target"] <= planning.MAX_WORDS and big["intro_total"] / big["target"] <= planning.INTRO_CAP and big["notes"], str(big))
 thin = planning.compute_budgets(84, {}, {"trends": 0, "key_players": 0})
 check("budgets: a thin section gets fewer words than a normal one", thin["sections"]["trends"] < b["sections"]["trends"])
 few = planning.compute_budgets(84, {}, {"report_context": 1, "trends": 1, "segmentation": 1, "subsegment": 0, "country_us": 1, "key_players": 0})
-check("budgets: fewer facts shrink a section inside the same 1,350-word target, and the shares still hold",
+check("budgets: fewer facts shrink a section inside the same 1,550-word target, and the shares still hold",
       few["target"] == b["target"] and few["sections"]["trends"] < b["sections"]["trends"]
       and few["intro_total"] / few["target"] <= planning.INTRO_CAP and 0.05 <= few["transition"] / few["target"] <= 0.10, str(few))
 check("budgets: a section's budget never falls below its floor share of its weight", few["sections"]["subsegment"] > 0)

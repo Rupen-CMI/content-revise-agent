@@ -220,7 +220,7 @@ finally:
     llm.chat_json = orig
 
 # ------------------------------------------------------------------ the prompt carries framing, not samples
-formatted = prompts.SEARCH_DEMAND_USER.format(market_name=MARKET, facts="- fs.size: x")
+formatted = prompts.SEARCH_DEMAND_USER.format(market_name=MARKET, facts="- fs.size: x", real_queries="- real phrase")
 check("prompt: formats and names the market", MARKET in formatted)
 check("prompt: lists every kind of need", all(f"- {k}:" in formatted for k in demand.INTENTS))
 sample_like = [l for l in formatted.splitlines() if re.match(r"\s*(How|What|Which|Who|Where|Why)\b[^.]*\?\s*$", l)]
@@ -231,3 +231,4 @@ if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
     sys.exit(1)
 print("all demand tests passed")
+

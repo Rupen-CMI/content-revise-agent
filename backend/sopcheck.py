@@ -156,6 +156,6 @@ def check_draft(raw: bytes) -> dict:
     results.append(_result("The opening holds no measurements or units (soft)", not jargon, "; ".join(jargon), soft=True))
     passive = checks.v2_active_voice_notes(tagged)
     results.append(_result("Active voice: at most 1 sentence in 6 is passive (soft)", not passive, "; ".join(passive), soft=True))
-    results.append(_result("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words", soft=True))
+    results.append(_result("Length is 1,300-1,700 words (soft)", 1300 <= total <= 1700, f"{total} words", soft=True))
 
     return {"title": draft["title"], "word_count": total, "checks": results, "skipped": skipped}

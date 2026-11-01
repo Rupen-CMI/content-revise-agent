@@ -68,6 +68,7 @@ import external_reports
 import facts
 import faqs
 import freshness
+import keyword_research
 import llm
 import pipeline
 import planning
@@ -1187,8 +1188,18 @@ def _step2_v2(
                 with timer.stage(name):
                     return fn(*args)
 
-            demand_f = prep.submit(timed, "Search demand", demand.run_search_demand, report.name, fs, run.logger)
-            publisher_f = prep.submit(
+            # Real searches first (a few seconds): they ground the long-tail list and order the secondary-keyword pool.
+            keywords_f = prep.submit(timed, "Keyword research", keyword_research.research, report.name, run.logger)
+
+            def demand_with_keywords():
+                keywords = keywords_f.result()
+                result = demand.run_search_demand(
+                    report.name, fs, run.logger, real_queries=[s["query"] for s in keywords["suggestions"]])
+                result["keyword_research"] = keywords
+                return result
+
+            demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
+            publisher_f = None if early else prep.submit(
                 timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
             topup = bool(players or segment_terms)
             prepared_queries = None
@@ -1596,6 +1607,10 @@ def _keyword_view(run: RunState, report: reports.Report, sponsor: Paragraph, tit
     and the use counts the highlighting itself found. Shared by the final screen and the recheck of a
     humanized draft, so the two can never count a keyword differently."""
     primary_kw, secondary_plan = pipeline._seo_keyword_plan(report.name)
+    if run.plan_inputs is not None and run.plan_inputs.secondary_pool:
+        # the market-first chain chose from the keyword research's own pool, so that pool is what is highlighted and counted
+        core = pipeline._market_core(report.name)
+        secondary_plan = [(f"{core} market {key}", sec) for key, sec in run.plan_inputs.secondary_pool]
     secondary_kws = [kw for kw, _ in secondary_plan]
     # Market-first chain extras: the search demand's related (tertiary) terms are highlighted and
     # counted the same way, and the plan's MSQ headings are reported so the final view can mark them.

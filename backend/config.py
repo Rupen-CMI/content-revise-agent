@@ -48,6 +48,9 @@ SEARCH_CLAIMS_ENABLED = os.getenv("SEARCH_CLAIMS_ENABLED", "false").strip().lowe
 # (old Step 2 prep, old write + revise, old FAQ, old checks) — this only flips which Step 2/3/4 branches run.
 CMI_CHAIN_V2 = os.getenv("CMI_CHAIN_V2", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# Style anchors: when on, the write prompt carries four short passages from the content team's reference article as a register
+# guide (prompts.STYLE_ANCHORS). On by default (devtools/ab_voice.py compared the writer with and without them: shorter sentences,
+# every trend anchored); WRITE_STYLE_ANCHORS=false turns them off.
 CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"
 

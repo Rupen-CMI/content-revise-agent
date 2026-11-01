@@ -64,8 +64,14 @@ check("round trip: the sponsor paragraph is back as its placeholder",
       sum(p.count(prompts.SPONSOR_TOKEN) for s in parsed["sections"] for p in s["paragraphs"]) == 1)
 check("round trip: the CMI link is back as its placeholder",
       any("[[CMI_LINK:" in p for p in parsed["sections"][0]["paragraphs"]))
+bulleted = copy.deepcopy(original)
+bulleted[4]["paragraphs"][0] += "\n- first item\n- second item"
+parsed_b = recheck.parse(written(bulleted, t.GOOD_FAQ), t.TITLE, bulleted, t.GOOD_FAQ, t.SPONSOR_TEXT)
 check("round trip: bullets rejoin their lead-in",
-      any("\n- " in p for s in parsed["sections"] for p in s["paragraphs"]))
+      any("\n- " in p for s in parsed_b["sections"] for p in s["paragraphs"]))
+check("round trip: the trends' sub-headings come back as sub-headings, in place, and are not mistaken for section headings",
+      [s["paragraphs"] for s in parsed["sections"] if s["sop"] == ["trends"]] == [s["paragraphs"] for s in original if s["sop"] == ["trends"]]
+      and parsed["notes"] == [], str(parsed["notes"]))
 check("round trip: the FAQ keeps its entries and ids",
       [q.get("id") for q in parsed["faq"]] == [q.get("id") for q in t.GOOD_FAQ], str(parsed["faq"]))
 check("round trip: opening/transition split lands on the original boundary",
