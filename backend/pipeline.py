@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -183,6 +183,46 @@ def _bare_market_names(names) -> list[str]:
     return out
 
 
+_MAX_SUGGESTED_PER_TIER = 3
+
+
+def normalize_suggested_markets(orient: dict) -> dict:
+    """Normalise ORIENT's suggested_markets into exactly {"tier1": [...], "tier2": [...], "tier3": [...]}:
+    a missing or malformed value becomes empty lists, every name is run through _bare_market_names
+    (segmentation qualifiers stripped), at most _MAX_SUGGESTED_PER_TIER per tier, and a name already
+    used in an earlier tier is dropped (case-insensitive: a market appears in one tier only).
+    orient["own_market"] (bare-named) always leads tier1 when present, moved there from a later tier
+    if the model misfiled it; when tier1 still ends up empty, the first candidate_markets name is
+    promoted so the UI never shows an empty Tier 1. Pure function, no logging: feed it anything."""
+    raw = orient.get("suggested_markets") if isinstance(orient, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    tiers: dict[str, list[str]] = {}
+    used: set[str] = set()
+    for key in ("tier1", "tier2", "tier3"):
+        names = _bare_market_names(raw.get(key) if isinstance(raw.get(key), list) else [])
+        kept: list[str] = []
+        for n in names:
+            if len(kept) >= _MAX_SUGGESTED_PER_TIER:
+                break
+            if n.lower() in used:
+                continue
+            used.add(n.lower())
+            kept.append(n)
+        tiers[key] = kept
+    own = _bare_market_names([m for m in [orient.get("own_market")] if isinstance(m, str)]) if isinstance(orient, dict) else []
+    if own:
+        own_low = own[0].lower()
+        for key in ("tier1", "tier2", "tier3"):
+            tiers[key] = [n for n in tiers[key] if n.lower() != own_low]
+        tiers["tier1"].insert(0, own[0])
+        del tiers["tier1"][_MAX_SUGGESTED_PER_TIER:]
+    if not tiers["tier1"]:
+        cands = (orient.get("candidate_markets") or []) if isinstance(orient, dict) else []
+        first = next((c for c in cands if isinstance(c, str) and c.strip()), None)
+        tiers["tier1"] = [first] if first else []
+    return {"tier1": tiers["tier1"], "tier2": tiers["tier2"], "tier3": tiers["tier3"]}
+
+
 # The originals' claims list is capped here too: the publisher block is now a single short
 # section (about 20% of the post, see _INTRO_TOTAL_WORDS and PUBLISHER_USER), so more than 3
 # unbacked claims would have nowhere to go and would only pad the claim-selection pool with noise.
@@ -253,6 +293,8 @@ def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logge
         sponsor=sponsor.text,
     ), call_name="orient", temperature=0.1, logger=logger)
     orient["candidate_markets"] = _bare_market_names(orient.get("candidate_markets"))
+    # Tiered suggested markets for the Step 1 UI (list 1 of 2; list 2 is the tiered CMI catalog).
+    orient["suggested_markets"] = normalize_suggested_markets(orient)
     if config.SEARCH_CLAIMS_ENABLED:
         orient["claims_to_back"] = _normalize_claims(orient.get("claims_to_back"), sponsor.text, logger)
     else:
@@ -353,8 +395,65 @@ def run_match_catalog(
     logger.info("ranked candidates: " + ", ".join(f"{c.news_id}:{c.keyword}" for c in candidates))
 
     if not candidates:
-        raise PipelineError(f"No CMI report matched any of: {', '.join(names + keywords)}")
+        # Not an error any more: the editor sees an empty list, and Step 2 finds the market's report on the internet.
+        logger.warning(f"no CMI report matched any of: {', '.join(names + keywords)}")
     return candidates
+
+
+def run_tier_catalog(
+    orient: dict, article: SourceArticle, candidates: list[reports.CatalogEntry],
+    logger: logging.Logger, limit: int = 15,
+) -> list[reports.CatalogEntry]:
+    """CALL: tier the catalog candidates against the blog topic (Tier 1 direct match, Tier 2
+    adjacent/structural, Tier 3 shared driver — the definitions in prompts.TIER_CATALOG_USER),
+    with ONE LLM call. Returns the entries that land in tier 1-3 (tier stamped on them via
+    dataclasses.replace), ordered by tier then by their original match rank; tier 0 and any
+    report the model left unanswered are dropped. Best-effort like the long-tail generation:
+    an LLMError or an unusable answer falls back to the first 5 candidates untiered, so the
+    Step 1 UI always has something to show and the run never fails over this step."""
+    section(logger, "CALL: TIER CATALOG")
+    if not candidates:
+        logger.info("[tier-catalog] no catalog candidates to tier")
+        return []
+    cands = list(candidates[:limit])
+    numbered = "\n".join(f"{i}. {c.keyword}" for i, c in enumerate(cands, 1))
+    try:
+        result = llm.chat_json(
+            prompts.TIER_CATALOG_SYSTEM, prompts.TIER_CATALOG_USER.format(
+                title=article.title,
+                topic_summary=str(orient.get("topic_summary") or "(not available)"),
+                bridge_angle=str(orient.get("bridge_angle") or "(not available)"),
+                candidates=numbered,
+            ),
+            call_name="tier_catalog", temperature=0.1, logger=logger,
+        )
+    except llm.LLMError:
+        logger.warning("[tier-catalog] tiering failed; returning the first 5 candidates untiered", exc_info=True)
+        return [replace(c, tier=None) for c in cands[:5]]
+
+    # Validate in code, never trust the model's shape: ids outside 1..n and non-integer tiers are
+    # dropped, a later duplicate placement for the same report is ignored in favour of the first.
+    placements: dict[int, int] = {}
+    for row in result.get("tiers") if isinstance(result, dict) and isinstance(result.get("tiers"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            rid, tier = int(row.get("id")), int(row.get("tier"))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= rid <= len(cands)) or tier not in (0, 1, 2, 3):
+            continue
+        placements.setdefault(rid, tier)
+    placed = [(rid, t) for rid, t in placements.items() if t >= 1]
+    if not placements:
+        logger.warning("[tier-catalog] the model returned no valid placements; returning the first 5 candidates untiered")
+        return [replace(c, tier=None) for c in cands[:5]]
+    logger.info(f"[tier-catalog] placed {len(placed)}/{len(cands)} report(s) "
+                f"({len(placements) - len(placed)} at tier 0, {len(cands) - len(placements)} unanswered): "
+                + "; ".join(f"tier {t}: {cands[rid - 1].keyword}" for rid, t in placed))
+    placed.sort()                 # rank order first…
+    placed.sort(key=lambda x: x[1])  # …then a stable sort by tier keeps that rank order within each tier
+    return [replace(cands[rid - 1], tier=t) for rid, t in placed]
 
 
 def _market_search_queries(market_name: str) -> list[str]:
@@ -1672,6 +1771,7 @@ def _headline_figures(fs: dict | None) -> dict | None:
         entry = fs.get(key)
         if isinstance(entry, dict):
             raw |= _figures(str(entry.get("value", "")))
+            raw |= _figures(str(entry.get("original_value", "")))     # an outside report's own figure is just as much a restatement
     floats: set[float] = set()
     for r in raw:
         try:

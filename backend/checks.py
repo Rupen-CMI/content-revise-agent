@@ -1730,28 +1730,41 @@ def run_checks_v2(
         "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section",
     ))
 
+
+    # ---- an outside report stood in for CMI's: the editor must verify every value before going on
+    outside_audit = getattr(inp, "outside_audit", [])
+    if getattr(inp, "report_mode", "cmi") != "cmi":
+        rows = [f"{a['field']}: source {a['original']} -> shown {a['shown']} ({a['url']})" for a in outside_audit]
+        results.append(CheckResult(
+            "WARNING: a competitor report was used instead of CMI's. Verify all values before proceeding",
+            False,
+            "No report is linked in this article. Figures shown are adjusted by 3-5% from the source's. " + "; ".join(rows[:12])
+            + (f" (+{len(rows) - 12} more)" if len(rows) > 12 else ""),
+        ))
+
     # ---- kept: the CMI report link — exactly once, early, the market's first mention, correct anchor
-    cmi_links = re.findall(CMI_LINK_PATTERN, full)
-    results.append(CheckResult("CMI report linked exactly once", len(cmi_links) == 1, f"found {len(cmi_links)}"))
-    link_offset, link_is_first_mention, _ = cmi_link_placement(sections, sponsor_text, market_name)
-    results.append(CheckResult(
-        f"CMI link sits within the first {MAX_LINK_WORD_OFFSET} words",
-        link_offset is not None and link_offset <= MAX_LINK_WORD_OFFSET,
-        "no CMI link found" if link_offset is None else f"the link starts at word {link_offset}",
-    ))
-    if link_offset is not None:
+    if getattr(inp, "link_report", True):
+        cmi_links = re.findall(CMI_LINK_PATTERN, full)
+        results.append(CheckResult("CMI report linked exactly once", len(cmi_links) == 1, f"found {len(cmi_links)}"))
+        link_offset, link_is_first_mention, _ = cmi_link_placement(sections, sponsor_text, market_name)
         results.append(CheckResult(
-            "The first mention of the market name is the CMI link",
-            link_is_first_mention,
-            "" if link_is_first_mention else f"{market_name!r} appears in plain text before the link",
+            f"CMI link sits within the first {MAX_LINK_WORD_OFFSET} words",
+            link_offset is not None and link_offset <= MAX_LINK_WORD_OFFSET,
+            "no CMI link found" if link_offset is None else f"the link starts at word {link_offset}",
         ))
-    if report_name:
-        anchor_matches_report = any(link.strip() == report_name.strip() for link in cmi_links)
-        results.append(CheckResult(
-            "CMI link anchor names the confirmed report",
-            anchor_matches_report,
-            "" if anchor_matches_report else f"expected {report_name!r}, found {cmi_links!r}",
-        ))
+        if link_offset is not None:
+            results.append(CheckResult(
+                "The first mention of the market name is the CMI link",
+                link_is_first_mention,
+                "" if link_is_first_mention else f"{market_name!r} appears in plain text before the link",
+            ))
+        if report_name:
+            anchor_matches_report = any(link.strip() == report_name.strip() for link in cmi_links)
+            results.append(CheckResult(
+                "CMI link anchor names the confirmed report",
+                anchor_matches_report,
+                "" if anchor_matches_report else f"expected {report_name!r}, found {cmi_links!r}",
+            ))
 
     # ---- hard (§3.6a): the title passes planning's own hard title checks
     title_hard, title_soft = planning.title_problems(

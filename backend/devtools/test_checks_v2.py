@@ -952,6 +952,23 @@ check("disconnected: adding the flag loses nothing else (default == flagged minu
       default_names == [n for n in flagged_names if n not in DISC_NAMES],
       str([n for n in flagged_names if n not in DISC_NAMES and n not in default_names]))
 
+# ------------------------------------------------------------------ outside report: no link, a loud warning
+
+INP_OUT = test_planning.make_inputs()
+INP_OUT.link_report, INP_OUT.report_mode = False, "external"
+INP_OUT.outside_audit = [{"field": "size", "original": "USD 500.0 million", "shown": "USD 521.0 million", "source": "rival.example", "url": "https://rival.example/r"}]
+nolink_draft = good_draft()
+nolink_draft[0]["paragraphs"][0] = pad(26, [f"Start at the source: {MARKET}, where this guide gathers its findings."])
+out = checks.run_checks_v2(TITLE, nolink_draft, PLAN, INP_OUT, faq=GOOD_FAQ, sponsor_brand_terms=["Northway Specialists"],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+out_names = [r.name for r in out]
+check("outside: no CMI link check runs when no report is linked", not any("CMI link" in n or "CMI report linked" in n for n in out_names), str(out_names))
+warn = next((r for r in out if r.name.startswith("WARNING")), None)
+check("outside: a warning check names the competitor report and fails visibly", warn is not None and not warn.passed)
+check("outside: the warning lists the source value, the shown value and the URL",
+      warn is not None and "USD 500.0 million" in warn.detail and "USD 521.0 million" in warn.detail and "https://rival.example/r" in warn.detail)
+check("outside: a normal CMI run carries no warning", not any(r.name.startswith("WARNING") for r in good))
+
 # ------------------------------------------------------------------ the report's main figures are all in the article
 fig_inp = test_planning.make_inputs()
 fig_inp.items["fs.forecast"] = test_planning.item("fs.forecast", "forecast", "Market forecast: USD 3.4 billion (2032)", {"report_context"})

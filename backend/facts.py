@@ -22,6 +22,7 @@ import polarity
 import prompts
 import reports
 import search
+import variance
 from pipeline import _market_core, _report_text
 from pipeline_log import section
 
@@ -589,11 +590,12 @@ def _figure_year_ok(entry: dict, today: date) -> bool:
 
 def run_figure_backing(
     market_name: str, fs: dict, hits: list[search.SearchHit], exclude_hosts, logger: logging.Logger,
-    today: date | None = None,
+    today: date | None = None, external: bool = False,
 ) -> dict:
     """CALL (only when the fact sheet has a headline gap and the gap search found pages): ask the model whether ONE page
     states the missing figures for exactly this market, then verify its answer in code. Accepted figures go into the
-    fact sheet tagged with their source; anything else stays a gap. Mutates and returns `fs`."""
+    fact sheet tagged with their source; anything else stays a gap. Mutates and returns `fs`. `external=True` marks
+    every accepted figure as an outside figure (so the variance of an outside figure applies to it too)."""
     today = today or date.today()
     missing = headline_gaps(fs)
     if not missing or not hits:
@@ -612,14 +614,15 @@ def run_figure_backing(
         logger.warning("[figures] the figure backing call failed; the missing figures stay unstated", exc_info=True)
         return fs
     return apply_figure_source(fs, result.get("source") if isinstance(result, dict) else None, missing, hits, market_name,
-                               exclude_hosts, logger, today)
+                               exclude_hosts, logger, today, external)
 
 
 def apply_figure_source(
     fs: dict, source, missing: list[str], hits: list[search.SearchHit], market_name: str, exclude_hosts,
-    logger: logging.Logger, today: date,
+    logger: logging.Logger, today: date, external: bool = False,
 ) -> dict:
-    """Verify the model's chosen source and copy over only the figures that pass every check. Pure given its inputs."""
+    """Verify the model's chosen source and copy over only the figures that pass every check. Pure given its inputs.
+    `external=True` marks every accepted figure as an outside figure (`entry["external"]`)."""
     if not isinstance(source, dict):
         logger.info("[figures] no outside page qualified; the missing figures stay unstated")
         return fs
@@ -640,7 +643,7 @@ def apply_figure_source(
     core = _core_tokens(market_name)
     accepted: dict[str, dict] = {}
     for key in missing:
-        entry = _headline_entry(source.get(key), key, source_norm, core, True, f"outside page {hit.host}", logger)
+        entry = _headline_entry(source.get(key), key, source_norm, core, True, f"outside page {hit.host}", logger, _page_text(hit))
         if not entry:
             continue
         if not _figure_year_ok(entry, today):
@@ -653,7 +656,8 @@ def apply_figure_source(
     name = hit.source or hit.host
     had_report = [k for k in HEADLINE_KEYS if fs.get(k)]
     for key, entry in accepted.items():
-        fs[key] = {**entry, "id": f"fs.{key}", "source": name, "url": hit.url, "stale": False}
+        fs[key] = {**entry, "id": f"fs.{key}", "source": name, "url": hit.url, "stale": False,
+                   **({"external": True} if external else {})}
     fs["figure_source"] = {"name": name, "host": hit.host, "url": hit.url, "figures": sorted(accepted)}
     fs["gaps"] = headline_gaps(fs)
     if had_report:
@@ -663,6 +667,86 @@ def apply_figure_source(
         )
     logger.info(f"[figures] accepted {sorted(accepted)} from {name} ({hit.url}); still missing: {fs['gaps'] or 'nothing'}")
     return fs
+
+
+def fill_headline_from_web(fs: dict, market: str, hosts, logger: logging.Logger) -> list[str]:
+    """Fill a non-CMI sheet's headline figures straight from the web, when size, forecast AND CAGR are all gaps (if
+    even one headline figure is already present, nothing is filled: the size/forecast pair must come from one page so
+    the recomputed growth rate stays valid — `vary_headline_entries` refuses a mixed pair). One candidate page is
+    searched, read and verified by the same strict checks as a CMI sheet's gap fill, every accepted figure is marked
+    external so the writer treats it as an outside figure, varied by 3-5%, and its source is appended to fs["sources"]
+    once. Mutates `fs` in place and returns the warning strings to show (empty when nothing was filled)."""
+    if any(fs.get(k) for k in HEADLINE_KEYS):
+        return []
+    hits = run_figure_gap_search(market, hosts, logger)
+    if hits:
+        fs = run_figure_backing(market, fs, hits, hosts, logger, external=True)
+        source = fs.get("figure_source")
+        if source:
+            variance.vary_headline_entries(fs, market, source)
+            entry = {"name": source["host"], "url": source["url"], "kind": "external"}
+            if not any(s.get("url") == entry["url"] for s in fs.setdefault("sources", [])):
+                fs["sources"].append(entry)
+            logger.info(f"[figures] headline figures filled from a web search of {market} ({entry['url']}) and varied")
+            return [
+                "The headline figures came from a web search of the market's own figures, not from a report, and "
+                "were adjusted by 3-5%. Verify all values before proceeding."
+            ]
+    return []
+
+
+# ----------------------------------------------------------------------------------------- several sources, one sheet
+
+def _statement_key(text: str) -> frozenset[str]:
+    return frozenset(w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 3)
+
+
+def merge_fact_sheets(sheets: list[dict], sources: list[dict]) -> dict:
+    """One fact sheet from several, in the order given (the first is the primary). The headline figures come from ONE
+    sheet, the first with the most of them, so size, forecast and growth rate always agree with each other. Segment
+    splits the primary lacks, a region leader or fastest region it lacks, statements and players of the others are added
+    (a statement that says what an earlier one says is skipped). `sources` ([{name, url, kind}]) is kept on the result,
+    with the combined audit of any outside report's varied figures. Pure."""
+    if not sheets:
+        empty = _empty_fact_sheet()
+        empty.update({"sources": list(sources), "variance": [], "report_mode": "cmi"})
+        return empty
+    lead = max(range(len(sheets)), key=lambda i: (len([k for k in HEADLINE_KEYS if sheets[i].get(k)]), -i))
+    ordered = [sheets[lead]] + [s for i, s in enumerate(sheets) if i != lead]
+    merged = _empty_fact_sheet()
+    for key in HEADLINE_KEYS:
+        merged[key] = ordered[0].get(key)
+    seen_types: set[str] = set()
+    for sheet in ordered:
+        for seg in sheet.get("segments") or []:
+            key = re.sub(r"^(?:by|segmentation|segment)\s+", "", _norm(seg["type"]))
+            if key not in seen_types:
+                seen_types.add(key)
+                merged["segments"].append({**seg, "id": f"fs.segments.{len(merged['segments'])}"})
+    for which in ("leader", "fastest"):
+        merged["regions"][which] = next(((s.get("regions") or {}).get(which) for s in ordered if (s.get("regions") or {}).get(which)), None)
+    for key in STATEMENT_KEYS:
+        kept: list[dict] = []
+        for sheet in ordered:
+            for e in sheet.get(key) or []:
+                words = _statement_key(e["text"])
+                if any(words and _statement_key(k["text"]) and len(words & _statement_key(k["text"])) / min(len(words), len(_statement_key(k["text"]))) >= 0.7 for k in kept):
+                    continue
+                if len(kept) < _MAX_STATEMENTS:
+                    kept.append({**e, "id": f"fs.{key}.{len(kept)}"})
+        merged[key] = kept
+    players: list[str] = []
+    for sheet in ordered:
+        for name in sheet.get("players") or []:
+            if name.lower() not in (p.lower() for p in players):
+                players.append(name)
+    merged["players"] = players
+    merged["gaps"] = headline_gaps(merged)
+    merged["sources"] = list(sources)
+    merged["variance"] = [row for s in ordered for row in (s.get("variance") or [])]
+    kinds = {s["kind"] for s in sources}
+    merged["report_mode"] = "mixed" if len(kinds) > 1 else (next(iter(kinds)) if kinds else "cmi")
+    return merged
 
 
 # ------------------------------------------------------------------------------------------ for later stages
@@ -675,7 +759,10 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
         e = fs.get(key)
         if e:
             label = {"size": "Market size", "forecast": "Market forecast", "cagr": "Growth rate (CAGR)"}[key]
-            out.append({"id": e["id"], "kind": key, "source": e["source"], "historical": bool(e.get("stale")),
+            # An outside report's figures reach the writer as plain statements: they are shown to the editor with their
+            # real source, varied and flagged, but the article names no competitor (see variance.py).
+            out.append({"id": e["id"], "kind": key, "source": "CMI report" if e.get("external") else e["source"],
+                        "historical": bool(e.get("stale")),
                         "text": f"{label}: {e['value']} ({e['when']})" if e["when"] else f"{label}: {e['value']}"})
     for seg in fs.get("segments") or []:
         figures = seg.get("figures") or {}
@@ -694,13 +781,13 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                             "text": f"{name} ({seg['type']}): {figures[name]['figure']}"})
     for which, r in (fs.get("regions") or {}).items():
         if r:
-            out.append({"id": r["id"], "kind": "regions", "source": "CMI report", "historical": r["historical"],
+            out.append({"id": r["id"], "kind": "regions", "source": base, "historical": r["historical"],
                         "text": f"{'Leading' if which == 'leader' else 'Fastest-growing'} region: {r['name']}"
                                 + (f" ({r['basis']})" if r["basis"] else "")})
     for key in STATEMENT_KEYS:
         for e in fs.get(key) or []:
-            out.append({"id": e["id"], "kind": key, "source": "CMI report", "historical": e["historical"], "text": e["text"]})
+            out.append({"id": e["id"], "kind": key, "source": base, "historical": e["historical"], "text": e["text"]})
     if fs.get("players"):
-        out.append({"id": "fs.players", "kind": "players", "source": "CMI report", "historical": False,
+        out.append({"id": "fs.players", "kind": "players", "source": base, "historical": False,
                     "text": "Key players the report names: " + ", ".join(fs["players"])})
     return out

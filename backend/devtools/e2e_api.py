@@ -6,6 +6,7 @@ offline unit tests and the plan/write replays cannot give.
 Usage (from backend/): python devtools/e2e_api.py "../input_docs/Top Python Libraries for Web Scraping in AI Pipelines.docx" 61
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,7 +34,21 @@ def main_() -> None:
     token, cands = d1["run_token"], d1["candidates"]
     print(f"step1 ok ({time.time() - t0:.0f}s): top candidate {cands[0]['keyword']} ({cands[0]['news_id']})")
 
-    s2 = c.post("/step2", json={"run_token": token, "report_id": cands[0]["news_id"]})
+    # E2E_MODE=external: tick nothing, so the agent finds the market's report on the internet (outside-report mode).
+    mode = os.environ.get("E2E_MODE", "cmi")
+    external = mode in ("external", "picker")
+    print("  suggested markets:", json.dumps(d1["orient"].get("suggested_markets")))
+    print("  CMI candidates by tier:", [(c_["tier"], c_["keyword"]) for c_ in cands[:12]])
+    body = {"run_token": token, "report_ids": [] if external else [cands[0]["news_id"]], "report_urls": []}
+    if mode == "picker":
+        # the new flow: tick the agent's Tier 1 market, look at the competitor reports found, tick two of them
+        market = (d1["orient"]["suggested_markets"].get("tier1") or [""])[0]
+        fr = c.post("/step2/find_reports", json={"run_token": token, "markets": [market]})
+        assert fr.status_code == 200, fr.text
+        found = fr.json()["reports"]
+        print(f"find_reports ok ({time.time() - t0:.0f}s): {len(found)} candidate(s) for {market!r}:", [(f_["host"], f_["title"][:50]) for f_ in found])
+        body.update({"markets": [market], "report_urls": [f_["url"] for f_ in found[:2]], "url_markets": {f_["url"]: f_["market"] for f_ in found[:2]}})
+    s2 = c.post("/step2", json=body)
     assert s2.status_code == 200, s2.text
     d2 = s2.json()
     fs = d2.get("fact_sheet") or {}
@@ -67,6 +82,15 @@ def main_() -> None:
     print("  tertiary terms:", r.get("tertiary_terms"))
     print("  FAQ questions:", [qa["question"] for qa in r.get("faq") or []])
     run = main._RUNS[token]
+    print(f"  report mode: {run.report_mode}; warnings: {run.warnings}")
+    dump = Path(__file__).resolve().parent.parent / "output" / f"e2e_{mode}.txt"
+    dump.parent.mkdir(exist_ok=True)
+    lines = [r.get("title", "")]
+    for sec in r.get("sections") or []:
+        lines.append("\n## " + str(sec.get("heading", "")))
+        lines += [str(p.get("text") if isinstance(p, dict) else p) for p in sec.get("paragraphs") or []]
+    dump.write_text("\n".join(lines), encoding="utf-8")
+    print(f"  draft text written to {dump}")
     print(f"  plan repairs: {run.plan.get('repairs') if run.plan else None}")
 
 

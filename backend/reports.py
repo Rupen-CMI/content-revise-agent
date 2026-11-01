@@ -56,6 +56,7 @@ class CatalogEntry:
     slug: str
     fmt: int
     has_summary: bool
+    tier: int | None = None
 
     @property
     def url(self) -> str:

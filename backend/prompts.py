@@ -69,6 +69,17 @@ Example (format only, not a real market): for an article about "automated invoic
 teams," correct keywords are "invoice automation", "accounts payable software", "AP automation" — NOT "accounting", \
 "finance teams", "enterprise software", or "digital transformation" (too generic/adjacent or pure fluff), and NOT \
 "automation" alone (names no market).
+- "own_market": the single market this article's own subject lives in, named at the article's own level of detail \
+and written as "<Noun Phrase> Market". It is never a broader parent market and never an adjacent or sibling market: \
+for an article about one specific kind of the thing, name that kind, not the whole category it belongs to.
+- "suggested_markets": an object with keys "tier1", "tier2", "tier3", each a list of up to 3 bare market names written \
+"<Noun Phrase> Market" (no segmentation qualifiers), tiering other markets the agent itself suggests for the blog, \
+judged against the blog's subject. Tier 1 - Direct match: the market's core subject is the blog topic, or a market, \
+product or technology named directly in the blog. Tier 2 - Adjacent or structural match: the market is directly \
+upstream, downstream, or a component or input of the blog topic. Tier 3 - Shared driver or end-use match: the market \
+is a different one, but it is driven by the same underlying demand driver, regulation or end-use industry as the \
+blog topic. Tier 1 must start with the own_market; a market appears in one tier only; leave a tier's list empty \
+rather than stretch to fill it with a weak fit.
 - "candidate_markets": 6-8 market names derived from scope_keywords, most fitting first, written as the bare \
 market name a research firm would title a report: "<Noun Phrase> Market", e.g. the style of "Zzz Widget Market" or \
 "Zzz Fastener Market" (placeholder format examples only, not real markets). Do NOT append segmentation qualifiers \
@@ -125,6 +136,33 @@ practice asserted as universal, a how-it-works explanation with no source). For 
   itself (that phrase already exists as the article's primary keyword), none may be generic enough to fit a different \
   market unchanged, and none may be a consumer how-to or definition. Skip a cluster the market cannot genuinely \
   support rather than filling it with a formulaic phrase."""
+
+
+TIER_CATALOG_SYSTEM = """You are a senior editor at Coherent Market Insights (CMI), placing the firm's market research reports \
+against a blog topic so the reports best relevant to that blog are found first. Judge each report on the market it covers. \
+Respond with JSON only."""
+
+TIER_CATALOG_USER = """BLOG TITLE: {title}
+
+BLOG TOPIC: {topic_summary}
+
+INTENDED BRIDGE ANGLE: {bridge_angle}
+
+CMI REPORT CANDIDATES (each is a numbered market research report):
+{candidates}
+
+For EACH numbered report, decide which tier it belongs in, judged against the blog topic:
+- Tier 1 - Direct match: the market's core subject is the blog topic, or a market, product or technology named \
+directly in the blog.
+- Tier 2 - Adjacent or structural match: the market is directly upstream, downstream, or a component or input of \
+the blog topic.
+- Tier 3 - Shared driver or end-use match: the market is a different one, but it is driven by the same underlying \
+demand driver, regulation or end-use industry as the blog topic.
+Place every report in tier 1, 2 or 3, except tier 0, used ONLY when the report's market has no real tie to the \
+blog topic — a report that merely shares a word with the topic is 0. Judge by what the report's market IS, not by \
+the words in its name.
+
+Return JSON in exactly this shape: {{"tiers": [{{"id": <number>, "tier": <0, 1, 2 or 3>}}]}}"""
 
 
 SEARCH_QUERIES_SYSTEM = """You are a research assistant helping a market-intelligence editor at Coherent Market \

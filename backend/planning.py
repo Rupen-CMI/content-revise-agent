@@ -171,6 +171,9 @@ class PlanInputs:
     secondary_pool: list[tuple[str, str]] = field(default_factory=list)   # (key, default section)
     sponsor_words: int = 0
     has_us_facts: bool = False
+    link_report: bool = True                 # False when no CMI report backs the article: it links to no report
+    report_mode: str = "cmi"                 # "cmi", "external" or "mixed" (see facts.merge_fact_sheets)
+    outside_audit: list[dict] = field(default_factory=list)   # {field, original, shown, source, url} per varied figure
 
 
 def build_inputs(
@@ -201,6 +204,7 @@ def build_inputs(
         terms=list(demand_result.get("terms") or []), longtails=longtails,
         secondary_pool=[(suffix, sec) for suffix, sec in _SECONDARY_KEYWORD_SUFFIXES],
         sponsor_words=sponsor_words, has_us_facts=us,
+        link_report=fs.get("report_mode", "cmi") != "external", report_mode=fs.get("report_mode", "cmi"),
     )
 
 
