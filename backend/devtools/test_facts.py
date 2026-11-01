@@ -76,7 +76,12 @@ check("good: headline figures are tagged as CMI report figures", all(fs[k]["sour
 check("good: segment kept", len(fs["segments"]) == 1 and len(fs["segments"][0]["items"]) == 3)
 check("good: regional leader kept with a historical flag (2018 is old)", fs["regions"]["leader"] and fs["regions"]["leader"]["historical"])
 check("good: statement ids are positional", fs["drivers"][0]["id"] == "fs.drivers.0" and fs["us"][0]["id"] == "fs.us.0")
-check("good: a 2018 restraint is flagged historical", fs["restraints"][0]["historical"])
+check("positive only: restraints are not part of the fact sheet at all", "restraints" not in fs)
+negative_driver = good_raw()
+negative_driver["drivers"] = [{"text": "Piracy hampers growth of the market.", "quote":
+                               "the increasing threat of piracy is expected to hamper the growth of the market, with 37% of software pirated in 2018"}]
+check("positive only: a driver worded as a setback is dropped",
+      facts.validate_fact_sheet(negative_driver, PAGE, MARKET, LOG, TODAY)["drivers"] == [])
 check("good: a statement without a year is not historical", not fs["drivers"][0]["historical"])
 
 check("players: only names that are in the page survive, legal suffixes dropped, duplicates collapsed",

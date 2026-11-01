@@ -235,6 +235,17 @@ class ClaimWebSearch:
         self._client.close()
 
 
+def bing_search(news_queries: list[str], web_queries: list[str], logger: logging.Logger = _null_logger) -> list[search.SearchHit]:
+    """Bing News queries then Bing web queries on one polite client (same gate and breaker as the market search). Used by
+    the U.S. data search, which wants news AND statistics pages. Returns raw, unfiltered hits."""
+    with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
+        bing = _Bing(client, logger)
+        out = bing.run(news_queries)
+        for q in web_queries:
+            out += bing.search(q, web=True)
+    return out
+
+
 def site_queries(core: str, group_ids: list[str]) -> list[str]:
     """Bing `site:` queries for sites that have no RSS feed of their own: the general business and deal
     press always, plus — per chosen industry group, best-first — that group's feed-less trade-press sites

@@ -15,6 +15,7 @@ import checks
 import facts
 import intent
 import llm
+import polarity
 import prompts
 from pipeline import _faq_tokens, _is_definition_question, _market_core
 from pipeline_log import section
@@ -27,9 +28,9 @@ _LONGTAIL_GLUE_WORDS = checks._LONGTAIL_GLUE_WORDS
 # Kind of search need -> the SOP section whose job answers it (the section its question may head).
 INTENT_SECTION = {
     "size": "report_context", "growth": "report_context",
-    "trends": "trends", "drivers": "trends", "challenges": "trends", "technology_impact": "trends",
+    "trends": "trends", "drivers": "trends", "technology_impact": "trends",
     "segments": "segmentation",
-    "region": "country_us", "us": "country_us",
+    "region": "report_context", "us": "country_us",
     "players": "key_players",
     "outlook": "conclusion", "opportunities": "conclusion",
 }
@@ -83,6 +84,10 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
             continue
         if _is_definition_question(q):
             logger.info(f"[demand] dropped question (a definition): {q!r}")
+            continue
+        negative = polarity.negative_hits(q, polarity.market_words(market_name))
+        if negative:
+            logger.info(f"[demand] dropped question (asks about downside {negative}): {q!r}")
             continue
         tokens = _content_words(q, market_name)
         twin = next((k for k in kept if tokens and (tokens & k["_tokens"])
@@ -245,7 +250,6 @@ def _answerable_by(intent_kind: str, fs: dict, evidence_groups: set[str]) -> boo
         "growth": has("forecast") or has("cagr"),
         "trends": "trends" in evidence_groups or has("drivers"),
         "drivers": has("drivers"),
-        "challenges": has("restraints"),
         "technology_impact": "trends" in evidence_groups,
         "segments": has("segments"),
         "region": bool(regions.get("leader") or regions.get("fastest")),

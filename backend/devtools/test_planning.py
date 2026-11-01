@@ -73,7 +73,7 @@ def make_inputs() -> planning.PlanInputs:
                   {"id": "fs.segments.1", "type": "By Application", "items": ["Data Aggregation", "Market Research"]}],
         terms=["cloud based", "browser extension", "data aggregation"],
         longtails=[{"id": "L1", "keyword": "cloud based widget services by region", "fact": "fs.regions.leader", "why": "x"},
-                   {"id": "L2", "keyword": "widget piracy risk", "fact": "fs.restraints.0", "why": "x"},
+                   {"id": "L2", "keyword": "widget piracy watch", "fact": "fs.restraints.0", "why": "x"},
                    {"id": "L3", "keyword": "widget us review", "fact": "fs.us.0", "why": "x"}],
         secondary_pool=list(planning._SECONDARY_KEYWORD_SUFFIXES), sponsor_words=84, has_us_facts=True,
     )
@@ -285,8 +285,8 @@ raw = good_plan()
 raw["sections"][5]["facts"] = []
 raw["sections"][4]["facts"] = []
 p = plan_of(raw)
-check("lengths: a section without facts is short; a U.S. section without U.S. or regional facts is short too",
-      S(p, "key_players")["length"] == "short" and S(p, "country_us")["length"] == "short")
+check("lengths: a section without facts is short; the U.S. section is handed every U.S. fact there is",
+      S(p, "key_players")["length"] == "short" and S(p, "country_us")["facts"] == ["fs.us.0"] and S(p, "country_us")["length"] == "normal")
 raw = good_plan()
 raw["sections"][4]["facts"] = ["fs.regions.leader"]
 inp = make_inputs()
@@ -298,7 +298,14 @@ raw = good_plan()
 raw["sections"][5]["facts"] = ["fs.players", "W1"]
 raw["sections"][1]["facts"] = ["fs.drivers.0", "fs.restraints.0"]
 check("lengths: ... normal once a news detail backs a company", S(plan_of(raw), "key_players")["length"] == "normal")
-check("lengths: a U.S. section with only regional facts and no U.S. facts is qualitative", S(plan_of(raw, inp), "country_us")["length"] == "qualitative")
+inp = make_inputs()
+del inp.items["fs.us.0"]
+inp.longtails = [lt for lt in inp.longtails if lt["fact"] != "fs.us.0"]
+check("lengths: a U.S. section with no U.S. fact at all is flagged for the editor, never filled with another region",
+      S(plan_of(raw, inp), "country_us")["length"] == "us_missing")
+check("facts: a regional fact cannot sit in the U.S. section", "country_us" not in planning._FACT_SECTIONS["regions"])
+check("facts: general trend evidence cannot sit in the U.S. section",
+      "country_us" not in planning._EVIDENCE_TAG_SECTIONS["trends"] and "country_us" not in planning._EVIDENCE_TAG_SECTIONS["context"])
 
 # ------------------------------------------------------------------ keywords
 raw = good_plan()
@@ -332,7 +339,7 @@ inp3 = make_inputs()
 inp3.longtails = [
     {"id": "L9", "keyword": "top companies widgets market", "fact": "fs.players", "why": "x"},  # every word sits in Q5
     {"id": "L1", "keyword": "cloud based widget services by region", "fact": "fs.regions.leader", "why": "x"},
-    {"id": "L2", "keyword": "widget piracy risk", "fact": "fs.restraints.0", "why": "x"},
+    {"id": "L2", "keyword": "widget piracy watch", "fact": "fs.restraints.0", "why": "x"},
 ]
 raw = good_plan()
 for s in raw["sections"]:

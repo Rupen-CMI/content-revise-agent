@@ -14,6 +14,7 @@ import feeds
 import freshness
 import intent
 import llm
+import polarity
 import prompts
 import reports
 import search
@@ -150,7 +151,8 @@ def _format_hits(hits: list[search.SearchHit]) -> str:
     for i, h in enumerate(hits, 1):
         tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
         body = h.excerpt or h.snippet[:300]
-        lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}\n      {body}")
+        us = " | found by the U.S. search" if h.scope == "us" else ""
+        lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}{us}\n      {body}")
     return "\n".join(lines) or "(no results)"
 
 
@@ -1306,6 +1308,7 @@ def run_select(
     _normalize_selection_tags(selection, hits, logger)
     _strip_players_tag(selection, logger)
     _drop_stale_facts(selection, logger)
+    _drop_negative_facts(selection, logger, report.name)
     _drop_market_sizing_facts(selection, logger, headline_figures)
     _verify_selection_figures(selection, hits, logger)
     _normalize_claim_backing(selection, claims, claim_flat, logger)
@@ -1579,6 +1582,25 @@ def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
         ]
         if stale_detail:
             logger.info(f"[select] blanked the detail of {e.get('id')}: it states a stale date {stale_detail}")
+            e["detail"] = ""
+        kept.append(e)
+    selection["evidence"] = kept
+
+
+def _drop_negative_facts(selection: dict, logger: logging.Logger, market_name: str = "") -> None:
+    """Positive-only backstop: SELECT is told to reject a setback (prompts.SELECT_USER, test 4); a selected fact or detail
+    that still reads as one is removed, since the articles carry only favourable developments. A negative detail is
+    blanked when the fact itself is fine."""
+    ignore = polarity.market_words(market_name)
+    kept = []
+    for e in selection.get("evidence") or []:
+        hits = polarity.negative_hits(str(e.get("fact", "")), ignore)
+        if hits:
+            logger.info(f"[select] dropped {e.get('id')}: its fact reads as a setback {hits}")
+            continue
+        detail_hits = polarity.negative_hits(str(e.get("detail", "")), ignore)
+        if detail_hits:
+            logger.info(f"[select] blanked the detail of {e.get('id')}: it reads as a setback {detail_hits}")
             e["detail"] = ""
         kept.append(e)
     selection["evidence"] = kept

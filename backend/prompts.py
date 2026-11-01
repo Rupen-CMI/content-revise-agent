@@ -291,7 +291,7 @@ year of the figure, including an earlier one, and for any other firm's own estim
 the only source of market sizing in the article, and a second figure for the same market would contradict it.
 4. Actually usable in the final draft: ask yourself "would this specific fact, cited by name, strengthen the Market \
 Trends, U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
-would not actually improve a single sentence of that article, do not select it just because it is on-topic.
+would not actually improve a single sentence of that article, do not select it just because it is on-topic. The article carries only favourable developments: reject a result whose finding is a restraint, challenge, risk, loss, decline, penalty, shutdown, dispute or any other setback for the market or its companies, however concrete it is.
 Reject listicles, product promotions, how-to guides, and anything about a different market. It is fine to select fewer \
 than {max_selected}, or none, if few results pass all four tests — do not pad with weak, generic, or off-topic results to reach a \
 higher count; a shorter list of results that each genuinely earn their place beats a longer list padded with filler. \
@@ -306,8 +306,10 @@ page with no verifiable publish date, so nothing about it is known to be current
 about what is CURRENTLY happening in this market, so its source must be DATED — an UNDATED result must never include \
 "trends" in its use_for, no matter how relevant it reads; any DATED result is eligible for "trends" on date alone. An \
 UNDATED result is selected only if it states a concrete, citable fact about THIS market that passes all four tests \
-above (never a definition or explanation), and then only with use_for ["context"]. When in doubt about an UNDATED \
-result, leave it out.
+above (never a definition or explanation), and then only with use_for ["context"], or ["us"] when its finding is \
+specifically about the U.S. market. When in doubt about an UNDATED result, leave it out. The article's U.S. paragraph \
+is written from U.S. facts alone and has no other source: when results marked "found by the U.S. search" state a \
+real U.S. finding, select the best of them, up to three, with use_for ["us"].
 
 use_for is a LIST: one fact can support more than one part of the article, so list at most TWO sections it genuinely supports, \
 most important first (the FIRST tag is the one section the writer will build it into), and nothing it does not truly earn. For example, a named company's acquisition is a "players" \
@@ -444,10 +446,10 @@ CMI REPORT CONTENT (use it to pick questions this market's report can really ans
 ----- END CMI REPORT -----
 
 The article already has these sections, each with a fixed job. Each job is the answer to one KIND of question that people search for about a market:
-- report_context: the market's overall size and where it is heading (its growth outlook over the forecast period)
-- trends: the forces behind the market (what drives its growth, holds it back or is reshaping it)
+- report_context: the market's overall size, which region leads it, and where it is heading (its growth outlook over the forecast period)
+- trends: the forces behind the market (what drives its growth or is reshaping it)
 - segmentation: how the market is split and which parts of it matter
-- country_us: which region or country leads the market, and the U.S. in particular
+- country_us: the U.S. market only
 - key_players: who the leading companies are
 
 Write up to {subheading_count} questions, each for a DIFFERENT one of those sections. That section's heading becomes the question and its opening 1-3 lines answer it directly, so each question must be the plain, common search that its section's job answers.
@@ -1113,8 +1115,8 @@ FIELDS
 - regions: "leader" is the region the page says holds the largest share or dominates; "fastest" is the region the page says grows fastest. Each gives the region "name", the "basis" the page gives for it (a year, a share, a reason) and the "quote". Either is null when the page does not say.
 - us: statements the page makes about the United States specifically (not about North America or the world).
 - drivers: what the page says pushes the market's growth, one entry per distinct driver.
-- restraints: what the page says holds the market back, one entry per distinct restraint.
 - opportunities: what the page presents as openings for the market, one entry per distinct opportunity.
+Record only favourable facts. Skip anything the page presents as a restraint, challenge, risk, decline or setback, and word every entry by what helps the market.
 - players: the companies the page names as key or leading players in the market, each written as the page writes the name but without a legal suffix such as Inc., Ltd or LLC.
 For us, drivers, restraints and opportunities each entry has "text" (one plain sentence in your own words, carrying only what the quote says, with whoever acts as its subject and an active verb) and "quote".
 
@@ -1134,7 +1136,6 @@ Return JSON in exactly this shape:
  "regions": {{"leader": {{"name": "<region>", "basis": "<basis>", "quote": "<sentence>"}} or null, "fastest": {{"name": "<region>", "basis": "<basis>", "quote": "<sentence>"}} or null}},
  "us": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "drivers": [{{"text": "<statement>", "quote": "<sentence>"}}],
- "restraints": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "opportunities": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "players": ["<company>", "..."]}}"""
 
@@ -1187,7 +1188,6 @@ Each kind of question below is one need that people have about a market. Go thro
 - growth: how fast the market is growing and how large it is expected to become
 - trends: what is changing in the market right now
 - drivers: what is pushing the market to grow
-- challenges: what holds the market back or makes it hard
 - technology_impact: how a new technology is changing the market
 - segments: how the market is divided and which parts of it matter
 - region: which part of the world leads the market or is growing fastest
@@ -1286,7 +1286,7 @@ An opening from the guest article's subject, a short transition into the market,
 2. trends: what is changing the market, as three distinct trends.
 3. segmentation: how the market is divided.
 4. subsegment: two sub-segments from different splits, each looked at in detail.
-5. country_us: the leading region, and the United States where facts allow.
+5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context.
 6. key_players: who leads the market.
 7. conclusion: what it all means and where the market is heading. It adds nothing new: it pulls together points already made, so it gets no facts of its own (an opportunity fact from the report is the only exception).
 

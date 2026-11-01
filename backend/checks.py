@@ -1882,6 +1882,19 @@ def run_checks_v2(
                                not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
+    import content_rules
+    us_problems = content_rules.us_only_problems(sections)
+    results.append(CheckResult(
+        "U.S. section covers the United States only (no other region or country)",
+        not us_problems, "; ".join(us_problems[:4]) if us_problems else ""))
+    negative = content_rules.negative_wording_problems(sections, faq, market_name)
+    results.append(CheckResult(
+        "Positive only: no restraint, challenge, risk or setback wording",
+        not negative, "; ".join(negative[:4]) + (f" (+{len(negative) - 4} more)" if len(negative) > 4 else "") if negative else ""))
+    repeated = content_rules.repeated_point_problems(sections, market_name=market_name)
+    results.append(CheckResult(
+        "No point is made twice across sections",
+        not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
 
     # ---- kept: CMI analyst opinion voice, 1-2 labelled statements
     opinions = count_cmi_opinions(paragraphs)

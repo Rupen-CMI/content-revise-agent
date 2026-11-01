@@ -28,7 +28,6 @@ _INTENT_FILTERS = {
     "growth": ({"forecast", "cagr"}, set()),
     "trends": ({"drivers"}, {"trends"}),
     "drivers": ({"drivers"}, set()),
-    "challenges": ({"restraints"}, set()),
     "technology_impact": (set(), {"trends"}),
     "segments": ({"segments"}, set()),
     "region": ({"regions"}, {"us"}),

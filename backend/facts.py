@@ -1,7 +1,7 @@
 """Market-first chain, stage 1: the FACT SHEET.
 
 One LLM call reads the confirmed CMI report page into structured facts (size, forecast, CAGR, segments, regions,
-U.S., drivers, restraints, opportunities), each with the sentence it came from. Code then checks every entry against
+U.S., drivers, opportunities), each with the sentence it came from. Code then checks every entry against
 the page text, so nothing the page does not say can survive. A field the page is silent on is left null.
 
 Figure sourcing (the plan's "report, then evidence, then nothing"): the report's own figures are used first. When the
@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 import feeds
 import freshness
 import llm
+import polarity
 import prompts
 import reports
 import search
@@ -25,7 +26,9 @@ from pipeline import _market_core, _report_text
 from pipeline_log import section
 
 HEADLINE_KEYS = ("size", "forecast", "cagr")
-STATEMENT_KEYS = ("us", "drivers", "restraints", "opportunities")
+# Only upside is recorded: the articles carry positive trends and evidence, so restraints are not read at all and a
+# statement whose wording is negative is dropped (see polarity.py).
+STATEMENT_KEYS = ("us", "drivers", "opportunities")
 _MAX_STATEMENTS = 6               # per statement field: a few strong entries, not everything the page mentions
 _MIN_QUOTE_WORDS = 5
 _FIGURE_MAX_AGE_YEARS = 2         # an outside figure must be for a year within this many years of today
@@ -162,7 +165,7 @@ def _empty_fact_sheet() -> dict:
     return {
         "size": None, "forecast": None, "cagr": None, "segments": [],
         "regions": {"leader": None, "fastest": None},
-        "us": [], "drivers": [], "restraints": [], "opportunities": [],
+        "us": [], "drivers": [], "opportunities": [],
         "players": [], "gaps": list(HEADLINE_KEYS), "figure_source": None,
     }
 
@@ -268,7 +271,7 @@ def _headline_entry(
 
 
 def _statement_list(
-    raw, key: str, source_norm: str, today: date, logger: logging.Logger,
+    raw, key: str, source_norm: str, today: date, logger: logging.Logger, ignore=frozenset(),
 ) -> list[dict]:
     out: list[dict] = []
     for item in raw if isinstance(raw, list) else []:
@@ -283,6 +286,10 @@ def _statement_list(
         stray = sorted(n for n in _numbers(text) if n not in _numbers(quote))
         if stray:
             logger.info(f"[facts] {key} entry dropped: {stray} are not in its quote: {text[:90]!r}")
+            continue
+        negative = polarity.negative_hits(text, ignore)
+        if negative:
+            logger.info(f"[facts] {key} entry dropped: negative wording {negative}: {text[:90]!r}")
             continue
         out.append({"id": f"fs.{key}.{len(out)}", "text": text, "quote": quote, "historical": _is_historical(quote, today)})
         if len(out) >= _MAX_STATEMENTS:
@@ -337,7 +344,7 @@ def validate_fact_sheet(
     regions = raw.get("regions") if isinstance(raw.get("regions"), dict) else {}
     fs["regions"] = {which: _region_entry(regions.get(which), which, source_norm, today, logger) for which in ("leader", "fastest")}
     for key in STATEMENT_KEYS:
-        fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger)
+        fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger, polarity.market_words(market_name))
     fs["players"] = _players(raw.get("players"), source_norm, logger)
     fs["gaps"] = headline_gaps(fs)
     return fs

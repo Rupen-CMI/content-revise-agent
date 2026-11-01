@@ -77,6 +77,7 @@ import reports
 import search
 import sopcheck
 import telemetry
+import us_search
 import writer
 from docx_io import OUTPUT_DIR, Link, Paragraph, SourceArticle, read_docx
 from llm import LLMError

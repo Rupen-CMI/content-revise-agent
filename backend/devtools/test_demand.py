@@ -44,7 +44,7 @@ out = demand.normalize_questions(GOOD, MARKET, LOG)
 check("questions: good ones all kept", len(out) == 5, str([x["question"] for x in out]))
 check("questions: ordered by kind (size before growth) with ids Q1..Qn",
       [x["intent"] for x in out] == ["size", "growth", "drivers", "region", "players"] and out[0]["id"] == "Q1" and out[4]["id"] == "Q5")
-check("questions: each carries the section its kind belongs to", out[0]["section"] == "report_context" and out[3]["section"] == "country_us" and out[4]["section"] == "key_players")
+check("questions: each carries the section its kind belongs to", out[0]["section"] == "report_context" and out[3]["section"] == "report_context" and out[4]["section"] == "key_players")
 
 check("questions: an unknown kind is dropped", demand.normalize_questions([q("pricing", "How much does the Zzz Widget Services Market cost?")], MARKET, LOG) == [])
 check("questions: a question that does not name the market is dropped",

@@ -933,7 +933,7 @@ function renderFactSheet(fs) {
   for (const it of fs.us || []) {
     out.push(`<li>U.S.: <strong>${escapeHtml(it.text)}</strong>${hist(it)} <span class="option-caption">source: CMI report</span></li>`);
   }
-  const extra = statementList("Drivers", fs.drivers) + statementList("Restraints", fs.restraints)
+  const extra = statementList("Drivers", fs.drivers)
     + statementList("Opportunities", fs.opportunities);
   out.push(extra);
   if ((fs.players || []).length) {
@@ -1013,7 +1013,7 @@ function renderStep2Panel() {
 
   const msqs = (state.run.demand && state.run.demand.questions) || [];
   document.getElementById("step2-msqs-block").hidden = msqs.length === 0;
-  const answerableLabel = { size: "size", growth: "growth", trends: "trend", drivers: "drivers", challenges: "challenges",
+  const answerableLabel = { size: "size", growth: "growth", trends: "trend", drivers: "drivers",
     technology_impact: "technology", segments: "segments", region: "region", us: "U.S.", players: "players",
     outlook: "outlook", opportunities: "opportunities" };
   document.getElementById("step2-msqs").innerHTML = msqs.map((q) => {
