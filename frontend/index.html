@@ -159,12 +159,12 @@
       <div class="scroll-box article-scroll" id="article-body"></div>
 
       <section class="sidebar-section" id="sponsor-section" hidden>
-        <h2 class="section-title">Sponsor paragraph</h2>
-        <p class="field-hint">Paragraphs with an outside link — pick the one with the paid backlink:</p>
-        <p class="field-hint" id="sponsor-choice-hint" style="color:var(--danger)" hidden>Select which paragraph is the paid backlink before starting — more than one paragraph has an outside link, so this can't be guessed for you.</p>
+        <h2 class="section-title">Client paragraphs</h2>
+        <p class="field-hint">Outside links in this article, grouped by the client they point to:</p>
+        <p class="field-hint" id="sponsor-choice-hint" style="color:var(--danger)" hidden>Tick every client whose backlink the post must carry and choose one paragraph for each client — outside links can be a client's, an author's or a plain citation, so this can't be guessed for you.</p>
         <div class="radio-list" id="sponsor-candidates"></div>
         <details class="preview-box">
-          <summary><i data-lucide="chevron-right"></i> Preview selected paragraph</summary>
+          <summary><i data-lucide="chevron-right"></i> Preview selected paragraphs</summary>
           <p id="sponsor-preview-text"></p>
         </details>
         <p class="locked-note" id="sponsor-locked-note" hidden><i data-lucide="lock"></i> Locked while a run is in progress.</p>
@@ -309,6 +309,13 @@
           <p class="warning-box-title"><i data-lucide="alert-triangle"></i> <span>Please verify before continuing</span></p>
           <div class="warning-box-list" id="step2-warnings-list"></div>
         </div>
+        <div class="content-card" id="step2-clients-card" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Client check</span>
+            <p class="field-hint">What each client's own website says it offers. It is used only to keep the sentences around the link accurate: the post never names or describes the client, and the link is its only mention.</p>
+            <div id="step2-clients-list"></div>
+          </div>
+        </div>
         <div class="content-card">
           <div class="kv-block kv-block-last">
             <span class="kv-label">Confirmed report</span>
@@ -436,6 +443,13 @@
         <div class="kv-block">
           <span class="kv-label">New title</span>
           <p class="kv-value" id="step4-title"></p>
+        </div>
+        <div class="content-card" id="step4-clients-card" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Client paragraph</span>
+            <p class="field-hint">The post never names or describes the client: the link is its only mention, placed in the opening's own sentences. The original paragraph is here to compare.</p>
+            <div id="step4-clients-list"></div>
+          </div>
         </div>
         <div class="content-card article-render" id="step4-sections"></div>
         <div class="btn-row">

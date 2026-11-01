@@ -1732,29 +1732,48 @@ def run_checks_v2(
     # the trend-shape check reads the raw ones
     raw_sections = sections
     sections = subheads.strip_subheads(sections)
+    import clients as clients_mod
+    import config
+    client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
+    token_sections = sections
+    if client_list:
+        # the writer restated the client paragraph and wrote each link as a token: every check below reads the linked words as plain
+        # text, and only the client-link checks read the tokens
+        sections = clients_mod.plain_sections(sections)
+        sponsor_text = clients_mod.source_text(client_list)         # its figures may appear in the restatement
+        sponsor_brand_terms = []
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
     market_name = getattr(inp, "market_name", "") or report_name
     results: list[CheckResult] = []
 
-    # ---- kept: the retained sponsor paragraph, placed once, unaltered, in the intro slot
-    token_count = full.count(SPONSOR_TOKEN)
-    placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
-    non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
-    leaked = placed != 1 and non_token_overlap >= 6
-    results.append(CheckResult(
-        "Retained backlink paragraph placed once, unaltered",
-        token_count == 1,
-        (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
-         "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
-    ))
-    intro_paragraphs = sections[0]["paragraphs"] if sections else []
-    in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro_paragraphs)
-    results.append(CheckResult(
-        "Retained paragraph sits in the intro, not mid-article",
-        in_intro_slot,
-        "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section",
-    ))
+    # ---- the client paragraph: restated by the writer, with every client link kept once, in the opening
+    if client_list:
+        link_issues = clients_mod.link_problems(token_sections, client_list)
+        results.append(CheckResult("Client backlinks: every link present once, with its own words, in the opening",
+                                   not link_issues, "; ".join(link_issues)))
+        naming_issues = clients_mod.naming_problems(token_sections, client_list)
+        results.append(CheckResult("Client not named or promoted: the backlink is its only mention",
+                                   not naming_issues, "; ".join(naming_issues)))
+    else:
+        # ---- kept: the retained sponsor paragraph, placed once, unaltered, in the intro slot
+        token_count = full.count(SPONSOR_TOKEN)
+        placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
+        non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
+        leaked = placed != 1 and non_token_overlap >= 6
+        results.append(CheckResult(
+            "Retained backlink paragraph placed once, unaltered",
+            token_count == 1,
+            (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
+             "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
+        ))
+        intro_paragraphs = sections[0]["paragraphs"] if sections else []
+        in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro_paragraphs)
+        results.append(CheckResult(
+            "Retained paragraph sits in the intro, not mid-article",
+            in_intro_slot,
+            "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section",
+        ))
 
 
     # ---- an outside report stood in for CMI's: the editor must verify every value before going on
@@ -1980,6 +1999,9 @@ def run_checks_v2(
 
     # ---- kept: the guest brand is never mentioned outside the retained paragraph
     non_sponsor = "\n".join(p for p in paragraphs if p.replace(SPONSOR_TOKEN, " ").strip()).lower()
+    if client_list:
+        # the client is named nowhere (the "Client not named" check reads the whole post, the link's words aside)
+        sponsor_brand_terms = []
     brand_leaks = [t for t in sponsor_brand_terms if t and t.lower() in non_sponsor]
     results.append(CheckResult(
         "Guest brand not mentioned outside the retained paragraph",

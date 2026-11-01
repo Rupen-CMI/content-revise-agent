@@ -35,6 +35,9 @@ class Paragraph:
     index: int
     text: str
     links: list[Link] = field(default_factory=list)
+    # The run's client links by id ("L1" -> Link), set on the run's sponsor paragraph when the writer restates the client
+    # paragraph: the [[CLIENT_LINK:L1|words]] tokens in a draft resolve to their URLs through it (pipeline.expand_segments).
+    client_links: dict = field(default_factory=dict)
 
 
 @dataclass

@@ -62,6 +62,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import checks
+import clients as clients_mod
 import config
 import demand
 import external_reports
@@ -310,6 +311,8 @@ class RunState:
     plan_inputs: planning.PlanInputs | None = None   # the planner's world, built at the end of Step 3
     report_mode: str = "cmi"                # "cmi", "external" or "mixed": which reports the fact sheet was read from
     warnings: list[str] = field(default_factory=list)   # shown to the editor at the top of Step 2
+    client_notes: list[str] = field(default_factory=list)   # what Step 1 left out or merged when it grouped the clients
+    clients: list = field(default_factory=list)         # clients.Client: who the paid backlinks belong to (Step 1) and what each offers (Step 2)
     # ---- Step 1 -> Step 2 hand-off, kept so the browser can rehydrate after a page reload:
     # the competitor-report candidates /step2/find_reports found for the picked markets, the
     # markets themselves, and what the editor then confirmed at /step2 (CMI report ids and
@@ -628,6 +631,11 @@ def _report_dict(r: reports.Report) -> dict:
     }
 
 
+def _client_dicts(run: RunState) -> list[dict]:
+    """The run's clients for the UI: each with its links, what its own page says it offers, and the notes the editor should read."""
+    return [{**c.to_dict(), "notes": clients_mod.brief_notes(c)} for c in run.clients]
+
+
 def _segment_dicts(text: str, sponsor: Paragraph, report_url: str | None) -> list[dict]:
     """Expand a written paragraph's placeholders into the same (text, url) segments
     ``RevampResult.segments()`` uses for the .docx — the JSON UI renders real hyperlinks too,
@@ -824,6 +832,11 @@ class Step1Request(BaseModel):
     filename: str = "upload.docx"
     article: ArticleIn
     sponsor_index: int | None = None
+    # The paragraphs carrying the clients' paid backlinks, one per client (several clients in one post are all kept).
+    # When sent, it replaces sponsor_index.
+    sponsor_indexes: list[int] = Field(default_factory=list)
+    # Which clients the editor ticked (their domains); a paragraph holding links of several clients then keeps only these.
+    client_hosts: list[str] = Field(default_factory=list)
 
 
 class Step2Request(BaseModel):
@@ -964,17 +977,32 @@ def step1(req: Step1Request) -> dict:
     """Step 1: identify the market. Orient (LLM) + catalog match only — no web search yet, since
     the human hasn't confirmed a market to search for. Fast: no DDGS calls on this request."""
     article = _rebuild_article(req.article)
-    if req.sponsor_index is None:
+    indexes = list(req.sponsor_indexes) or ([req.sponsor_index] if req.sponsor_index is not None else [])
+    if not indexes:
         raise HTTPException(400, "No sponsor paragraph selected.")
-    sponsor = next((p for p in article.paragraphs if p.index == req.sponsor_index), None)
-    if sponsor is None:
-        raise HTTPException(400, "Selected sponsor paragraph was not found in the article.")
-    if not any(li.is_external for li in sponsor.links):
-        raise HTTPException(400, "Selected paragraph has no outside link — pick the one with the paid backlink.")
+    try:
+        client_list, client_notes = clients_mod.build_clients(article, indexes, hosts=req.client_hosts)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not config.CLIENT_REWRITE and len(client_list) > 1:
+        client_notes.append("The word-for-word placement carries one client only: the first client is kept.")
+        client_list = client_list[:1]
+    first = client_list[0].paragraph
+    # The run's sponsor paragraph is the first client's. Its links also hold every other client's link, so everything that keeps
+    # the clients' own sites out of the evidence (search hosts, brand terms) covers all of them without further change.
+    sponsor = Paragraph(index=first.index, text=first.text,
+                        links=list(first.links) + [Link(anchor=l["anchor"], url=l["url"]) for c in client_list[1:] for l in c.links])
+    if config.CLIENT_REWRITE:
+        clients_mod.attach(sponsor, client_list)
 
     logger, log_path = new_run_logger()
     logger.info(f"ARTICLE TITLE: {article.title}")
     logger.info(f"SPONSOR PARAGRAPH: {sponsor.text}")
+    for c in client_list:
+        logger.info(f"[client] {c.id} {c.host}: paragraph {c.paragraph.index}, links "
+                    + ", ".join(f'{l["id"]} {l["anchor"]!r}' for l in c.links))
+    for note in client_notes:
+        logger.info(f"[client] {note}")
     started = time.time()
     title = article.title or Path(req.filename).name or "upload.docx"
     try:
@@ -994,6 +1022,7 @@ def step1(req: Step1Request) -> dict:
         filename=Path(req.filename).name or "upload.docx",
         article=article, sponsor=sponsor, orient=orient,
         candidates=candidates, logger=logger, log_path=log_path, claim_future=claim_future,
+        clients=client_list, client_notes=list(client_notes),
     )
     logger.info(f"STEP 1 DONE — run token {token[:8]}…, {len(candidates)} candidates")
     _emit_progress(logger, token, title, "step1", started)
@@ -1088,7 +1117,7 @@ def _step2_v2(
     (facts.fill_headline_from_web)."""
     run.logger.info("STEP 2 (market-first chain)")
     timer = StageTimer(run.logger, "Step 2")
-    warnings: list[str] = []
+    warnings: list[str] = list(run.client_notes)
     hosts = [search.urlparse(l.url).netloc.lower().removeprefix("www.") for l in run.sponsor.links if l.is_external]
     markets = _clean_markets(markets)      # one market at most, trimmed (R1)
     umarkets = {(k or "").strip(): v for k, v in (url_markets or {}).items() if v}
@@ -1199,6 +1228,8 @@ def _step2_v2(
                 return result
 
             demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
+            clients_f = (prep.submit(timed, "Client check", clients_mod.run_briefs, run.clients, report.name, run.logger)
+                         if run.clients and config.CLIENT_REWRITE else None)
             publisher_f = None if early else prep.submit(
                 timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
             topup = bool(players or segment_terms)
@@ -1239,6 +1270,10 @@ def _step2_v2(
                     )
                     hits = us_search.merge_hits(hits, us_f.result())
             demand_result, publisher_result = demand_f.result(), publisher_f.result()
+        if clients_f is not None:
+            clients_f.result()
+            for c in run.clients:
+                warnings += [f"{c.host}: {n}" for n in clients_mod.brief_notes(c)]
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)
     run.report, run.hits = report, hits
@@ -1256,6 +1291,7 @@ def _step2_v2(
         "publisher": publisher_result,
         "timings": run.timings,
         "report_mode": mode, "warnings": warnings,
+        "clients": _client_dicts(run),
     }
 
 
@@ -1465,7 +1501,8 @@ def _step3_v2(run: RunState) -> dict:
         run.demand = {**run.demand, "questions": questions}
         run.plan_inputs = planning.build_inputs(
             run.report.name, run.fact_sheet, evidence_items, run.demand, run.publisher,
-            pipeline._word_count(run.sponsor.text))
+            clients_mod.paragraph_words(run.clients) if run.clients and config.CLIENT_REWRITE else pipeline._word_count(run.sponsor.text),
+            clients=run.clients if config.CLIENT_REWRITE else ())
         # The market-first chain's long-tail phrases come from Step 2's search demand (run.demand's
         # long_tail records), and the planner shards them onto sections via plan_inputs; expose the
         # same list as run.longtails (the old chain sets it in Step 2) so finalize's usage check, the
@@ -1529,7 +1566,8 @@ def _step4_chain(run: RunState) -> dict:
     run.title, run.sections, run.evidence_citations, run.faq = title, sections, evidence_citations, faq
     run.logger.info(f"STEP 4 DONE — draft {title!r} ({len(sections)} sections, {len(faq)} MSQ FAQ entries"
                     + (f"; plan repairs: {'; '.join(plan.get('repairs'))}" if plan.get("repairs") else "") + ")")
-    return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url), "faq": faq}
+    return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url), "faq": faq,
+            "clients": _client_dicts(run)}
 
 
 @app.post("/step4")
@@ -1571,6 +1609,8 @@ def get_run(run_token: str) -> dict:
         "filename": run.filename,
         "article": _article_dict(run.article),
         "sponsor_index": run.sponsor.index,
+        "sponsor_indexes": [c.paragraph.index for c in run.clients] or [run.sponsor.index],
+        "clients": _client_dicts(run),
         "orient": run.orient,
         "candidates": [_candidate_dict(c) for c in run.candidates],
         "hits": [_hit_dict(h) for h in run.hits] if run.hits is not None else [],
@@ -1719,6 +1759,7 @@ def finalize(req: FinalizeRequest) -> dict:
             "evidence_citations": citations_out,
             "output_filename": result.output_path.name if result.output_path else None,
             "faq": result.faq,
+            "clients": _client_dicts(run),
         }
     }
 
@@ -1741,7 +1782,10 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
     if not raw:
         raise HTTPException(400, "Uploaded file is empty.")
     try:
-        parsed = recheck_mod.parse(raw, run.title, run.sections, run.faq, run.sponsor.text)
+        restated = bool(run.clients) and config.CLIENT_REWRITE
+        parsed = recheck_mod.parse(
+            raw, run.title, run.sections, run.faq, "" if restated else run.sponsor.text,
+            client_urls={l["url"]: l["id"] for c in run.clients for l in c.links} if restated else None)
     except Exception as e:
         run.logger.error(f"recheck could not read {name}: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(400, "This file could not be read as a Word document (.docx). "

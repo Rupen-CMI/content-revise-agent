@@ -91,12 +91,21 @@ class RevampResult:
         return expand_segments(paragraph, self.sponsor, self.report.url)
 
 
-def _cmi_link_segments(text: str, report_url: str | None) -> list[Segment]:
+_LINK_TOKEN_RE = re.compile(prompts.CMI_LINK_PATTERN + "|" + prompts.CLIENT_LINK_PATTERN)
+
+
+def _cmi_link_segments(text: str, report_url: str | None, client_links: dict | None = None) -> list[Segment]:
+    """(text, url) segments: [[CMI_LINK:name]] becomes the report URL and [[CLIENT_LINK:Ln|words]] its client's URL. A client
+    link whose id is unknown is left as its plain words, never as a broken link."""
     out: list[Segment] = []
     pos = 0
-    for m in re.finditer(prompts.CMI_LINK_PATTERN, text):
+    for m in _LINK_TOKEN_RE.finditer(text):
         out.append((text[pos:m.start()], None))
-        out.append((m.group(1), report_url))
+        if m.group(1) is not None:
+            out.append((m.group(1), report_url))
+        else:
+            link = (client_links or {}).get(m.group(2))
+            out.append((m.group(3), link.url if link else None))
         pos = m.end()
     out.append((text[pos:], None))
     return [s for s in out if s[0]]
@@ -110,10 +119,11 @@ def expand_segments(paragraph: str, sponsor: Paragraph, report_url: str | None) 
     if paragraph.strip() == prompts.SPONSOR_TOKEN:
         return sponsor_segments(sponsor)
     out: list[Segment] = []
+    client_links = getattr(sponsor, "client_links", None) or {}
     parts = paragraph.split(prompts.SPONSOR_TOKEN)
     for i, part in enumerate(parts):
         if part:
-            out.extend(_cmi_link_segments(part, report_url))
+            out.extend(_cmi_link_segments(part, report_url, client_links))
         if i < len(parts) - 1:
             out.extend(sponsor_segments(sponsor))
     return [s for s in out if s[0]]

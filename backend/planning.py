@@ -174,10 +174,12 @@ class PlanInputs:
     link_report: bool = True                 # False when no CMI report backs the article: it links to no report
     report_mode: str = "cmi"                 # "cmi", "external" or "mixed" (see facts.merge_fact_sheets)
     outside_audit: list[dict] = field(default_factory=list)   # {field, original, shown, source, url} per varied figure
+    clients: list = field(default_factory=list)               # clients.Client: the writer restates each client's paragraph
 
 
 def build_inputs(
     market_name: str, fs: dict, evidence_items: list[dict], demand_result: dict, publisher_result: dict, sponsor_words: int,
+    clients: list | tuple = (),
 ) -> PlanInputs:
     """Assemble the planner's world: every fact the plan may cite (report facts and selected news evidence) with the
     sections it may sit in, the answerable questions, the keyword pools and the guest points."""
@@ -205,6 +207,7 @@ def build_inputs(
         secondary_pool=_secondary_pool(demand_result),
         sponsor_words=sponsor_words, has_us_facts=us,
         link_report=fs.get("report_mode", "cmi") != "external", report_mode=fs.get("report_mode", "cmi"),
+        outside_audit=list(fs.get("variance") or []), clients=list(clients or []),
     )
 
 

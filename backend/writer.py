@@ -18,6 +18,8 @@ from datetime import date
 
 import config
 import llm
+import clients
+import subheads
 import planning
 import prompts
 from docx_io import Paragraph
@@ -147,38 +149,68 @@ def build_write_prompt(plan: dict, inp: planning.PlanInputs, sponsor: Paragraph,
     points = {p["id"]: p["text"] for p in inp.points}
     blocks = [_section_block(i, s, inp, points) for i, s in enumerate(plan["sections"], 1)]
     mode = sponsor_mode(sponsor.text)
+    linked = getattr(inp, "link_report", True)
     total = plan["budgets"]["target"]
     # The transition band is 5-10% of the body (checks.block_share_problems). A transition that slides
     # under the band floor brings the whole draft down with it, so the prompt carries a floor in words:
     # about three quarters of the planned transition budget, and never below 65.
     transition_words = int(plan["transition"]["words"])
     transition_floor = max(65, int(transition_words * 0.75))
-    if mode == "phrase":
+    named = "names the market through the report link" if linked else "names the market in plain words"
+    lead = "the lead-in paragraph with the report link" if linked else "the lead-in paragraph"
+    client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
+    if client_list:
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and names the market through the report link, inside its first {LINK_WORDS} words; "
+            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
+            "then one paragraph, of the opening's own explanation, that carries every client link (see THE CLIENT LINKS); then, only "
+            "if the budget has room, one short closing paragraph that leads towards the market."
+        )
+        intro_shape = f'["<{lead}>", "<the paragraph that carries the [[CLIENT_LINK:...]] link(s), without naming any client>", "<an optional short closing paragraph>"]'
+    elif mode == "phrase":
+        opening_shape = (
+            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
             "then a second paragraph of your own in which the placeholder sits INSIDE one of your sentences, with your own words before and after it "
             "(the retained text is a short linked phrase, not a paragraph, so it never stands alone on a line). Nothing else is needed."
         )
         # The output template must MATCH that shape: showing the placeholder as a paragraph of its own here made the
         # model return exactly that, which breaks the phrase-mode placement rule.
-        intro_shape = f'["<the lead-in paragraph with the report link>", "<a paragraph of your own that embeds {prompts.SPONSOR_TOKEN} inside one of its sentences>"]'
+        intro_shape = f'["<{lead}>", "<a paragraph of your own that embeds {prompts.SPONSOR_TOKEN} inside one of its sentences>"]'
     else:
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and names the market through the report link, inside its first {LINK_WORDS} words; "
+            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
             "then the retained paragraph's slot; then, only if the budget has room, one short closing paragraph."
         )
-        intro_shape = f'["<the lead-in paragraph with the report link>", "{prompts.SPONSOR_TOKEN}", "<an optional short closing paragraph>"]'
+        intro_shape = f'["<{lead}>", "{prompts.SPONSOR_TOKEN}", "<an optional short closing paragraph>"]'
+    if client_list:
+        client_block = clients.client_block(client_list)
+        opening_limit = (f"at most {plan['intro']['own_words']} words of your own lead-in and closing, plus the paragraph that carries "
+                         f"the client links, of about {clients.paragraph_words(client_list)} words")
+    else:
+        client_block = (
+            "- The retained paragraph is written by someone else and is placed by code. Never write its words or a paraphrase of them. "
+            "Read it, so that your lead-in prepares the reader for whatever it takes for granted (a term, a comparison, something it "
+            f'refers back to). Its words are: "{sponsor.text}"\n- {_sponsor_rule(mode, sponsor.text)}')
+        opening_limit = f"at most {plan['intro']['own_words']} words of your own, plus the retained text"
+    text = _format_write_user(plan, inp, sponsor, report, today, mode, linked, total, transition_words, transition_floor,
+                              opening_shape, intro_shape, blocks, points, client_block, opening_limit)
+    return text + ("\n\n" + prompts.STYLE_ANCHORS if config.WRITE_STYLE_ANCHORS else "")
+
+
+def _format_write_user(plan, inp, sponsor, report, today, mode, linked, total, transition_words, transition_floor,
+                       opening_shape, intro_shape, blocks, points, client_block, opening_limit) -> str:
     return prompts.WRITE_USER.format(
         title=plan["title"], market_name=report.name, today=today or date.today().isoformat(),
         intro_own=plan["intro"]["own_words"], intro_angle=inp.intro_angle or "(the guest article's title)",
         intro_points="\n".join(f"  - {points[p]}" for p in plan["intro"]["points"]) or "  - (none)",
-        sponsor_rule=_sponsor_rule(mode, sponsor.text), link_token=f"[[CMI_LINK:{report.name}]]", opening_shape=opening_shape,
+        sponsor_rule=_sponsor_rule(mode, sponsor.text), opening_shape=opening_shape,
+        link_rule=(f"The link is written exactly once, as [[CMI_LINK:{report.name}]], and it is the first time the market's name appears."
+                   if linked else "The opening carries no link: the market's name is plain text. No report is cited anywhere in the post: never write 'the report', 'the research' or 'according to a report' (state each fact plainly, as the market's own fact), and name no research firm."),
         intro_shape=intro_shape,
         transition_words=transition_words,
         transition_floor=transition_floor,
         transition_point=plan["transition"]["point"] or "explain why the guest article's subject belongs to this wider market and what the reader will learn next",
         sections="\n\n".join(blocks), total_words=total, sponsor_token=prompts.SPONSOR_TOKEN,
-        sponsor_text=sponsor.text,
+        sponsor_text=sponsor.text, client_block=client_block, opening_limit=opening_limit,
     )
 
 
@@ -199,6 +231,12 @@ _META_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _holds_link(sentence: str) -> bool:
+    """A sentence carrying the retained-paragraph placeholder or a client link token: the backstops never cut or reword it,
+    because a lost link is a lost paid backlink (the checks report anything wrong with such a sentence)."""
+    return prompts.SPONSOR_TOKEN in sentence or "[[CLIENT_LINK:" in sentence
 
 
 # A sentence that does nothing but advertise what a study, survey, report or site covers — no figure and no finding of
@@ -224,7 +262,7 @@ def _is_coverage_ad(sent: str) -> bool:
     """Whether a sentence only advertises a publication's coverage: a publication-type subject word inside its first
     8 words (possessives included), a coverage verb, and neither a figure (checks._fact_numbers) nor a finding verb in
     the sentence itself."""
-    if prompts.SPONSOR_TOKEN in sent:
+    if _holds_link(sent):
         return False
     lowered = sent.lower()
     if "key players" in lowered or re.search(r"\bnames\b", lowered):
@@ -485,7 +523,7 @@ def strip_reader_filler(sections: list[dict], logger: logging.Logger) -> list[di
                 out = []
                 for sent in [x for x in _SENTENCE_SPLIT_RE.split(text) if x.strip()]:
                     m = _READER_TAIL_RE.search(sent)
-                    if (m and prompts.SPONSOR_TOKEN not in sent and len(sent[:m.start()].split()) >= 5):
+                    if (m and not _holds_link(sent) and len(sent[:m.start()].split()) >= 5):
                         originals.append(m.group(0)[:80])
                         sent = sent[:m.start()].rstrip() + (sent[-1] if sent[-1] in ".!?" else "")
                         n += 1
@@ -527,7 +565,7 @@ def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, spons
                     text = checks._sponsor_replacement(sent, sponsor_text) if sponsor_text else sent
                     bad = sorted(n for n in checks._fact_numbers(text)
                                  if n not in allowed and not re.fullmatch(r"(?:19|20)\d\d", n))
-                    if bad:
+                    if bad and not _holds_link(sent):
                         gone.append(sent)
                     else:
                         good.append(sent)
@@ -749,9 +787,16 @@ def run_write_v2(
     prompt = build_write_prompt(plan, inp, sponsor, report)
     written = llm.chat_json(prompts.WRITE_SYSTEM, prompt, temperature=0.3, call_name="write", logger=logger, max_tokens=7000)
     sections = strip_meta_sentences(assemble_sections(written, plan, logger), logger)
-    # the placement repair runs before the other strips so they all see the token in the shape the checks expect
-    sections = repair_sponsor_placement(sections, logger, sponsor.text)
-    sections = strip_untraced_figures(sections, inp, sponsor.text, logger)
+    client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
+    if client_list:
+        # the writer restated the client paragraph: every link is one correct token in the opening (the URLs stay in code)
+        sections = clients.normalize_tokens(sections, client_list, logger)
+        allowed_text = clients.source_text(client_list)
+    else:
+        # the placement repair runs before the other strips so they all see the token in the shape the checks expect
+        sections = repair_sponsor_placement(sections, logger, sponsor.text)
+        allowed_text = sponsor.text
+    sections = strip_untraced_figures(sections, inp, allowed_text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
     sections = strip_reader_filler(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
@@ -759,10 +804,15 @@ def run_write_v2(
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")
     title = _plain(plan["title"])
-    problems = _sponsor_problems(sections, sponsor.text) + _link_placement_problems(sections, sponsor.text, report.name)
+    if client_list:
+        problems = clients.link_problems(sections, client_list) + (
+            _link_placement_problems(clients.plain_sections(sections), "", report.name) if getattr(inp, "link_report", True) else [])
+    else:
+        problems = _sponsor_problems(sections, sponsor.text) + (
+            _link_placement_problems(sections, sponsor.text, report.name) if getattr(inp, "link_report", True) else [])
     if problems:
         logger.warning(f"[write] placement problems found (no retry is run): {'; '.join(problems)}")
-    if _sponsor_location_problem(sections):
+    if not client_list and _sponsor_location_problem(sections):
         logger.warning("[write] inserting the sponsor placeholder as intro paragraph 2 so the paid link is not lost")
         sections = _force_sponsor_placeholder(sections)
     citations = evidence_citations(sections, inp)

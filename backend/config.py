@@ -51,6 +51,12 @@ CMI_CHAIN_V2 = os.getenv("CMI_CHAIN_V2", "true").strip().lower() not in ("0", "f
 # Style anchors: when on, the write prompt carries four short passages from the content team's reference article as a register
 # guide (prompts.STYLE_ANCHORS). On by default (devtools/ab_voice.py compared the writer with and without them: shorter sentences,
 # every trend anchored); WRITE_STYLE_ANCHORS=false turns them off.
+# The client's paragraph (the paid backlink) is restated by the writer in the opening's own flow, keeping its meaning and its
+# links, instead of being copied word for word. CLIENT_REWRITE=false brings back the word-for-word placeholder (one client only).
+CLIENT_REWRITE = os.getenv("CLIENT_REWRITE", "true").strip().lower() not in ("0", "false", "no", "off")
+CLIENT_MAX = int(os.getenv("CLIENT_MAX", "4"))        # most clients one post can carry
+WRITE_STYLE_ANCHORS = os.getenv("WRITE_STYLE_ANCHORS", "true").strip().lower() not in ("0", "false", "no", "off")
+
 CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"
 

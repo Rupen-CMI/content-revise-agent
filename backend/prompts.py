@@ -1,5 +1,7 @@
 SPONSOR_TOKEN = "[[SPONSOR_PARAGRAPH]]"
 CMI_LINK_PATTERN = r"\[\[CMI_LINK:(.+?)\]\]"
+# A client's backlink written by the writer: the link id, then the linked words exactly as the client's paragraph had them.
+CLIENT_LINK_PATTERN = r"\[\[CLIENT_LINK:(L\d+)\|(.+?)\]\]"
 
 # What CMI actually DOES — its own offerings/activities, in its own words, pulled from
 # coherentmarketinsights.com (/services, /aboutus). Deliberately NOT industry or market names
@@ -40,7 +42,7 @@ ARTICLE TITLE: {title}
 ARTICLE BODY:
 {body}
 
-PARAGRAPH THAT MUST STAY IN THE FINAL ARTICLE (contains a paid backlink):
+CLIENT PARAGRAPH (contains a paid backlink; the link stays in the final article and the client is never named there):
 {sponsor}
 
 Return JSON with these keys:
@@ -116,8 +118,8 @@ practice asserted as universal, a how-it-works explanation with no source). For 
     product or company name that must match exactly; never quote several names in one query (a query that must \
     contain every quoted name at once finds almost nothing).
   Skip: claims the article itself already backs with a specific source, figure, or named event; claims stated \
-  inside PARAGRAPH THAT MUST STAY IN THE FINAL ARTICLE above (that paragraph is fixed and its text is not \
-  rewritten, so its wording needs no backing); claims about the MARKET ITSELF (its size, growth rate, segments, regions or the list \
+  inside the CLIENT PARAGRAPH above (the client's own statement; the post carries only its link, so its wording needs no \
+  backing); claims about the MARKET ITSELF (its size, growth rate, segments, regions or the list \
   of vendors in it): CMI's own report and market evidence cover those, so they must not be extracted here. How firms or \
   practitioners work, adopt tools or compete in general is NOT the market itself: that stays a claim to extract; \
   purely subjective opinions the article itself clearly frames as \
@@ -265,7 +267,7 @@ different market than CONFIRMED CMI REPORT — if the two disagree, CONFIRMED CM
 market search results are judged against; treat INTENDED ANGLE only as background on why the article was written, \
 never as evidence of which market this is actually about.)
 
-PARAGRAPH THAT MUST STAY IN THE FINAL ARTICLE:
+CLIENT PARAGRAPH (its backlink stays in the final article and the client is never named there):
 {sponsor}
 
 CONFIRMED CMI REPORT (already chosen by a human editor — not your decision):
@@ -1125,6 +1127,51 @@ same direct-answer-first style and the same grounding rule in point 1.
 Return JSON: {{"faq": [{{"question": "<market question>", "answer": "<answer>"}}, ...], "publisher_faq": [{{"question": "<question about the publisher's subject>", "answer": "<answer>"}}, ...]}}"""
 
 
+# ---------------------------------------------------------------- client paragraph: BRIEF and write rules
+CLIENT_BRIEF_SYSTEM = """You are a research analyst at Coherent Market Insights (CMI). You read the web pages a client's backlink points to and record, as structured data, what the client's business offers according to those pages. You never fill a gap from general knowledge or from what the client's paragraph claims about itself. Respond with JSON only."""
+
+CLIENT_BRIEF_USER = """THE MARKET OF THE POST: {market_name}
+
+THE CLIENT'S PARAGRAPH (the linked words are marked <<id: words>>):
+{paragraph}
+
+THE LINKS (id: linked words -> the page the link opens):
+{links}
+
+THE TEXT OF THE CLIENT'S OWN PAGES:
+{pages}
+
+PURPOSE
+The post restates this paragraph in its own words, keeps its meaning and keeps every link. The restatement must describe the client's offer accurately, because the linked words can be broader than, or different from, what the client sells. You record what the pages state, so the writer never leads a reader to expect something the client does not provide.
+
+HOW TO WORK
+1. "name": the company name as the pages write it; null when they do not give one.
+2. "offer": one sentence stating what the client sells or does and for whom, in the pages' own terms; null when the pages do not state it.
+3. "category": the client's kind of business in two to five words, taken from the pages.
+4. "anchor_fit": set the linked words against the offer: "matches" when the linked words describe the offer, "broader" when they name a wider category than the offer, "different" when they name something other than the offer.
+5. "anchor_note": when "anchor_fit" is "broader" or "different", one sentence saying what the linked words suggest and what the client really offers; otherwise an empty string.
+6. "market_fit": how close the client's offer is to the post's market: "close" when the offer serves buyers or providers in that market, "adjacent" when it serves a related field or the same buyers, "distant" when no direct connection exists.
+7. "bridge": when "market_fit" is "adjacent" or "distant", one sentence naming a connection that is true for a reader of the post and that the pages support (a shared audience or a shared task); an empty string when none exists.
+
+TESTS BEFORE ANSWERING
+- Every statement in "name" and "offer" appears in the page text above or follows from it directly.
+- Nothing came from general knowledge, or from a claim the paragraph makes about itself.
+- A field the pages do not support is null or an empty string.
+
+Return JSON in exactly this shape:
+{{"name": "<company name>" or null, "offer": "<one sentence>" or null, "category": "<kind of business>", "anchor_fit": "<matches|broader|different>", "anchor_note": "<one sentence or empty>", "market_fit": "<close|adjacent|distant>", "bridge": "<one sentence or empty>"}}"""
+
+# The write prompt's rules for the restated client paragraph (clients.client_block fills the placeholders).
+CLIENT_BLOCK = """- THE CLIENT LINKS. The post carries the paid backlink(s) of {client_count} client(s). The client is never promoted: its name, its company, its products, its credentials, its figures and its claims about itself do not appear in the post. The only thing the client receives is the link, placed on the linked words listed below, inside sentences that belong to the opening's own explanation of the market. Its rules:
+  1. The link is the only mention: write each link as [[CLIENT_LINK:<link id>|<the linked words>]], with the linked words exactly as listed, never changed, split, reordered or repeated, and every link written exactly once, in the opening. Never write the client's name or domain, never call it a company, a firm, a provider or a service ("the firm", "its offer"), never describe, recommend, rank or compare it.
+  2. The sentence around a link is the post's own, about the subject the opening explains. It uses the linked words as ordinary words of that sentence and carries the idea the guest article's paragraph expresses (what that paragraph wants the reader to understand), stated in general terms and in the post's own third person, with no claim that belongs to the client.
+  3. Accuracy: the linked words can be broader than, or different from, what the page the link opens offers. The brief below says what that page really offers. The sentence uses the linked words only in a way the page supports, so a reader who follows the link finds what the sentence led them to expect. The brief is never quoted, or paraphrased as a description of the client.
+  4. Transition: the lead-in and the sentences that carry the links read as one explanation. Begin from the need or task the lead-in has just described and let the linked words arrive as part of it. When the page behind a link sits far from the post's subject, the sentence names the one connection the brief supports (the audience or task the two share) and claims nothing further.
+  5. {combined_rule}
+  6. The statements are the post's own: never refer to the guest article, "the source", "the author" or what an article "concludes", "argues" or "adds".
+  7. The paragraph that carries the links is about {client_words} words in all.
+{clients_text}"""
+
 # ---------------------------------------------------------------- market-first chain: FACT SHEET
 FACT_SHEET_SYSTEM = """You are a research analyst at Coherent Market Insights (CMI). You read one CMI market report page and record, as structured data, only what that page itself states about the market. You never fill a gap from general knowledge, from other markets or from other reports. Respond with JSON only."""
 
@@ -1271,7 +1318,7 @@ GUEST ARTICLE (title: {title}):
 {body}
 ----- END GUEST ARTICLE -----
 
-PARAGRAPH THE GUEST PAID TO KEEP (it is reproduced word for word elsewhere, so do not restate it):
+THE CLIENT'S PARAGRAPH (the post carries only its link, in the opening's own sentences, so do not restate it here):
 {sponsor}
 
 PURPOSE
@@ -1286,7 +1333,7 @@ HOW TO WORK
 TESTS BEFORE ANSWERING
 - No point states the size, growth rate, share, segments, regions or vendors of any market or industry, and none is attributed to CMI or any other research firm. Leave those out entirely.
 - Every number in a point is a number the guest article itself gives, used for what the article uses it for.
-- No point repeats the paragraph the guest paid to keep, names the guest's company or website, or copies a sentence of the article.
+- No point repeats the client's paragraph, names the client's company or website, or copies a sentence of the article.
 - No point holds a measurement, a tool name or a technical step.
 - Each point could stand alone in a sentence of a different article and still be understood.
 
@@ -1379,15 +1426,14 @@ TODAY'S DATE: {today}
 HOW THE POST IS BUILT
 Three blocks in this order, and the post never goes back: an OPENING that uses a guest article's subject as an example, a short TRANSITION into the market, then the MARKET SECTIONS. Every block and section has a word budget: write up to it — each block and section lands between nine tenths of its budget and the budget itself, because a short block is an unfinished one and a long block breaks the post's proportions.
 
-THE OPENING (at most {intro_own} words of your own, plus the retained text; this is a hard limit, so stay under it)
-- Who it is for: a reader who has never seen the guest article, does not care about its details and knows nothing about the field. Everything that reader needs in order to follow the opening has to be in the opening itself.
+THE OPENING ({opening_limit}; this is a hard limit, so stay under it)
+- Who it is for: a professional reader who has not seen the guest article, needs none of its details and may be unfamiliar with its field. Everything that reader needs in order to follow the opening has to be in the opening itself.
 - The guest article's subject: {intro_angle}
 - Context you may draw on, in your own words. Each statement was chosen because it helps a reader new to the field understand the market the post goes on to cover; use them to explain what the activity is, who does it, why it matters and what is changing:
 {intro_points}
-- The retained paragraph is written by someone else and is placed by code. Never write its words or a paraphrase of them. Read it, so that your lead-in prepares the reader for whatever it takes for granted (a term, a comparison, something it refers back to). Its words are: "{sponsor_text}"
-- {sponsor_rule}
-- How to write it: begin with the plain idea (what the subject is and why anyone cares), build one step at a time, and when a sentence builds on the one before it, repeat the key noun as its own subject or join the two ideas with a connecting word inside a single sentence, instead of pointing back at the earlier sentence. Explain every word a stranger might not know the first time it appears, in everyday words. Leave out measurements, tool names, technical steps and anything only a specialist would care about.
-- Build the opening as: {opening_shape} The link is written exactly once, as {link_token}, and it is the first time the market's name appears.
+{client_block}
+- How to write it: begin with the subject and why it matters to this market, and build one step at a time, each sentence resting on the one before it. When a sentence builds on the one before it, name the thing again as its own subject or join the two ideas with a connecting word. State a term or acronym in full the first time it appears and explain it briefly if a professional outside this field would not know it. Leave out measurements, tool names and technical steps that only a specialist in the guest article's field would need.
+- Build the opening as: {opening_shape} {link_rule}
 - The opening states no market fact (no size, growth, share, segment or vendor).
 
 THE TRANSITION (about {transition_words} words, one or two short paragraphs, no heading; never fewer than {transition_floor} words — a shorter transition vanishes between the opening and the sections and falls below the share the plan gives this block)

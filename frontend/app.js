@@ -69,7 +69,8 @@ const state = {
   article: null,        // { title, paragraphs: [{index, text, links: [{anchor, url, isExternal}]}] }
   filename: null,
   sponsorIdx: 0,
-  run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, chosenCandidate }
+  clientPicks: {},          // host -> {on, paraIdx}: the clients the editor ticked and the paragraph chosen for each
+  run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, pickedCmi, pickedMarkets, reportUrls, chosenCandidate }
   result: null,          // final RevampResult-equivalent from the backend
   nav: "article",        // article | step1 | step2 | step3 | step4 | final
 };
@@ -135,9 +136,11 @@ async function resumeRunIfAny() {
     state.article = data.article;
     state.sponsorIdx = sponsorCandidatesFrom(data.article).findIndex((p) => p.index === data.sponsor_index);
     if (state.sponsorIdx < 0) state.sponsorIdx = 0;
+    restoreClientPicks(data.sponsor_indexes || [data.sponsor_index], (data.clients || []).map((c) => c.host));
 
     const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
-      factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null };
+      factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null,
+      pickedCmi: null, pickedMarkets: [], reportUrls: [""], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [] };
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.report = data.report;
@@ -379,6 +382,7 @@ function resetForNewUpload() {
   state.article = null;
   state.filename = null;
   state.sponsorIdx = -1;
+  state.clientPicks = {};
   state.run = null;
   state.result = null;
   localStorage.removeItem(RUN_KEY);
@@ -390,50 +394,119 @@ function resetForNewUpload() {
   render();
 }
 
-// ---------------------------------------------------------------- sponsor paragraph picker
+// ---------------------------------------------------------------- client paragraph picker
 function sponsorCandidates() {
   if (!state.article) return [];
   return state.article.paragraphs.filter((p) => p.links.some((l) => l.isExternal));
 }
 
+// The client's own domain: 'shop.acme.com' and 'www.acme.com' are one client, 'acme.co.uk' keeps three labels (as clients.py does).
+function registrableHost(url) {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return String(url); }
+  const parts = host.split(".");
+  if (parts.length >= 3 && parts[parts.length - 1].length === 2 && ["co", "com", "org", "net", "ac", "gov", "edu"].includes(parts[parts.length - 2])) {
+    return parts.slice(-3).join(".");
+  }
+  return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+}
+
+// The article's outside links grouped by the client they belong to: [{host, anchors, paragraphs}].
+function clientGroups() {
+  const groups = new Map();
+  for (const p of sponsorCandidates()) {
+    for (const l of p.links.filter((x) => x.isExternal)) {
+      const host = registrableHost(l.url);
+      if (!groups.has(host)) groups.set(host, { host, anchors: [], paragraphs: [] });
+      const g = groups.get(host);
+      if (l.anchor && !g.anchors.includes(l.anchor)) g.anchors.push(l.anchor);
+      if (!g.paragraphs.includes(p)) g.paragraphs.push(p);
+    }
+  }
+  return [...groups.values()];
+}
+
+function clientPick(host) {
+  if (!state.clientPicks[host]) state.clientPicks[host] = { on: false, paraIdx: null };
+  return state.clientPicks[host];
+}
+
+function selectedClientHosts() {
+  return clientGroups().filter((g) => clientPick(g.host).on && clientPick(g.host).paraIdx !== null).map((g) => g.host);
+}
+
+function selectedParagraphIndexes() {
+  const out = [];
+  for (const g of clientGroups()) {
+    const pick = clientPick(g.host);
+    if (pick.on && pick.paraIdx !== null && !out.includes(pick.paraIdx)) out.push(pick.paraIdx);
+  }
+  return out;
+}
+
+function restoreClientPicks(indexes, hosts) {
+  state.clientPicks = {};
+  for (const g of clientGroups()) {
+    if ((hosts || []).length && !hosts.includes(g.host)) continue;
+    const hit = g.paragraphs.find((p) => (indexes || []).includes(p.index));
+    if (hit) state.clientPicks[g.host] = { on: true, paraIdx: hit.index };
+  }
+}
+
 function renderSponsorCandidates() {
   const container = document.getElementById("sponsor-candidates");
-  const candidates = sponsorCandidates();
+  const groups = clientGroups();
   container.innerHTML = "";
 
-  if (!candidates.length) {
+  if (!groups.length) {
     container.innerHTML = `<p class="field-hint" style="color:var(--danger)">No paragraph has a hyperlink outside coherentmarketinsights.com. The agent needs this to know what to preserve.</p>`;
     document.getElementById("start-btn").disabled = true;
     return;
   }
 
-  // Exactly one candidate is unambiguous — safe to auto-select. With 2+, a silent default
-  // previously let an unreviewed run lock in the wrong paragraph as "sponsor" (it defaulted to
-  // the first candidate, which is sometimes just the article's own opening paragraph, not the
-  // actual paid-backlink paragraph) — so here the user must actively pick one before continuing.
-  if (candidates.length === 1 && state.sponsorIdx !== 0) {
-    state.sponsorIdx = 0;
-  }
-
   const runActive = state.run && !state.result;
-  const needsChoice = candidates.length > 1 && state.sponsorIdx < 0;
-
-  candidates.forEach((p, i) => {
-    const externalLinks = p.links.filter((l) => l.isExternal).map((l) => l.anchor || l.url).join(", ");
-    const label = document.createElement("label");
-    label.className = "radio-option" + (i === state.sponsorIdx ? " selected" : "") + (runActive ? " disabled" : "");
-    label.innerHTML = `
-      <input type="radio" name="sponsor" value="${i}" ${i === state.sponsorIdx ? "checked" : ""} ${runActive ? "disabled" : ""}>
-      <span>&para;${p.index + 1} &middot; ${externalLinks}</span>
-    `;
-    label.querySelector("input").addEventListener("change", () => {
-      state.sponsorIdx = i;
-      renderSponsorCandidates();
-      updateSponsorPreview();
-    });
-    container.appendChild(label);
+  const several = groups.length > 1;
+  groups.forEach((g) => {
+    const pick = clientPick(g.host);
+    // One client is unambiguous. With several outside domains the editor ticks the clients: some links are an author's own
+    // site or a plain citation, and a silent default once locked in the wrong paragraph.
+    if (!several) pick.on = true;
+    if (pick.on && g.paragraphs.length === 1) pick.paraIdx = g.paragraphs[0].index;
+    const wrap = document.createElement("div");
+    wrap.className = "client-group" + (pick.on ? " on" : "");
+    const head = document.createElement("label");
+    head.className = "radio-option" + (pick.on ? " selected" : "") + (runActive ? " disabled" : "");
+    const name = `<strong>${escapeHtml(g.host)}</strong> &middot; ${escapeHtml(g.anchors.join(", "))}`;
+    head.innerHTML = several
+      ? `<input type="checkbox" ${pick.on ? "checked" : ""} ${runActive ? "disabled" : ""}><span>${name}</span>`
+      : `<span>${name}</span>`;
+    if (several) {
+      head.querySelector("input").addEventListener("change", (ev) => {
+        pick.on = ev.target.checked;
+        if (!pick.on) pick.paraIdx = null;
+        renderSponsorCandidates();
+      });
+    }
+    wrap.appendChild(head);
+    if (pick.on && g.paragraphs.length > 1) {
+      const sub = document.createElement("div");
+      sub.className = "client-paragraphs";
+      sub.innerHTML = `<p class="field-hint">Choose the paragraph that suits the post best:</p>`;
+      g.paragraphs.forEach((p) => {
+        const opt = document.createElement("label");
+        opt.className = "radio-option" + (pick.paraIdx === p.index ? " selected" : "") + (runActive ? " disabled" : "");
+        opt.innerHTML = `<input type="radio" name="client-${escapeHtml(g.host)}" ${pick.paraIdx === p.index ? "checked" : ""} ${runActive ? "disabled" : ""}>`
+          + `<span>&para;${p.index + 1} &middot; ${escapeHtml(p.text.slice(0, 90))}&hellip;</span>`;
+        opt.querySelector("input").addEventListener("change", () => { pick.paraIdx = p.index; renderSponsorCandidates(); });
+        sub.appendChild(opt);
+      });
+      wrap.appendChild(sub);
+    }
+    container.appendChild(wrap);
   });
 
+  const incomplete = groups.some((g) => clientPick(g.host).on && clientPick(g.host).paraIdx === null);
+  const needsChoice = selectedParagraphIndexes().length === 0 || incomplete;
   const hint = document.getElementById("sponsor-choice-hint");
   if (hint) hint.hidden = !needsChoice;
 
@@ -443,13 +516,36 @@ function renderSponsorCandidates() {
 }
 
 function updateSponsorPreview() {
-  const candidates = sponsorCandidates();
-  const chosen = candidates[state.sponsorIdx];
-  document.getElementById("sponsor-preview-text").textContent = chosen ? chosen.text : "Select a paragraph above to preview it.";
+  const paras = selectedParagraphIndexes()
+    .map((i) => (state.article ? state.article.paragraphs.find((p) => p.index === i) : null))
+    .filter(Boolean);
+  document.getElementById("sponsor-preview-text").textContent = paras.length
+    ? paras.map((p) => p.text).join("\n\n")
+    : "Select the client paragraph(s) above to preview them.";
 }
 
+// The first chosen client paragraph (the run's primary one); every chosen paragraph travels in selectedParagraphIndexes().
 function currentSponsor() {
-  return sponsorCandidates()[state.sponsorIdx] || null;
+  const idx = selectedParagraphIndexes()[0];
+  if (idx === undefined || !state.article) return null;
+  return state.article.paragraphs.find((p) => p.index === idx) || null;
+}
+
+// What each client really offers (read from its own website), the notes the editor should read, and the client's original
+// paragraph to compare the restated opening with.
+function clientCheckHtml(clients) {
+  return (clients || []).map((c) => {
+    const b = c.brief || {};
+    const links = (c.links || []).map((l) => `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.anchor)}</a>`).join(", ");
+    const offer = b.offer ? escapeHtml(b.offer) : `<span class="option-caption">not available &mdash; the client's website could not be read</span>`;
+    const notes = (c.notes || []).map((n) => `<p class="option-caption">${escapeHtml(n)}</p>`).join("");
+    return `<div class="client-card">
+      <p><strong>${escapeHtml(b.name || c.host)}</strong> &middot; ${escapeHtml(c.host)}</p>
+      <p class="option-caption">Linked words: ${links}</p>
+      <p>What the client offers (from its website): ${offer}</p>${notes}
+      <details><summary>Original client paragraph (&para;${(c.paragraph_index || 0) + 1})</summary><p>${escapeHtml(c.paragraph || "")}</p></details>
+    </div>`;
+  }).join("");
 }
 
 // ---------------------------------------------------------------- article panel
@@ -515,6 +611,8 @@ async function runStep1() {
       filename: state.filename,
       article: state.article,
       sponsor_index: currentSponsorIndexInParagraphs(),
+      sponsor_indexes: selectedParagraphIndexes(),
+      client_hosts: selectedClientHosts(),
     });
     state.run.stage = "orient_done";
     state.run.token = data.token || data.run_token;
@@ -681,6 +779,7 @@ document.getElementById("step3-confirm-btn").addEventListener("click", async () 
     state.run.stage = "write_done";
     state.run.title = data.title;
     state.run.sections = data.sections;
+    state.run.clients = data.clients || state.run.clients;
   } catch (e) {
     showError("Step 4 (write)", e);
     state.run.stage = "select_done";
@@ -701,6 +800,7 @@ document.getElementById("step4-regenerate-btn").addEventListener("click", async 
     state.run.stage = "write_done";
     state.run.title = data.title;
     state.run.sections = data.sections;
+    state.run.clients = data.clients || state.run.clients;
   } catch (e) {
     showError("Step 4 (regenerate draft)", e);
     state.run.stage = "write_done";
@@ -742,6 +842,7 @@ document.getElementById("final-regenerate-btn").addEventListener("click", async 
     const written = await apiPost("/step4", { run_token: state.run.token });
     state.run.title = written.title;
     state.run.sections = written.sections;
+    state.run.clients = written.clients || state.run.clients;
     state.run.stage = "finalize_pending";
     render();
     const data = await apiPost("/finalize", { run_token: state.run.token });
@@ -1577,6 +1678,9 @@ function renderStep4Panel() {
 
   document.getElementById("step4-title").textContent = state.run.title || "";
   document.getElementById("step4-sections").innerHTML = renderSections(state.run.sections || []);
+  const step4Clients = state.run.clients || [];
+  document.getElementById("step4-clients-card").hidden = step4Clients.length === 0;
+  document.getElementById("step4-clients-list").innerHTML = clientCheckHtml(step4Clients);
 
   // Once finalized, this step4 tab becomes read-only history — Finish/Cancel no longer apply,
   // and regenerating from here on is done via final-regenerate-btn on the final page instead.

@@ -1500,3 +1500,14 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .kw-subhead { margin: 18px 0 4px; font-size: 0.95rem; font-weight: 650; }
 .kw-list li { margin: 4px 0; }
 
+/* client paragraphs: the picker groups outside links by client; the checks show what each client really offers */
+.client-group { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 6px; }
+.client-group:last-child { border-bottom: none; }
+.client-group .client-paragraphs { margin: 2px 0 4px 26px; }
+.client-group .client-paragraphs .radio-option { font-size: 0.9em; }
+#sponsor-preview-text { white-space: pre-line; }
+.client-card { border-top: 1px solid var(--border); padding: 10px 0; }
+.client-card:first-child { border-top: none; padding-top: 0; }
+.client-card p { margin: 3px 0; }
+.client-card details { margin-top: 6px; }
+.client-card details summary { cursor: pointer; color: var(--text-muted); font-size: 0.9em; }

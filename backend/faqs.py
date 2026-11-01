@@ -14,6 +14,7 @@ import logging
 import re
 from datetime import date
 
+import clients
 import facts
 import llm
 import planning
@@ -179,7 +180,7 @@ def run_faq(plan: dict, inp: planning.PlanInputs, sections: list[dict], logger: 
     fatal. Returns [{question, answer, id, intent}], in plan order."""
     logger = logger if logger is not None else logging.getLogger("faq")
     section(logger, "CALL: FAQ")
-    draft_text = " ".join(p.replace(prompts.SPONSOR_TOKEN, " ") for s in sections for p in s["paragraphs"])
+    draft_text = " ".join(clients.plain(p.replace(prompts.SPONSOR_TOKEN, " ")) for s in sections for p in s["paragraphs"])
     try:
         raw = llm.chat_json(
             prompts.FAQ_MSQ_SYSTEM, build_prompt(plan, inp, today),
