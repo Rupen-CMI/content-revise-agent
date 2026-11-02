@@ -103,7 +103,7 @@ EXISTING_312_DIRS = [
 
 # backend .py files that must NOT ship: they are dev-only tooling (fixtures,
 # replay harnesses, probes). Everything else under backend/ gets compiled.
-BACKEND_EXCLUDE_DIRS = {"devtools", "scripts", "__pycache__", "output", "logs", ".search_cache"}
+BACKEND_EXCLUDE_DIRS = {"devtools", "scripts", "__pycache__", "output", "logs", ".search_cache", ".keyword_cache"}
 BACKEND_EXCLUDE_FILES = {"README.md"}
 
 # root items that must not ship
@@ -675,7 +675,7 @@ def patch_config_fallbacks(direct: bool = False) -> None:
     authenticates with the baked per-install token. Environment variables are
     deliberately NOT consulted for these two values, so a stray DEEPSEEK_API_KEY
     or LLM_BASE_URL on an end-user PC can't redirect or bypass the proxy. The
-    client timeout drops from 600 s to 130 s: the proxy answers within 110 s
+    client timeout drops from 180 s to 130 s: the proxy answers within 110 s
     (its own upstream timeout) and real calls peak around 48 s.
 
     direct mode: secrets fall back to the baked bpk module; env vars still win.
@@ -696,7 +696,7 @@ def patch_config_fallbacks(direct: bool = False) -> None:
         text = text.replace(old_key, new_key)
     else:
         old_url = 'LLM_BASE_URL = "https://api.deepseek.com"'
-        old_timeout = 'LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "600"))'
+        old_timeout = 'LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))'
         for anchor in (old_url, old_timeout):
             if anchor not in text:
                 die("config.py anchors changed -- update patch_config_fallbacks()")
@@ -981,6 +981,11 @@ def main() -> None:
                     help="This user's LLM-proxy token (cmi_...; mint with `npm run token` in monitor/). "
                          "Also read from the MONITOR_PROXY_TOKEN environment variable (preferred: keeps "
                          "it out of shell history). Required unless --direct.")
+    ap.add_argument("--pins-from", dest="pins_from", default="", metavar="FILE",
+                    help="Use this exact requirements.txt (the one inside an earlier package) instead of resolving the pins afresh. "
+                         "Resolving takes the newest torch and whatever the build venv holds, so a rebuild can drift from what is "
+                         "already installed on users' PCs; with this the new package carries the same packages and an update over the "
+                         "old folder needs no reinstall.")
     ap.add_argument("--direct", action="store_true",
                     help="LEGACY: ship the DeepSeek key itself in the package instead of using the "
                          "proxy. Not recommended: the key can be extracted from the user's PC.")
@@ -989,7 +994,11 @@ def main() -> None:
     ensure_pytool()
     ensure_pyruntime()
     venv_py = ensure_build_venv()
-    resolve_pins(venv_py)
+    if args.pins_from:
+        shutil.copy2(args.pins_from, BUILD / "req_pins.txt")
+        log(f"pins: reusing {args.pins_from} as is (no fresh resolution)")
+    else:
+        resolve_pins(venv_py)
 
     reset_stage()
     stage_root()
