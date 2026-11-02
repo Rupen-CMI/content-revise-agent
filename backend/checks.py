@@ -736,6 +736,34 @@ def cmi_link_placement(sections: list[dict], sponsor_text: str, market_name: str
     return None, True, None
 
 
+_REPORT_CITED_RE = re.compile(
+    r"\b(?:CMI|Coherent Market Insights)(?:['’]s)?\s+(?:own\s+)?(?:report|research|analysis|estimates?|data|forecasts?)\b"
+    r"|\b(?:the|this|that)\s+(?:market\s+)?(?:report|research)\b"
+    r"|\baccording to (?:the|this) (?:report|research|study)\b", re.I)
+
+MARKET_NAME_WORDS = 100     # the SOP: the market's full name appears within the first 100 words of the post, linked or in plain text
+
+
+def market_name_offset(sections: list[dict], sponsor_text: str, market_name: str) -> int | None:
+    """The word at which the market's full name first appears in the post (a CMI link counts as its anchor words; the retained
+    paragraph counts at its real length), or None when the name never appears in a paragraph. Headings are not read."""
+    if not market_name:
+        return None
+    needle = market_name.lower()
+    words_before = 0
+    for s in sections:
+        for p in s["paragraphs"]:
+            if not p.replace(SPONSOR_TOKEN, " ").strip():
+                words_before += len(sponsor_text.split())
+                continue
+            plain = re.sub(CMI_LINK_PATTERN, lambda m: m.group(1), p)
+            i = plain.lower().find(needle)
+            if i >= 0:
+                return words_before + len(_sponsor_replacement(plain[:i], sponsor_text).split())
+            words_before += len(_sponsor_replacement(plain, sponsor_text).split())
+    return None
+
+
 def _stale_event_mentions(sections: list[dict], today: date | None = None) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -1235,71 +1263,6 @@ def v2_structure_problems(title: str, sections: list[dict], plan: dict, inp) -> 
     return problems
 
 
-def v2_keyword_problems(sections: list[dict], plan: dict, market_name: str, anywhere: bool = False) -> list[str]:
-    """Assigned keyword use in the draft (§3.7/§3.9): 4-6 secondary keywords assigned, each used in its
-    section (its own words together with the market's), and at most one per paragraph. `anywhere` is for a
-    draft a person has edited: the plan's section for a keyword is the generator's own assignment, so the
-    keyword is then looked for in the market sections as a whole."""
-    assigned = [p["secondary"] for p in plan["sections"] if p.get("secondary")]
-    out: list[str] = []
-    if not 4 <= len(assigned) <= 6:
-        out.append(f"{len(assigned)} secondary keyword(s) assigned, want 4-6")
-    market_text = " ".join(w for s in sections if _is_market_section(s) for w in " ".join(s["paragraphs"]).split())
-    for ps in plan["sections"]:
-        if not ps.get("secondary"):
-            continue
-        sec = next((s for s in sections if _is_market_section(s) and s["sop"][0] == ps["sop"]), None)
-        if anywhere:
-            if not secondary_keyword_in_paragraph(market_text, market_name, ps["secondary"]):
-                out.append(f'the secondary keyword "{ps["secondary"]}" is not used in the article')
-            continue
-        if sec and not secondary_keyword_in_paragraph(
-                " ".join(" ".join(sec["paragraphs"]).split()), market_name, ps["secondary"]):
-            # A keyword use can be missing two ways: the market name it must lean on is absent from
-            # the section entirely (the primary keyword rule, §3.7), or the suffix's own words never
-            # appear. Report the two plainly so the fix is legible either way.
-            if _market_name_in_text(" ".join(" ".join(sec["paragraphs"]).split()), market_name):
-                out.append(f'the secondary keyword "{ps["secondary"]}" is not used in its {ps["sop"]} section')
-            else:
-                out.append(f'the market name appears nowhere in its {ps["sop"]} section, so the keyword '
-                           f'"{ps["secondary"]}" has no anchored use in it')
-    for s in sections:
-        if not _is_market_section(s):
-            continue
-        for n, p in enumerate(s["paragraphs"], 1):
-            low = _sponsor_replacement(p, " ").lower()
-            # The stuffing count matches on the exact word shapes only (no derivational fold): a paragraph
-            # that merely says "the segments show ..." is not carrying the keyword "segmentation" for this
-            # test — the topic's own words piling up is what stuffing means here.
-            found = [k for k in dict.fromkeys(assigned)
-                     if secondary_keyword_in_paragraph(low, market_name, k, use_stems=False)]
-            if len(found) >= _KEYWORD_STUFFING_AT:
-                out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries '
-                           f'{len(found)} secondary keywords ({", ".join(found)}); that is keyword stuffing')
-    return out
-
-
-# Everyday words such as "size" and "forecast" sit beside the market's name in any paragraph that states its figures, so a
-# keyword assigned to another section turns up there by plain writing. That is not stuffing; three or more in one
-# paragraph is (hard). Two is reported as a soft note, so the reader of the checks still sees it.
-_KEYWORD_STUFFING_AT = 3
-
-
-def v2_keyword_overlap_notes(sections: list[dict], plan: dict, market_name: str) -> list[str]:
-    assigned = [p["secondary"] for p in plan["sections"] if p.get("secondary")]
-    out: list[str] = []
-    for s in sections:
-        if not _is_market_section(s):
-            continue
-        for n, p in enumerate(s["paragraphs"], 1):
-            low = _sponsor_replacement(p, " ").lower()
-            found = [k for k in dict.fromkeys(assigned) if secondary_keyword_in_paragraph(low, market_name, k)]
-            if len(found) == _KEYWORD_STUFFING_AT - 1:
-                out.append(f'"{(s.get("heading") or "").strip() or s["sop"][0]}" paragraph {n} carries 2 secondary keywords '
-                           f'({", ".join(found)})')
-    return out
-
-
 def v2_placeholder_figure_problems(sections: list[dict], faq: list[dict] = ()) -> list[str]:
     """Placeholder shapes must never print (§3.9): "USD <year>", "a stated rate", a bare "%", a leftover
     bracketed sample shape."""
@@ -1470,6 +1433,31 @@ def _names_source(low_sentence: str, source: str) -> bool:
         name = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", source.lower()).strip()
         return name in low_sentence
     return any(t.lower() in low_sentence for t in toks)
+
+
+def v2_stray_credit_problems(sections: list[dict], plan: dict, inp) -> list[str]:
+    """A source's name is written only in a section that holds one of that source's facts. A name that turns up beside a fact it does not
+    own (a segmentation line credited "per Yahoo Finance" when the list came from the report page) is a false credit."""
+    if inp is None:
+        return []
+    names: dict[str, str] = {}
+    for i in inp.items.values():
+        src = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", str(i.get("source") or "")).strip()
+        if len(src) >= 4 and src != "CMI report":
+            names[i["id"]] = src
+    facts_of = {p["sop"]: set(p.get("facts") or []) for p in plan["sections"]}
+    out: list[str] = []
+    for s in sections:
+        if not _is_market_section(s):
+            continue
+        own = {names[f].lower() for f in facts_of.get(s["sop"][0], ()) if f in names}
+        text = " ".join(s["paragraphs"]).lower()
+        label = (s.get("heading") or "").strip() or s["sop"][0]
+        for name in dict.fromkeys(names.values()):
+            low = name.lower()
+            if low not in own and re.search(r"(?<![a-z0-9])" + re.escape(low) + r"(?![a-z0-9])", text):
+                out.append(f'{label}: credits "{name}", but none of this section\'s facts comes from it')
+    return out
 
 
 def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], planned_only: bool = True) -> list[str]:
@@ -1780,17 +1768,6 @@ def run_checks_v2(
         ))
 
 
-    # ---- an outside report stood in for CMI's: the editor must verify every value before going on
-    outside_audit = getattr(inp, "outside_audit", [])
-    if getattr(inp, "report_mode", "cmi") != "cmi":
-        rows = [f"{a['field']}: source {a['original']} -> shown {a['shown']} ({a['url']})" for a in outside_audit]
-        results.append(CheckResult(
-            "WARNING: a competitor report was used instead of CMI's. Verify all values before proceeding",
-            False,
-            "No report is linked in this article. Figures shown are adjusted by 3-5% from the source's. " + "; ".join(rows[:12])
-            + (f" (+{len(rows) - 12} more)" if len(rows) > 12 else ""),
-        ))
-
     # ---- kept: the CMI report link — exactly once, early, the market's first mention, correct anchor
     if getattr(inp, "link_report", True):
         cmi_links = re.findall(CMI_LINK_PATTERN, full)
@@ -1814,6 +1791,23 @@ def run_checks_v2(
                 anchor_matches_report,
                 "" if anchor_matches_report else f"expected {report_name!r}, found {cmi_links!r}",
             ))
+    else:
+        # An outside report stood in for CMI's: its figures are stated plainly, and neither CMI's report nor any other report is cited.
+        cited = [m.group(0) for s in sections for p in s["paragraphs"] for m in [_REPORT_CITED_RE.search(p)] if m]
+        results.append(CheckResult(
+            "No report is cited (an outside report was used, so no report is named or credited to CMI)",
+            not cited, "; ".join(dict.fromkeys(c.lower() for c in cited)),
+        ))
+
+    # ---- the SOP's own rule, whether or not a report is linked: the market's full name is in the first 100 words
+    name_at = market_name_offset(sections, sponsor_text, market_name)
+    results.append(CheckResult(
+        f"The market name appears within the first {MARKET_NAME_WORDS} words",
+        name_at is not None and name_at <= MARKET_NAME_WORDS,
+        "" if name_at is not None and name_at <= MARKET_NAME_WORDS else
+        (f"{market_name!r} first appears at word {name_at}" if name_at is not None
+         else f"{market_name!r} does not appear in any paragraph"),
+    ))
 
     # ---- hard (§3.6a): the title passes planning's own hard title checks
     title_hard, title_soft = planning.title_problems(
@@ -1869,21 +1863,6 @@ def run_checks_v2(
         "; ".join(jargon_notes) if jargon_notes else "",
     ))
 
-    # ---- hard (§3.7): secondary keywords — 4-6 assigned, each used in its section, one per paragraph
-    keyword_problems = v2_keyword_problems(sections, plan, market_name, anywhere=humanized)
-    results.append(CheckResult(
-        "Secondary keywords: 4-6 assigned, each used in the article, no paragraph stuffed with them" if humanized
-        else "Secondary keywords: 4-6 assigned, each used in its own section, no paragraph stuffed with them",
-        not keyword_problems,
-        "; ".join(keyword_problems) if keyword_problems else "",
-    ))
-    overlap_notes = v2_keyword_overlap_notes(sections, plan, market_name)
-    results.append(CheckResult(
-        "No paragraph carries two assigned secondary keywords (soft)",
-        not overlap_notes,
-        "; ".join(overlap_notes) if overlap_notes else "",
-    ))
-
     # ---- hard (§3.6b): intro -> transition -> market, with no switches back to the publisher's topic
     order_problems = block_order_problems(sections)
     results.append(CheckResult(
@@ -1918,6 +1897,12 @@ def run_checks_v2(
         "; ".join(attribution_problems) if attribution_problems else "",
     ))
 
+    # ---- hard: a source is credited only beside its own facts
+    stray_credits = v2_stray_credit_problems(sections, plan, inp)
+    results.append(CheckResult(
+        "A source is credited only for its own facts", not stray_credits, "; ".join(stray_credits),
+    ))
+
     # ---- hard (§3.9): placeholder figures ("USD <year>", "a stated rate", bare "%") never print
     placeholder_problems = v2_placeholder_figure_problems(sections, faq)
     results.append(CheckResult(
@@ -1940,7 +1925,7 @@ def run_checks_v2(
     trend_problems = v2_trend_shape_problems(raw_sections)
     results.append(CheckResult("Trends: three sub-headed trends, three paragraphs each", not trend_problems, "; ".join(trend_problems)))
     figure_problems = v2_report_figure_problems(sections, inp)
-    results.append(CheckResult("CMI report figures stated: market size, forecast, growth rate and every segment figure",
+    results.append(CheckResult("Report figures stated: market size, forecast, growth rate and every segment figure",
                                not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))

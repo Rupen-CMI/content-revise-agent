@@ -416,6 +416,11 @@ def feature_problems(raw_sections: list[dict], clients: list[Client], market_nam
         if not page:
             continue
         allowed = _stems(c.paragraph.text) | _stems(" ".join(l["anchor"] for l in c.links)) | _stems(market_name) | _stems(subject)
+        # One opening paragraph can carry several clients' links: another client's linked words and its own paragraph are as much the
+        # post's own as this client's, so words only they bring ("digital marketing agency") are not this client's offer.
+        for other in clients:
+            if other is not c:
+                allowed |= _stems(other.paragraph.text) | _stems(" ".join(l["anchor"] for l in other.links))
         ids = {l["id"] for l in c.links}
         for p in intro_paragraphs(raw_sections):
             if not any(m.group(1) in ids for m in TOKEN_RE.finditer(p)):
