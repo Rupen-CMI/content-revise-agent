@@ -25,8 +25,11 @@ export function fmtTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  // Shown in India Standard Time (UTC+5:30, no daylight saving): the people using the agent are in India.
+  return `${new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 16).replace("T", " ")} IST`;
 }
+
+const IST_OFFSET_MS = 330 * 60 * 1000;
 
 /** "step2" -> "Step 2", "finalize" -> "Finalize"; anything unknown is shown as sent. */
 export function fmtStep(step: string | null | undefined): string {
