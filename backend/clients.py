@@ -249,8 +249,11 @@ def client_block(clients: list[Client]) -> str:
         keep_out = ", ".join(dict.fromkeys([x for x in [(b.get("name") or ""), c.host.split(".")[0], c.host] if x]))
         rows.append(f'CLIENT {c.id} (never written in the post: {keep_out}); links: ' + "; ".join(f'{l["id"]} "{l["anchor"]}"' for l in c.links))
         rows.append(f'  The guest article\'s paragraph that holds the link (linked words marked <<id: words>>; its idea is carried, its wording and its client are not): "{marked_text(c)}"')
-        if b.get("offer"):
-            rows.append(f'  What the linked page really offers, from the page itself (for accuracy only, never quoted or paraphrased as a description of the client): {b["offer"]}')
+        if b.get("category") or b.get("offer"):
+            # Only the kind of business reaches the writer, never the page's offer sentence: with the full sentence in view the
+            # writer reused its wording and described what the client sells ("without a large upfront commitment", "resourcing,
+            # financial control and forecasting in one view"). feature_problems reports any such wording that still gets through.
+            rows.append(f'  The kind of business the linked page belongs to, for accuracy only (never written in the post, and none of the client\'s features, benefits or services are described): {b.get("category") or "see the linked words"}')
         else:
             rows.append("  What the linked page offers: not available (the page could not be read). Use the linked words only as the guest article's paragraph uses them.")
         if b.get("anchor_fit") in ("broader", "different"):
@@ -355,14 +358,70 @@ def naming_problems(raw_sections: list[dict], clients: list[Client]) -> list[str
     """The link is the client's one mention: its name (as its page gave it, and its domain's first word) is written nowhere in the post.
     The linked words themselves are left out of the reading, so a link whose words ARE the client's name is not a fault."""
     out: list[str] = []
+    # A client whose name is also an ordinary word ("teamwork") is not named by that word used as a word: only the name written as a
+    # name counts. A capitalised form counts; so does the domain. A capitalised form that merely opens a sentence is the ordinary word
+    # when the post also writes it in lower case elsewhere.
+    plain_words = {w for s in raw_sections for p in s["paragraphs"] for w in re.findall(r"\b[a-z]+\b", TOKEN_RE.sub(" ", p))}
     for c in clients:
-        names = {_squash(n) for n in (c.host.split(".")[0], (c.brief or {}).get("name") or "")} - {""}
+        names = [n for n in dict.fromkeys([c.host.split(".")[0], (c.brief or {}).get("name") or ""]) if n]
+
+        def written_as_name(text: str) -> str | None:
+            if c.host.lower() in text.lower():
+                return c.host
+            for n in names:
+                for m in re.finditer(r"(?<![\w])" + re.escape(n) + r"(?![\w])", text, re.IGNORECASE):
+                    word = m.group(0)
+                    if word == word.lower():
+                        continue
+                    before = text[:m.start()].rstrip()
+                    if (not before or before[-1] in ".!?\n:#-") and word.lower() in plain_words:
+                        continue
+                    return n
+            return None
+
         for s in raw_sections:
             label = s["sop"][0] if s.get("sop") else "the opening"
             for p in s["paragraphs"]:
-                flat = f" {_squash(TOKEN_RE.sub(' ', p))} "
-                hit = next((n for n in names if f" {n} " in flat), None)
+                hit = written_as_name(TOKEN_RE.sub(" ", p))
                 if hit:
                     out.append(f"{label} names the client ({hit!r}, {c.host}): the link is its only mention")
                     break
+    return out
+
+
+_FEATURE_STOP = frozenset({
+    "about", "after", "again", "also", "among", "because", "before", "being", "between", "buyers", "could", "during", "every", "first",
+    "found", "given", "other", "their", "there", "these", "those", "through", "under", "until", "which", "while", "would", "within",
+    "without", "across", "market", "markets", "global", "where", "whose", "often", "using", "based", "makes", "make", "made",
+    "services", "service", "companies", "company", "customers", "customer", "clients", "client", "business", "businesses",
+})
+_FEATURE_MIN_SHARED = 3
+
+
+def _stems(text: str) -> set[str]:
+    """Five-letter stems of the words of five letters or more, without the filler words (a crude stem: 'manufacturing' and
+    'manufacturer' both read 'manuf')."""
+    return {w[:5] for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 5 and w not in _FEATURE_STOP}
+
+
+def feature_problems(raw_sections: list[dict], clients: list[Client], market_name: str = "", subject: str = "") -> list[str]:
+    """The post must not describe what a client sells. A paragraph that carries a client's link and repeats three or more
+    content words that only the client's own page uses (its offer and its kind of business) is describing the client's offer,
+    not the market. Words that the guest article's own paragraph used, its subject (the opening is about it), the linked words
+    and the market's name are the post's own to use and are left out. The name check cannot see this: no name is written."""
+    out: list[str] = []
+    for c in clients:
+        b = c.brief or {}
+        page = _stems(" ".join([b.get("offer") or "", b.get("category") or ""]))
+        if not page:
+            continue
+        allowed = _stems(c.paragraph.text) | _stems(" ".join(l["anchor"] for l in c.links)) | _stems(market_name) | _stems(subject)
+        ids = {l["id"] for l in c.links}
+        for p in intro_paragraphs(raw_sections):
+            if not any(m.group(1) in ids for m in TOKEN_RE.finditer(p)):
+                continue
+            shared = sorted((_stems(plain(p)) & page) - allowed)
+            if len(shared) >= _FEATURE_MIN_SHARED:
+                out.append(f"the sentences around the {c.host} link repeat words from the client's own offer ({', '.join(shared[:6])}): "
+                           "the post describes what the client sells instead of the market")
     return out

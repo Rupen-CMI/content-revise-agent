@@ -180,8 +180,8 @@ fixed = clients.normalize_tokens(absent, c_one, LOG)
 check("tokens: a link the writer left out stays missing, for the check to report", clients.link_problems(fixed, c_one))
 
 # ------------------------------------------------------------------ the checks in client mode
-RESTATED = ("Graduate students who must turn research into finished reports can find [[CLIENT_LINK:L1|research paper help]] in many forms today, "
-            "from drafting support to formatting and revision. ")
+RESTATED = ("Readers who must turn research into finished reports can find [[CLIENT_LINK:L1|research paper help]] in many forms today, "
+            "from structure guidance to formatting and revision. ")
 
 
 def client_draft(restated: str = RESTATED, extra_market: str = "") -> list[dict]:
@@ -223,9 +223,37 @@ named_in_market = t.by_name(run_client(client_draft(extra_market="Aldwych also a
 check("client mode: naming the client in a market section fails the check too", not named_in_market.passed, named_in_market.detail)
 promo = t.by_name(good, "Client not named")
 check("client mode: a draft with the link and no name passes the check", promo.passed, promo.detail)
+# the offer-description check: no name is written, yet the sentences describe what the client sells
+OFFER_ECHO = ("Graduate students who must turn research into finished reports can find [[CLIENT_LINK:L1|research paper help]] in many forms "
+              "today, from drafting support to editing of papers. ")
+echo = t.by_name(run_client(client_draft(OFFER_ECHO)), "Client's offer not described")
+check("client mode: sentences that repeat the client's offer wording fail the 'offer not described' check",
+      not echo.passed and "aldwych.example" in echo.detail, echo.detail)
+clean_offer = t.by_name(good, "Client's offer not described")
+check("client mode: a restatement that uses none of the offer's own words passes it", clean_offer.passed, clean_offer.detail)
+text_cat = clients.client_block(c_one)
+check("prompt: the writer sees the client's kind of business, never the page's offer sentence",
+      "academic writing" in text_cat and "Drafting and editing of research papers" not in text_cat, text_cat[-500:])
 check("client mode: only the link's words may be the client's name",
       clients.naming_problems([{"heading": "", "sop": [], "paragraphs": ["See [[CLIENT_LINK:L1|Aldwych Writing Studio]] for more."]}],
                               [dataclasses.replace(c_one[0], links=[{"id": "L1", "anchor": "Aldwych Writing Studio", "url": ALD.url}])]) == [])
+
+# a client whose name is an ordinary word ("teamwork") is named only when the name is written as a name
+TW = dataclasses.replace(c_one[0], host="teamwork.com", brief={"name": "Teamwork.com", "offer": "x", "category": "project software"},
+                         links=[{"id": "L1", "anchor": "project management software", "url": "https://www.teamwork.com/"}])
+word_use = [{"heading": "", "sop": [], "paragraphs": ["Good teamwork needs a shared view. Teamwork improves delivery when plans are clear."]},
+            {"heading": "", "sop": ["trends"], "paragraphs": ["Strong teamwork speeds up reviews."]}]
+check("naming: the ordinary word 'teamwork' is not the client's name", clients.naming_problems(word_use, [TW]) == [], str(clients.naming_problems(word_use, [TW])))
+as_name = [{"heading": "", "sop": [], "paragraphs": ["Many agencies rely on Teamwork for billing."]}]
+check("naming: the name written as a name is caught", len(clients.naming_problems(as_name, [TW])) == 1)
+by_domain = [{"heading": "", "sop": [], "paragraphs": ["See teamwork.com for more."]}]
+check("naming: the domain is caught", len(clients.naming_problems(by_domain, [TW])) == 1)
+# the opening is about the guest article's subject: words it shares with the client's page are the post's own
+SUB = dataclasses.replace(c_one[0], brief={"name": "Aldwych", "offer": "Drafting and editing of research papers for graduate students.", "category": "academic writing"})
+subj_draft = [{"heading": "", "sop": [], "paragraphs": ["Graduate students drafting [[CLIENT_LINK:L1|research paper help]] want clear editing."]}]
+check("offer check: words the guest article's own subject uses are not a leak",
+      clients.feature_problems(subj_draft, [SUB], "", "Drafting and editing for graduate students") == [])
+check("offer check: without that subject the same words are flagged", len(clients.feature_problems(subj_draft, [SUB], "", "")) == 1)
 
 # figures from the client's own website are a legitimate source: the number trace allows them, and only them
 with_figs = RESTATED.replace("revision.", "revision in more than 250 languages.")
