@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+import sentsplit
 import subheads
 import freshness
 from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
@@ -22,7 +23,7 @@ def count_cmi_opinions(paragraphs: list[str]) -> int:
     """Sentences that attribute a view to a CMI analyst/expert/research team."""
     n = 0
     for p in paragraphs:
-        for sentence in re.split(r"(?<=[.!?])\s+", p):
+        for sentence in sentsplit.split(p):
             if _CMI_OPINION_RE.search(sentence):
                 n += 1
     return n
@@ -288,7 +289,7 @@ def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
 
 # The existing sentence splitter (every other place in this file splits inline); lifted here so the
 # loose matcher below and its callers agree on where a sentence ends.
-_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_SENT_SPLIT_RE = sentsplit.SPLIT_RE
 
 
 def keyword_words_in_sentence(text: str, phrase: str, use_stems: bool = True) -> list[tuple[int, int]] | None:
@@ -370,7 +371,7 @@ def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: 
         for s in sections:
             label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
             for p in s.get("paragraphs") or []:
-                for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+                for sentence in sentsplit.split(_sponsor_replacement(p, sponsor_text)):
                     sentence = sentence.strip()
                     if not sentence:
                         continue
@@ -1406,7 +1407,7 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
             # and the memory resets at every line — a new line that uses the source's figure names it again.
             for line in _sponsor_replacement(p, " ").split("\n"):
                 named_line: set[str] = set()    # outside sources named in earlier sentences of this line
-                for sentence in re.split(r"(?<=[.!?])\s+", line):
+                for sentence in sentsplit.split(line):
                     low = sentence.lower()
                     named_line |= {src for _, src, _ in outside if _names_source(low, src)}
                     sent_nums = _fact_numbers(sentence)
@@ -1526,7 +1527,7 @@ def v2_vague_reference_problems(sections: list[dict], faq: list[dict] = ()) -> l
                 if line.startswith(marker):
                     line = line[len(marker):].strip()
                     break
-            for sentence in re.split(r"(?<=[.!?])\s+", line):
+            for sentence in sentsplit.split(line):
                 sentence = sentence.lstrip(_VAGUE_LEADING_CHARS).strip()
                 if len(sentence.split()) < 3:
                     continue
@@ -1680,7 +1681,7 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
     retained sponsor paragraph's own wording is blanked the way the other sentence checks blank it. The notes
     carry the offending sentences so the rate can be tuned against real drafts."""
     sentences = [s2.strip() for s in sections for p in s.get("paragraphs") or []
-                 for s2 in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, " ")) if s2.strip()]
+                 for s2 in sentsplit.split(_sponsor_replacement(p, " ")) if s2.strip()]
     passive = [s2 for s2 in sentences
                if (m := _V2_PASSIVE_RE.search(s2)) is not None
                and m.group("part").lower() not in _V2_PASSIVE_ADJ_WORDS]
@@ -1949,6 +1950,10 @@ def run_checks_v2(
     results.append(CheckResult(
         "Positive only: no restraint, challenge, risk or setback wording",
         not negative, "; ".join(negative[:4]) + (f" (+{len(negative) - 4} more)" if len(negative) > 4 else "") if negative else ""))
+    whole = content_rules.text_reads_whole_problems(raw_sections, faq or [])
+    results.append(CheckResult(
+        "Text reads whole: no cut-off sentence, fragment, process wording or unresolved opening reference",
+        not whole, "; ".join(whole[:4]) + (f" (+{len(whole) - 4} more)" if len(whole) > 4 else "") if whole else ""))
     repeated = content_rules.repeated_point_problems(sections, market_name=market_name)
     results.append(CheckResult(
         "No point is made twice across sections",
@@ -2067,7 +2072,7 @@ def run_checks_v2(
     for s in sections:
         label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
         for p in s["paragraphs"]:
-            for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+            for sentence in sentsplit.split(_sponsor_replacement(p, sponsor_text)):
                 n = _words(sentence)
                 if n > _V2_SENTENCE_MAX_WORDS:
                     long_sentences.append(f"{label}: a sentence runs {n} words")

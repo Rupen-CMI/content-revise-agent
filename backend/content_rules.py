@@ -4,8 +4,9 @@ checks.run_checks_v2 turns them into hard checks. Nothing here calls a model."""
 import re
 
 import polarity
+import sentsplit
 
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])(?<!U\.S\.)(?<!U\.K\.)(?<!Inc\.)(?<!Ltd\.)\s+(?=[A-Z0-9\"“])|\n+")
+_SENTENCE_SPLIT_RE = re.compile(sentsplit.BOUNDARY + r"(?=[A-Z0-9\"“])|\n+")
 
 # Regions and countries that must not appear in the U.S. section. North America alone is allowed when the same sentence
 # also names the U.S. (a sentence that places the U.S. inside its region is still about the U.S.).
@@ -108,4 +109,60 @@ def repeated_point_problems(sections: list[dict], threshold: float = 0.55, min_s
                         out.append(f"{label} repeats {other_label}: {sentence[:70]!r} / {other[:70]!r}")
                         break
                 seen.append((label, stems, sentence))
+    return out
+
+
+# ------------------------------------------------------------------------------------------- the text reads whole
+
+# A sentence cut off at an abbreviation, a paragraph that opens on a word pointing at something that is not there, or a
+# line of the generator's own process wording are all damage to the reader's text, never style. The cleanup steps that remove
+# a sentence can leave them behind, so the finished draft is checked for them (nothing is retried; the editor sees the problem).
+_OPENS_ON_REFERENCE_RE = re.compile(r"^(?:it|its|they|their|he|she|this|that|these|those|such|on that|in that|from that|at that|by that)\b", re.I)
+_CUT_ON_ABBREVIATION_RE = re.compile(r"\b(?:Inc|Ltd|Corp|Co|No|Nos|St|Mt|Ft|Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.$")
+_PROCESS_WORDING_RE = re.compile(
+    r"\bfacts?\s+(?:provided|supplied|listed|given)\b|\b(?:provided|supplied|listed)\s+facts?\b|\bmarket's\s+full\s+name\b", re.I)
+
+
+def _is_heading_line(paragraph: str) -> bool:
+    return paragraph.lstrip().startswith("#")
+
+
+def text_reads_whole_problems(sections: list[dict], faq: list[dict] = ()) -> list[str]:
+    """Damaged text in the finished draft and FAQ: a paragraph that ends on an abbreviation (a cut sentence), starts in lower
+    case (a fragment), or contains generator process wording; and a paragraph or FAQ answer that is the FIRST under its
+    heading or question yet opens on a pronoun or 'that ...' reference with nothing before it to refer to."""
+    out: list[str] = []
+    for s in sections:
+        label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "the opening")
+        first_under_heading = True
+        for p in s["paragraphs"]:
+            if _is_heading_line(p):
+                first_under_heading = True
+                continue
+            text = p.strip()
+            if not text:
+                continue
+            if text[0].islower():
+                out.append(f"{label}: a paragraph starts in lower case, a fragment: {text[:70]!r}")
+            if _CUT_ON_ABBREVIATION_RE.search(text):
+                out.append(f"{label}: a sentence is cut off at an abbreviation: ...{text[-60:]!r}")
+            if _PROCESS_WORDING_RE.search(text):
+                out.append(f"{label}: process wording reached the text: {_PROCESS_WORDING_RE.search(text).group(0)!r}")
+            # the transition follows the opening and is written to refer back to it ("That buying question now sits inside ...")
+            if first_under_heading and "transition" not in (s.get("sop") or []) and _OPENS_ON_REFERENCE_RE.match(text):
+                out.append(f"{label}: opens on a reference to something not stated: {text[:70]!r}")
+            first_under_heading = False
+    for item in faq:
+        answer = str(item.get("answer") or "").strip()
+        label = f"FAQ {str(item.get('question') or '')[:50]!r}"
+        if not answer:
+            continue
+        if answer[0].islower():
+            out.append(f"{label}: the answer starts in lower case, a fragment: {answer[:70]!r}")
+        if _CUT_ON_ABBREVIATION_RE.search(answer):
+            out.append(f"{label}: the answer is cut off at an abbreviation: ...{answer[-60:]!r}")
+        if _PROCESS_WORDING_RE.search(answer):
+            out.append(f"{label}: process wording reached the answer: {_PROCESS_WORDING_RE.search(answer).group(0)!r}")
+        if _OPENS_ON_REFERENCE_RE.match(answer):
+            out.append(f"{label}: the answer opens on a reference to something not stated: {answer[:70]!r}")
     return out

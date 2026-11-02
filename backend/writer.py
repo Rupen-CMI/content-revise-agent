@@ -19,6 +19,7 @@ from datetime import date
 import config
 import llm
 import clients
+import sentsplit
 import subheads
 import planning
 import prompts
@@ -219,9 +220,10 @@ def _format_write_user(plan, inp, sponsor, report, today, mode, linked, total, t
 # Sentences that talk about the writing process or about what the sources lack. A prompt rule against them is not reliable,
 # so they are removed in code (the sentence goes; nothing is rewritten).
 _META_RE = re.compile(
-    r"\b(?:listed|given|supplied|provided|available)\s+(?:facts?|information|details?|data)\b"
+    r"\b(?:listed|supplied|provided)\s+facts?\b|\bfacts?\s+(?:listed|supplied|provided|given)\b"
     r"|\bthe\s+facts?\s+(?:say|carry|show|give|do not|does not|don't)\b"
-    r"|\bthe\s+(?:plan|brief)\b"
+    r"|\b(?:according\s+to|per|following|in\s+line\s+with)\s+the\s+(?:plan|brief)\b"
+    r"|\bthe\s+(?:plan|brief)\s+(?:says|calls|requires|asks|states|gives|lists|specif\w+)\b"
     r"|\b(?:report|source|sources)\s+(?:does|do)\s+not\s+(?:put|break|give|say|state|list|name)\b"
     r"|\bnot\s+(?:broken\s+out|listed|stated|given|provided)\s+(?:in|by)\b"
     r"|\b(?:says|say)\s+little\s+more\b|\bstays?\s+(?:broad|at\s+the\s+regional\s+level)\b"
@@ -230,13 +232,15 @@ _META_RE = re.compile(
     r"|\brather\s+than\s+any\s+measured\b|\bdoes\s+not\s+quantify\b",
     re.IGNORECASE,
 )
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE_SPLIT_RE = sentsplit.SPLIT_RE
 
 
 def _holds_link(sentence: str) -> bool:
-    """A sentence carrying the retained-paragraph placeholder or a client link token: the backstops never cut or reword it,
-    because a lost link is a lost paid backlink (the checks report anything wrong with such a sentence)."""
-    return prompts.SPONSOR_TOKEN in sentence or "[[CLIENT_LINK:" in sentence
+    """A sentence carrying the retained-paragraph placeholder, a client link token or the CMI report link: the backstops
+    never cut, reword or remove it, because a lost link is a lost backlink (the checks report anything wrong with such a
+    sentence). Precedent: a sentence "CMI's analysis of the [[CMI_LINK:...]] examines how vendors..." was removed as a
+    coverage advert and the post went out with no report link at all."""
+    return prompts.SPONSOR_TOKEN in sentence or "[[CLIENT_LINK:" in sentence or "[[CMI_LINK:" in sentence
 
 
 # A sentence that does nothing but advertise what a study, survey, report or site covers — no figure and no finding of
@@ -279,6 +283,31 @@ def _is_coverage_ad(sent: str) -> bool:
     return not _FINDING_VERB_RE.search(sent)
 
 
+# A sentence the backstops remove can be the one a following sentence refers to ("Apertera announced ... ." then "Its chief executive
+# observed ..."). Without its antecedent that sentence reads as damage, so it goes with it: a sentence that opens on a reference
+# directly after a removed sentence is removed too, and so on down the run (the whole-text check reports any that still get through).
+_ORPHAN_OPENER_RE = re.compile(
+    r"^(?:(?:it|its|they|their|he|she|this|that|these|those|such|on that|in that|from that|at that|by that)\b"
+    r"|the (?:company|firm|provider|vendor|group|deal|acquisition|merger|move|launch|announcement|partnership|result|study|survey|"
+    r"finding|figure|plan|system|platform|tool)\b)", re.I)
+
+
+def _drop_orphans(kept: list[str], removed: set[int]) -> list[str]:
+    """`kept` is a line's sentences in order and `removed` the indexes the caller removed: the sentences left, minus any that open
+    on a reference directly after a removed one."""
+    out: list[str] = []
+    gap = False
+    for i, sent in enumerate(kept):
+        if i in removed:
+            gap = True
+            continue
+        if gap and not _holds_link(sent) and _ORPHAN_OPENER_RE.match(sent.strip()):
+            continue
+        gap = False
+        out.append(sent)
+    return out
+
+
 def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[dict]:
     """Remove sentences that describe the facts or the plan instead of the market, or that advertise a publication's
     coverage without reporting any finding from it. Works line by line so bullet lists keep
@@ -289,10 +318,11 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
             lines = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                good = [x for x in kept if not (_META_RE.search(x) or _is_coverage_ad(x))]
+                gone = {i for i, x in enumerate(kept) if not _holds_link(x) and (_META_RE.search(x) or _is_coverage_ad(x))}
+                good = _drop_orphans(kept, gone)
                 if len(good) != len(kept):
                     logger.info(f"[write] removed {len(kept) - len(good)} process-language sentence(s) from {s['sop'] or 'the opening'}: "
-                                + " | ".join(x[:110] for x in kept if _META_RE.search(x) or _is_coverage_ad(x)))
+                                + " | ".join(x[:110] for x in kept if x not in good))
                 if good:
                     lines.append(" ".join(good))
             if lines:
@@ -560,15 +590,15 @@ def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, spons
             lines: list[str] = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                good, gone = [], []
-                for sent in kept:
+                gone_ix: set[int] = set()
+                for si, sent in enumerate(kept):
                     text = checks._sponsor_replacement(sent, sponsor_text) if sponsor_text else sent
                     bad = sorted(n for n in checks._fact_numbers(text)
                                  if n not in allowed and not re.fullmatch(r"(?:19|20)\d\d", n))
                     if bad and not _holds_link(sent):
-                        gone.append(sent)
-                    else:
-                        good.append(sent)
+                        gone_ix.add(si)
+                good = _drop_orphans(kept, gone_ix)
+                gone = [x for x in kept if x not in good]
                 if gone:
                     logger.info(f"[write] removed {len(gone)} untraced-figure sentence(s) from {label}: "
                                 + " | ".join(x[:110] for x in gone))
@@ -614,8 +644,8 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
                 named_line: set[str] = set()    # outside sources named in earlier sentences of this line
-                good, gone = [], []
-                for sent in kept:
+                good, gone, gone_ix = [], [], set()
+                for si, sent in enumerate(kept):
                     low = sent.lower()
                     strong = [n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)]
                     repeats = sorted(n for n in strong if n in printed)
@@ -623,10 +653,15 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
                         srcs = {owned[n] for n in repeats}
                         if not all(checks._names_source(low, src) or src in named_line for src in srcs):
                             gone.append(sent)
+                            gone_ix.add(si)
                             continue
                     good.append(sent)
                     named_line |= {src for src in set(owned.values()) if checks._names_source(low, src)}
                     printed.update(n for n in strong if n in owned)
+                if gone_ix:       # a sentence that refers to a removed one goes with it
+                    kept_after = _drop_orphans(kept, gone_ix)
+                    gone += [x for x in good if x not in kept_after]
+                    good = [x for x in good if x in kept_after]
                 if gone:
                     logged = "; ".join(f"{n} ({owned[n]} printed earlier)" for n in
                                        sorted({n for sent in gone for n in checks._fact_numbers(sent)

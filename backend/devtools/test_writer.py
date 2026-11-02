@@ -33,7 +33,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 secs = [{"heading": "h", "sop": ["subsegment"], "paragraphs": [
     "Banks are core buyers. The listed facts say little more about how banks use these platforms, so the picture here stays broad.",
     "Lead-in sentence.\n- Fiserv: sells platforms.\n- The report does not put a number on it here.",
-    "The facts say nothing. The plan was to stop.",
+    "The facts say nothing. The plan calls for a stop.",
     "Cloud tools grow fast. Nothing here is about the writing process."]}]
 out = writer.strip_meta_sentences(secs, LOG)
 paras = out[0]["paragraphs"]
