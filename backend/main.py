@@ -61,6 +61,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import spelling
 import checks
 import clients as clients_mod
 import config
@@ -1563,6 +1564,13 @@ def _step4_chain(run: RunState) -> dict:
         faq = faqs.run_faq(plan, run.plan_inputs, sections, run.logger)
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "Step 4", e)
+    # one spelling variety for the body and the FAQ: the guest article's own (the evidence and the FAQ step write the other one)
+    variety = spelling.detect(" ".join(p.text for p in run.article.paragraphs))
+    inp = run.plan_inputs
+    keep = spelling.keep_words(inp.market_name, *inp.terms, *(lt.get("keyword", "") for lt in inp.longtails),
+                               *(k for k, _ in inp.secondary_pool), json.dumps(plan))
+    sections, faq = spelling.apply(sections, faq, variety, keep)
+    run.logger.info(f"[spelling] body and FAQ set to {variety} spelling (the guest article's own)")
     run.title, run.sections, run.evidence_citations, run.faq = title, sections, evidence_citations, faq
     run.logger.info(f"STEP 4 DONE — draft {title!r} ({len(sections)} sections, {len(faq)} MSQ FAQ entries"
                     + (f"; plan repairs: {'; '.join(plan.get('repairs'))}" if plan.get("repairs") else "") + ")")
