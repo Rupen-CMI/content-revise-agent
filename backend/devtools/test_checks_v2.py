@@ -762,9 +762,10 @@ PILE_NAME = "No long-tail phrase is pasted as a noun pile"
 # a long phrase of nearly all content words, assigned to the subsegment section (its fact sits there)
 inp4 = test_planning.make_inputs()
 inp4.longtails = inp4.longtails + [
-    {"id": "L4", "keyword": "custom cloud based widget services marketplace pricing", "fact": "fs.segments.0", "why": "x"}]
+    {"id": "L4", "keyword": "custom cloud based widget services marketplace pricing", "fact": "fs.segments.0.dominant", "why": "x"}]
+inp4.items["fs.segments.0.dominant"] = test_planning.item("fs.segments.0.dominant", "segments", "Dominant category in By Type: Cloud Based (the report states it leads this split)", {"subsegment"})
 raw4 = test_planning.good_plan()
-raw4["sections"][3]["facts"] = ["W2", "fs.segments.0", "fs.segments.1"]   # L4 rests on fs.segments.0
+raw4["sections"][3]["facts"] = ["W2", "fs.segments.0.dominant"]   # L4 rests on the leader fact (a split's category list is stated in the segmentation section only)
 raw4["sections"][3]["longtail"] = "L4"
 plan4 = planning.validate_plan(raw4, inp4, test_planning.LOG)
 lt_by_sop = {s["sop"]: s["longtail"] for s in plan4["sections"]}
@@ -901,9 +902,10 @@ check("long-tail loose: the tight matcher finds no use in the spread sentence (t
       checks.longtail_spans(LT_SPREAD_SENT, "zorb widget services pricing") == [])
 inp5 = test_planning.make_inputs()
 inp5.longtails = inp5.longtails + [
-    {"id": "L5", "keyword": "zorb widget services pricing", "fact": "fs.segments.0", "why": "x"}]
+    {"id": "L5", "keyword": "zorb widget services pricing", "fact": "fs.segments.0.dominant", "why": "x"}]
+inp5.items["fs.segments.0.dominant"] = test_planning.item("fs.segments.0.dominant", "segments", "Dominant category in By Type: Cloud Based (the report states it leads this split)", {"subsegment"})
 raw5 = test_planning.good_plan()
-raw5["sections"][3]["facts"] = ["W2", "fs.segments.0", "fs.segments.1"]   # L5 rests on fs.segments.0
+raw5["sections"][3]["facts"] = ["W2", "fs.segments.0.dominant"]   # L5 rests on the leader fact (a split's category list is stated in the segmentation section only)
 raw5["sections"][3]["longtail"] = "L5"      # the sub-segment section, where its fact sits
 plan5 = planning.validate_plan(raw5, inp5, test_planning.LOG)
 d = good_draft()

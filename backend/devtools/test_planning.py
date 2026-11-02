@@ -279,7 +279,11 @@ raw = good_plan()
 raw["sections"][2]["facts"] = ["fs.segments.0", "fs.segments.1"]
 raw["sections"][3]["facts"] = ["fs.segments.0", "W2"]
 p = plan_of(raw)
-check("facts: a segment split may serve both segmentation and the sub-segment analysis", "fs.segments.0" in S(p, "subsegment")["facts"])
+check("facts: a split's category list is stated once, in the segmentation section only (one piece of evidence, one place)",
+      "fs.segments.0" in S(p, "segmentation")["facts"] and "fs.segments.0" not in S(p, "subsegment")["facts"],
+      str((S(p, "segmentation")["facts"], S(p, "subsegment")["facts"])))
+every = [f for sec in p["sections"] for f in sec["facts"]]
+check("facts: no fact id appears in two sections of the plan", len(every) == len(set(every)), str([f for f in set(every) if every.count(f) > 1]))
 
 raw = good_plan()
 raw["sections"][5]["facts"] = []

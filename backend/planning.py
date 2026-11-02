@@ -57,7 +57,6 @@ _EVIDENCE_TAG_SECTIONS = {
     "trends": {"trends", "subsegment"}, "us": {"country_us"}, "players": {"key_players", "trends"},
     "context": {"report_context", "segmentation", "subsegment", "trends", "key_players"},
 }
-_SHARED_FACTS = ("fs.segments.",)   # a segment split may serve both segmentation and the sub-segment analysis
 
 _FALLBACK_HEADINGS = {
     "report_context": "{market} Size and Growth",
@@ -505,7 +504,7 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
                 repair(f"{sop}: unknown fact id {fid!r} dropped")
             elif sop not in item["sections"]:
                 repair(f"{sop}: fact {fid} does not belong in this section and was dropped")
-            elif fid in used_facts and not fid.startswith(_SHARED_FACTS):
+            elif fid in used_facts:
                 repair(f"{sop}: fact {fid} is already used in another section and was dropped")
             elif fid in kept:
                 continue
@@ -572,7 +571,9 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     sub["sub_segments"] = valid
     for v in valid:                  # its split, the split's leader and its own stated figure all travel with the pick
         seg = next(g for g in inp.segments if g["type"] == v["split"])
-        wanted = [seg["id"]]
+        # A piece of evidence is stated once in the article. The split's category list belongs to the segmentation section; the
+        # split's leader and the picked category's own figure belong to the sub-segment section, and nowhere else.
+        wanted = []
         if seg.get("dominant"):
             wanted.append(f"{seg['id']}.dominant")
         wanted += [f"{seg['id']}.i{k}" for k, n in enumerate(seg["items"]) if n == v["name"] and n in (seg.get("figures") or {})]
@@ -594,6 +595,15 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     ctx["facts"] = ordered
     used_facts.update(ordered)
     seg_sec = by_sop["segmentation"]
+    # the sub-segment section keeps its picks' leader and figure and never a split's category list; the segmentation section
+    # keeps the category lists and never a fact the sub-segment section states (one piece of evidence, one place)
+    list_ids = {g["id"] for g in inp.segments}
+    for fid in [f for f in sub["facts"] if f in list_ids]:
+        sub["facts"].remove(fid)
+        repair(f"subsegment: the category list {fid} belongs to the segmentation section and was removed here")
+    for fid in [f for f in seg_sec["facts"] if f in sub["facts"]]:
+        seg_sec["facts"].remove(fid)
+        repair(f"segmentation: fact {fid} is stated in the sub-segment analysis and was removed here (one piece of evidence, one place)")
     picked_split = {v["split"]: v["name"] for v in valid}
     needed: list[str] = []
     for seg in inp.segments:
