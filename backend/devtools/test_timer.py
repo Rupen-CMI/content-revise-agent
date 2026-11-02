@@ -56,6 +56,19 @@ check("each stage carries seconds and a start offset", all("seconds" in x and "s
 check("each stage and the total are written to the log",
       sum("[timing] Step 2 /" in r for r in records) == 3 and any("TOTAL" in r for r in records), str(records))
 
+# live progress: what the page lists while Step 2 works
+live = main.StageTimer(log, "Step 2")
+check("progress: nothing running before the first stage", live.progress() == {"active": [], "done": []})
+with live.stage("Outside reports"):
+    check("progress: a running stage is listed as active", live.progress() == {"active": ["Outside reports"], "done": []})
+try:
+    with live.stage("Keyword research"):
+        raise ValueError("boom")
+except ValueError:
+    pass
+check("progress: finished stages (even one that raised) move to done and nothing stays active",
+      live.progress() == {"active": [], "done": ["Outside reports", "Keyword research"]}, str(live.progress()))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
