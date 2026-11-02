@@ -14,10 +14,12 @@ import logging
 import re
 from datetime import date
 
+import clients
 import facts
 import llm
 import planning
 import prompts
+import sentsplit
 from pipeline import _plain
 from pipeline_log import section
 
@@ -28,7 +30,6 @@ _INTENT_FILTERS = {
     "growth": ({"forecast", "cagr"}, set()),
     "trends": ({"drivers"}, {"trends"}),
     "drivers": ({"drivers"}, set()),
-    "challenges": ({"restraints"}, set()),
     "technology_impact": (set(), {"trends"}),
     "segments": ({"segments"}, set()),
     "region": ({"regions"}, {"us"}),
@@ -38,11 +39,16 @@ _INTENT_FILTERS = {
     "opportunities": ({"opportunities"}, set()),
 }
 _FACT_LINE_CHARS = 200
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE_SPLIT_RE = sentsplit.SPLIT_RE
 
 _GENERIC_CAPS = frozenset({
     "the", "market", "global", "report", "analyst", "segment", "segments", "industry", "united", "north", "america",
     "asia", "pacific", "europe", "today", "this", "these", "scale",
+    "coherent", "insights",     # the research firm's own name: an answer may name it, it is no outside company
+    # words that open a sentence without being a name, whether or not the article happens to write them in lower case
+    "according", "based", "because", "during", "however", "overall", "together", "while", "although", "since", "with",
+    "within", "across", "among", "between", "also", "both", "each", "many", "most", "some", "several", "other", "another",
+    "their", "there", "when", "where", "which", "after", "before", "over", "under", "about", "its", "newer", "new",
 })
 
 
@@ -117,6 +123,9 @@ def strip_unsupported(q: dict, sources: list[dict], answer: str, draft_text: str
     allowed_names = _company_names(draft_text) | set(re.findall(r"[A-Za-z]+", q["question"]))
     for s in sources:
         allowed_names |= _company_names(s["text"])
+    # A capitalised word that the article or a fact also writes in lower case is an ordinary word that opened a sentence
+    # ("Demand rose", "Machine translation", "Deal"), not a company: only words never seen in lower case can be names.
+    plain_words = set(re.findall(r"\b[a-z]{3,}\b", " ".join([draft_text, q["question"]] + [s["text"] + " " + s.get("detail", "") for s in sources])))
     kept = []
     for sentence in _SENTENCE_SPLIT_RE.split(answer or ""):
         if not sentence.strip():
@@ -126,7 +135,7 @@ def strip_unsupported(q: dict, sources: list[dict], answer: str, draft_text: str
             logger.info(f"[faq] {q['id']}: sentence dropped, a figure no fact supports ({', '.join(bad_numbers)}): "
                         f"{sentence.strip()[:110]}")
             continue
-        names = _company_names(sentence) - allowed_names
+        names = {n for n in _company_names(sentence) - allowed_names if n.lower() not in plain_words}
         if names:
             logger.info(f"[faq] {q['id']}: sentence dropped, it names {', '.join(sorted(names))} which no fact for "
                         "this question names")
@@ -167,6 +176,10 @@ def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, lo
         plain = writer.strip_reader_filler([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq"))
         if plain:
             answer = plain[0]["paragraphs"][0]
+        # an answer that talks about the facts it was given ("the facts provided do not give its growth rate") loses that
+        # sentence; this runs last so a filler tail is trimmed from a sentence before the sentence is judged
+        kept_meta = writer.strip_meta_sentences([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq")) if answer else []
+        answer = kept_meta[0]["paragraphs"][0] if kept_meta else ""
         if not answer:
             logger.info(f"[faq] {qid}: nothing left after stripping unsupported sentences; question dropped")
             continue
@@ -180,7 +193,7 @@ def run_faq(plan: dict, inp: planning.PlanInputs, sections: list[dict], logger: 
     fatal. Returns [{question, answer, id, intent}], in plan order."""
     logger = logger if logger is not None else logging.getLogger("faq")
     section(logger, "CALL: FAQ")
-    draft_text = " ".join(p.replace(prompts.SPONSOR_TOKEN, " ") for s in sections for p in s["paragraphs"])
+    draft_text = " ".join(clients.plain(p.replace(prompts.SPONSOR_TOKEN, " ")) for s in sections for p in s["paragraphs"])
     try:
         raw = llm.chat_json(
             prompts.FAQ_MSQ_SYSTEM, build_prompt(plan, inp, today),

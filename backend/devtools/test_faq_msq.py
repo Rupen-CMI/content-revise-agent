@@ -130,6 +130,17 @@ try:
 finally:
     llm.chat_json = orig
 
+# ------------------------------------------------------------------ the answer prompt's rules
+import prompts  # noqa: E402
+_fp = prompts.FAQ_MSQ_USER
+check("prompt: one piece of evidence appears in one answer only", "One piece of evidence, one answer" in _fp and "never carry the same fact in different words" in _fp)
+check("prompt: an answer about a loosely related fact is left empty, not filled", "loosely related" in _fp and "leave its answer empty" in _fp)
+check("prompt: no 'according to ...' and no research firm's name in an answer", 'Never write "according to Coherent Market Insights"' in _fp)
+check("prompt: every answer stands alone and opens on its subject, never a pointing word", "never opens on a pointing word" in _fp)
+check("prompt: a rate is never labelled with a word of the model's own", "double-digit-adjacent" in _fp)
+check("planner prompt: evidence is counted per piece, not per source", "not about each source" in prompts.PLAN_USER and "assigned to exactly one section" in prompts.PLAN_USER)
+check("write prompt: one piece of evidence, one place in the whole post", "One piece of evidence, one place." in prompts.WRITE_USER)
+
 print()
 if test_planning.FAILURES:
     print(f"{len(test_planning.FAILURES)} FAILURE(S): {test_planning.FAILURES}")

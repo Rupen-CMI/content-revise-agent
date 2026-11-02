@@ -69,7 +69,8 @@ const state = {
   article: null,        // { title, paragraphs: [{index, text, links: [{anchor, url, isExternal}]}] }
   filename: null,
   sponsorIdx: 0,
-  run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, chosenCandidate }
+  clientPicks: {},          // host -> {on, paraIdx}: the clients the editor ticked and the paragraph chosen for each
+  run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, pickedCmi, pickedMarkets, reportUrls, chosenCandidate }
   result: null,          // final RevampResult-equivalent from the backend
   nav: "article",        // article | step1 | step2 | step3 | step4 | final
 };
@@ -135,9 +136,11 @@ async function resumeRunIfAny() {
     state.article = data.article;
     state.sponsorIdx = sponsorCandidatesFrom(data.article).findIndex((p) => p.index === data.sponsor_index);
     if (state.sponsorIdx < 0) state.sponsorIdx = 0;
+    restoreClientPicks(data.sponsor_indexes || [data.sponsor_index], (data.clients || []).map((c) => c.host));
 
     const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
-      factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null };
+      factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null,
+      pickedCmi: null, pickedMarkets: [], reportUrls: [""], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [] };
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.report = data.report;
@@ -154,8 +157,14 @@ async function resumeRunIfAny() {
       run.stage = "search_done";
       run.report = data.report;
       run.chosenCandidate = data.candidates.find((c) => c.news_id === data.report.news_id) || data.report;
+    } else if ((data.found_reports || []).length) {
+      run.stage = "reports_found";
+      run.foundReports = data.found_reports;
+      run.pickedFound = [];
+      run.pickedMarkets = data.picked_markets || [];
     } else {
       run.stage = "orient_done";
+      run.pickedMarkets = data.picked_markets || [];
     }
     state.run = run;
     state.nav = pointer.nav || "step1";
@@ -373,6 +382,7 @@ function resetForNewUpload() {
   state.article = null;
   state.filename = null;
   state.sponsorIdx = -1;
+  state.clientPicks = {};
   state.run = null;
   state.result = null;
   localStorage.removeItem(RUN_KEY);
@@ -384,50 +394,119 @@ function resetForNewUpload() {
   render();
 }
 
-// ---------------------------------------------------------------- sponsor paragraph picker
+// ---------------------------------------------------------------- client paragraph picker
 function sponsorCandidates() {
   if (!state.article) return [];
   return state.article.paragraphs.filter((p) => p.links.some((l) => l.isExternal));
 }
 
+// The client's own domain: 'shop.acme.com' and 'www.acme.com' are one client, 'acme.co.uk' keeps three labels (as clients.py does).
+function registrableHost(url) {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return String(url); }
+  const parts = host.split(".");
+  if (parts.length >= 3 && parts[parts.length - 1].length === 2 && ["co", "com", "org", "net", "ac", "gov", "edu"].includes(parts[parts.length - 2])) {
+    return parts.slice(-3).join(".");
+  }
+  return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+}
+
+// The article's outside links grouped by the client they belong to: [{host, anchors, paragraphs}].
+function clientGroups() {
+  const groups = new Map();
+  for (const p of sponsorCandidates()) {
+    for (const l of p.links.filter((x) => x.isExternal)) {
+      const host = registrableHost(l.url);
+      if (!groups.has(host)) groups.set(host, { host, anchors: [], paragraphs: [] });
+      const g = groups.get(host);
+      if (l.anchor && !g.anchors.includes(l.anchor)) g.anchors.push(l.anchor);
+      if (!g.paragraphs.includes(p)) g.paragraphs.push(p);
+    }
+  }
+  return [...groups.values()];
+}
+
+function clientPick(host) {
+  if (!state.clientPicks[host]) state.clientPicks[host] = { on: false, paraIdx: null };
+  return state.clientPicks[host];
+}
+
+function selectedClientHosts() {
+  return clientGroups().filter((g) => clientPick(g.host).on && clientPick(g.host).paraIdx !== null).map((g) => g.host);
+}
+
+function selectedParagraphIndexes() {
+  const out = [];
+  for (const g of clientGroups()) {
+    const pick = clientPick(g.host);
+    if (pick.on && pick.paraIdx !== null && !out.includes(pick.paraIdx)) out.push(pick.paraIdx);
+  }
+  return out;
+}
+
+function restoreClientPicks(indexes, hosts) {
+  state.clientPicks = {};
+  for (const g of clientGroups()) {
+    if ((hosts || []).length && !hosts.includes(g.host)) continue;
+    const hit = g.paragraphs.find((p) => (indexes || []).includes(p.index));
+    if (hit) state.clientPicks[g.host] = { on: true, paraIdx: hit.index };
+  }
+}
+
 function renderSponsorCandidates() {
   const container = document.getElementById("sponsor-candidates");
-  const candidates = sponsorCandidates();
+  const groups = clientGroups();
   container.innerHTML = "";
 
-  if (!candidates.length) {
+  if (!groups.length) {
     container.innerHTML = `<p class="field-hint" style="color:var(--danger)">No paragraph has a hyperlink outside coherentmarketinsights.com. The agent needs this to know what to preserve.</p>`;
     document.getElementById("start-btn").disabled = true;
     return;
   }
 
-  // Exactly one candidate is unambiguous — safe to auto-select. With 2+, a silent default
-  // previously let an unreviewed run lock in the wrong paragraph as "sponsor" (it defaulted to
-  // the first candidate, which is sometimes just the article's own opening paragraph, not the
-  // actual paid-backlink paragraph) — so here the user must actively pick one before continuing.
-  if (candidates.length === 1 && state.sponsorIdx !== 0) {
-    state.sponsorIdx = 0;
-  }
-
   const runActive = state.run && !state.result;
-  const needsChoice = candidates.length > 1 && state.sponsorIdx < 0;
-
-  candidates.forEach((p, i) => {
-    const externalLinks = p.links.filter((l) => l.isExternal).map((l) => l.anchor || l.url).join(", ");
-    const label = document.createElement("label");
-    label.className = "radio-option" + (i === state.sponsorIdx ? " selected" : "") + (runActive ? " disabled" : "");
-    label.innerHTML = `
-      <input type="radio" name="sponsor" value="${i}" ${i === state.sponsorIdx ? "checked" : ""} ${runActive ? "disabled" : ""}>
-      <span>&para;${p.index + 1} &middot; ${externalLinks}</span>
-    `;
-    label.querySelector("input").addEventListener("change", () => {
-      state.sponsorIdx = i;
-      renderSponsorCandidates();
-      updateSponsorPreview();
-    });
-    container.appendChild(label);
+  const several = groups.length > 1;
+  groups.forEach((g) => {
+    const pick = clientPick(g.host);
+    // One client is unambiguous. With several outside domains the editor ticks the clients: some links are an author's own
+    // site or a plain citation, and a silent default once locked in the wrong paragraph.
+    if (!several) pick.on = true;
+    if (pick.on && g.paragraphs.length === 1) pick.paraIdx = g.paragraphs[0].index;
+    const wrap = document.createElement("div");
+    wrap.className = "client-group" + (pick.on ? " on" : "");
+    const head = document.createElement("label");
+    head.className = "radio-option" + (pick.on ? " selected" : "") + (runActive ? " disabled" : "");
+    const name = `<strong>${escapeHtml(g.host)}</strong> &middot; ${escapeHtml(g.anchors.join(", "))}`;
+    head.innerHTML = several
+      ? `<input type="checkbox" ${pick.on ? "checked" : ""} ${runActive ? "disabled" : ""}><span>${name}</span>`
+      : `<span>${name}</span>`;
+    if (several) {
+      head.querySelector("input").addEventListener("change", (ev) => {
+        pick.on = ev.target.checked;
+        if (!pick.on) pick.paraIdx = null;
+        renderSponsorCandidates();
+      });
+    }
+    wrap.appendChild(head);
+    if (pick.on && g.paragraphs.length > 1) {
+      const sub = document.createElement("div");
+      sub.className = "client-paragraphs";
+      sub.innerHTML = `<p class="field-hint">Choose the paragraph that suits the post best:</p>`;
+      g.paragraphs.forEach((p) => {
+        const opt = document.createElement("label");
+        opt.className = "radio-option" + (pick.paraIdx === p.index ? " selected" : "") + (runActive ? " disabled" : "");
+        opt.innerHTML = `<input type="radio" name="client-${escapeHtml(g.host)}" ${pick.paraIdx === p.index ? "checked" : ""} ${runActive ? "disabled" : ""}>`
+          + `<span>&para;${p.index + 1} &middot; ${escapeHtml(p.text.slice(0, 90))}&hellip;</span>`;
+        opt.querySelector("input").addEventListener("change", () => { pick.paraIdx = p.index; renderSponsorCandidates(); });
+        sub.appendChild(opt);
+      });
+      wrap.appendChild(sub);
+    }
+    container.appendChild(wrap);
   });
 
+  const incomplete = groups.some((g) => clientPick(g.host).on && clientPick(g.host).paraIdx === null);
+  const needsChoice = selectedParagraphIndexes().length === 0 || incomplete;
   const hint = document.getElementById("sponsor-choice-hint");
   if (hint) hint.hidden = !needsChoice;
 
@@ -437,13 +516,36 @@ function renderSponsorCandidates() {
 }
 
 function updateSponsorPreview() {
-  const candidates = sponsorCandidates();
-  const chosen = candidates[state.sponsorIdx];
-  document.getElementById("sponsor-preview-text").textContent = chosen ? chosen.text : "Select a paragraph above to preview it.";
+  const paras = selectedParagraphIndexes()
+    .map((i) => (state.article ? state.article.paragraphs.find((p) => p.index === i) : null))
+    .filter(Boolean);
+  document.getElementById("sponsor-preview-text").textContent = paras.length
+    ? paras.map((p) => p.text).join("\n\n")
+    : "Select the client paragraph(s) above to preview them.";
 }
 
+// The first chosen client paragraph (the run's primary one); every chosen paragraph travels in selectedParagraphIndexes().
 function currentSponsor() {
-  return sponsorCandidates()[state.sponsorIdx] || null;
+  const idx = selectedParagraphIndexes()[0];
+  if (idx === undefined || !state.article) return null;
+  return state.article.paragraphs.find((p) => p.index === idx) || null;
+}
+
+// What each client really offers (read from its own website), the notes the editor should read, and the client's original
+// paragraph to compare the restated opening with.
+function clientCheckHtml(clients) {
+  return (clients || []).map((c) => {
+    const b = c.brief || {};
+    const links = (c.links || []).map((l) => `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.anchor)}</a>`).join(", ");
+    const offer = b.offer ? escapeHtml(b.offer) : `<span class="option-caption">not available &mdash; the client's website could not be read</span>`;
+    const notes = (c.notes || []).map((n) => `<p class="option-caption">${escapeHtml(n)}</p>`).join("");
+    return `<div class="client-card">
+      <p><strong>${escapeHtml(b.name || c.host)}</strong> &middot; ${escapeHtml(c.host)}</p>
+      <p class="option-caption">Linked words: ${links}</p>
+      <p>What the client offers (from its website): ${offer}</p>${notes}
+      <details><summary>Original client paragraph (&para;${(c.paragraph_index || 0) + 1})</summary><p>${escapeHtml(c.paragraph || "")}</p></details>
+    </div>`;
+  }).join("");
 }
 
 // ---------------------------------------------------------------- article panel
@@ -486,7 +588,7 @@ function escapeHtml(str) {
 document.getElementById("start-btn").addEventListener("click", async () => {
   const sponsor = currentSponsor();
   if (!sponsor) return;
-  state.run = { stage: "pending", sponsor };
+  state.run = { stage: "pending", sponsor, pickedCmi: null, pickedMarkets: [], reportUrls: [""] };
   setNav("step1");
   render();
   await runStep1();
@@ -509,6 +611,8 @@ async function runStep1() {
       filename: state.filename,
       article: state.article,
       sponsor_index: currentSponsorIndexInParagraphs(),
+      sponsor_indexes: selectedParagraphIndexes(),
+      client_hosts: selectedClientHosts(),
     });
     state.run.stage = "orient_done";
     state.run.token = data.token || data.run_token;
@@ -537,22 +641,80 @@ function _runBusy() {
   return !!state.run && typeof state.run.stage === "string" && state.run.stage.endsWith("_pending");
 }
 
-// Step 1 -> Step 2: human confirms the market. Only now does the backend search the web —
-// for the CONFIRMED report's name, not the LLM's pre-confirmation guess.
+// Step 1 -> Step 2. The editor chose any of: ONE CMI report (radio), any number of the agent's suggested market names
+// (checkboxes) and report links of their own. Suggested markets need competitor reports found first, so those go through
+// a picker (stage "reports_found", shown in Step 2); everything else goes straight to the evidence search.
+document.getElementById("step1-add-url-btn").addEventListener("click", () => {
+  if (!state.run || !Array.isArray(state.run.reportUrls)) return;
+  if (state.run.reportUrls.length >= MAX_REPORT_URLS) return;
+  state.run.reportUrls.push("");
+  renderStep1UrlInputs();
+});
+
+document.getElementById("step1-cmi-clear").addEventListener("click", () => {
+  if (!state.run) return;
+  state.run.pickedCmi = null;
+  renderStep1Panel();
+});
+
+document.getElementById("step1-agent-clear").addEventListener("click", () => {
+  if (!state.run) return;
+  state.run.pickedMarkets = [];
+  renderStep1Panel();
+});
+
+function step1HasSelection() {
+  return !!state.run && (!!state.run.pickedCmi || (state.run.pickedMarkets || []).length > 0 || step1PickedUrls().length > 0);
+}
+
 document.getElementById("step1-confirm-btn").addEventListener("click", async () => {
-  if (_runBusy()) return;
-  const picked = state.run.pickedReport;
-  if (!picked) return;
+  if (_runBusy() || !step1HasSelection()) return;
+  if ((state.run.pickedMarkets || []).length) {
+    state.run.stage = "finding_pending";
+    setNav("step2");
+    render();
+    try {
+      const data = await apiPost("/step2/find_reports", { run_token: state.run.token, markets: state.run.pickedMarkets });
+      state.run.foundReports = data.reports || [];
+      state.run.pickedFound = [];
+      state.run.earlyState = "running";
+      state.run.earlyHits = [];
+      state.run.stage = "reports_found";
+    } catch (e) {
+      showError("Step 2 (find competitor reports)", e);
+      state.run.stage = "orient_done";
+      setNav("step1");
+    }
+    saveRunPointer();
+    render();
+    return;
+  }
+  await runStep2();
+});
+
+// The evidence search itself. Reports sent: the CMI pick (0 or 1), the competitor reports ticked in the picker plus the
+// links the editor pasted, and the market each found report was found for (its figures are checked against that market).
+async function runStep2() {
+  const cmi = state.run.pickedCmi;
+  const found = state.run.pickedFound || [];
+  const urlMarkets = {};
+  (state.run.foundReports || []).forEach((r) => { if (found.includes(r.url)) urlMarkets[r.url] = r.market; });
+  const body = {
+    run_token: state.run.token,
+    report_ids: cmi ? [cmi.news_id] : [],
+    markets: state.run.pickedMarkets || [],
+    report_urls: [...found, ...step1PickedUrls()],
+    url_markets: urlMarkets,
+  };
+  if (cmi) body.report_id = cmi.news_id;
+  const cameFromPicker = (state.run.pickedMarkets || []).length > 0;
   state.run.stage = "search_pending";
   setNav("step2");
   render();
   try {
-    const data = await apiPost("/step2", {
-      run_token: state.run.token,
-      report_id: picked.news_id,
-    });
+    const data = await apiPost("/step2", body);
     state.run.stage = "search_done";
-    state.run.chosenCandidate = picked;
+    state.run.chosenCandidate = cmi || null;
     state.run.report = data.report;
     state.run.hits = data.hits;
     state.run.claimHits = data.claim_hits || {};
@@ -561,11 +723,27 @@ document.getElementById("step1-confirm-btn").addEventListener("click", async () 
     state.run.factSheet = data.fact_sheet || null;
     state.run.demand = data.demand || null;
     state.run.publisher = data.publisher || null;
+    state.run.reportMode = data.report_mode || null;
+    state.run.warnings = data.warnings || [];
+    state.run.clients = data.clients || [];
   } catch (e) {
     showError("Step 2 (fetch market evidence)", e);
-    state.run.stage = "orient_done";
+    state.run.stage = cameFromPicker ? "reports_found" : "orient_done";
+    if (!cameFromPicker) setNav("step1");
   }
   saveRunPointer();
+  render();
+}
+
+document.getElementById("step2-pick-confirm-btn").addEventListener("click", async () => {
+  if (_runBusy() || !state.run || state.run.stage !== "reports_found") return;
+  await runStep2();
+});
+
+document.getElementById("step2-pick-back-btn").addEventListener("click", () => {
+  if (_runBusy() || !state.run || state.run.stage !== "reports_found") return;
+  state.run.stage = "orient_done";
+  setNav("step1");
   render();
 });
 
@@ -601,6 +779,7 @@ document.getElementById("step3-confirm-btn").addEventListener("click", async () 
     state.run.stage = "write_done";
     state.run.title = data.title;
     state.run.sections = data.sections;
+    state.run.clients = data.clients || state.run.clients;
   } catch (e) {
     showError("Step 4 (write)", e);
     state.run.stage = "select_done";
@@ -621,6 +800,7 @@ document.getElementById("step4-regenerate-btn").addEventListener("click", async 
     state.run.stage = "write_done";
     state.run.title = data.title;
     state.run.sections = data.sections;
+    state.run.clients = data.clients || state.run.clients;
   } catch (e) {
     showError("Step 4 (regenerate draft)", e);
     state.run.stage = "write_done";
@@ -662,6 +842,7 @@ document.getElementById("final-regenerate-btn").addEventListener("click", async 
     const written = await apiPost("/step4", { run_token: state.run.token });
     state.run.title = written.title;
     state.run.sections = written.sections;
+    state.run.clients = written.clients || state.run.clients;
     state.run.stage = "finalize_pending";
     render();
     const data = await apiPost("/finalize", { run_token: state.run.token });
@@ -683,7 +864,7 @@ function stepDoneFlags() {
   const stage = state.run ? state.run.stage : null;
   const atLeast = (stages) => stages.includes(stage) || !!state.result;
   return {
-    step1: atLeast(["orient_done", "search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done"]),
+    step1: atLeast(["finding_pending", "reports_found", "search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done"]),
     step2: atLeast(["search_done", "select_pending", "select_done", "write_pending", "write_done"]),
     step3: atLeast(["select_done", "write_pending", "write_done"]),
     step4: stage === "write_done" || !!state.result,
@@ -697,6 +878,7 @@ let sopOpen = false;
 
 function setNav(target) {
   sopOpen = false;
+  if (state.nav !== target) window.scrollTo({ top: 0, behavior: "smooth" });
   state.nav = target;
   closeSidebar();
   saveRunPointer();
@@ -727,7 +909,7 @@ function renderStepNav() {
   const specs = {
     article: { always: true },
     step1: { unlocked: started, done: done.step1, pending: stage === "pending" },
-    step2: { unlocked: done.step1, done: done.step2, pending: stage === "search_pending" },
+    step2: { unlocked: done.step1, done: done.step2, pending: stage === "search_pending" || stage === "finding_pending" },
     step3: { unlocked: done.step2, done: done.step3, pending: stage === "select_pending" },
     step4: { unlocked: done.step3, done: done.step4, pending: stage === "write_pending" },
     final: { unlocked: done.step4, done: done.final, pending: stage === "finalize_pending" },
@@ -793,12 +975,176 @@ function renderRunControls() {
   if (runActive) {
     const stageLabel = {
       pending: "Step 1 · Identify Market", orient_done: "Step 1 · Identify Market",
+      finding_pending: "Step 2 · Fetch Evidence Online", reports_found: "Step 2 · Fetch Evidence Online",
       search_pending: "Step 2 · Fetch Evidence Online", search_done: "Step 2 · Fetch Evidence Online",
       select_pending: "Step 3 · Fetch Report Facts", select_done: "Step 3 · Fetch Report Facts",
       write_pending: "Step 4 · Write", write_done: "Step 4 · Write",
       finalize_pending: "Final",
     }[state.run.stage] || "Step 1 · Identify Market";
     document.getElementById("run-active-text").textContent = `Run in progress — see ${stageLabel}`;
+  }
+}
+
+// ---------------------------------------------------------------- step 1 helpers (report pick + own links)
+// At most this many "own link" inputs exist; the Add button disappears once reached.
+const MAX_REPORT_URLS = 6;
+
+// Non-empty trimmed own links — exactly what gets sent to /step2 as report_urls.
+function step1PickedUrls() {
+  if (state.run.pickedCmi) return [];      // a CMI report is used on its own: pasted links are not used with it
+  return (state.run.reportUrls || []).map((u) => String(u || "").trim()).filter(Boolean);
+}
+
+// What each tier means, shown with its group so the editor sees why a market is offered.
+const TIER_INFO = {
+  1: { label: "Tier 1", name: "Direct match", note: "The market's core subject is your topic, or something your article names directly." },
+  2: { label: "Tier 2", name: "Adjacent match", note: "Directly upstream, downstream, or a component of your topic." },
+  3: { label: "Tier 3", name: "Shared driver", note: "A different market driven by the same demand, rule or end-use industry." },
+  0: { label: "Matches", name: "Closest matches", note: "Not graded; shown in order of match strength." },
+};
+
+// Groups [{tier, items}] -> HTML-free DOM: one block per non-empty tier with a coloured badge and its description.
+function renderTierGroups(container, groups, renderItem, emptyText) {
+  container.innerHTML = "";
+  const filled = groups.filter((g) => g.items.length);
+  if (!filled.length) {
+    container.innerHTML = `<p class="market-empty">${escapeHtml(emptyText)}</p>`;
+    return;
+  }
+  filled.forEach((g) => {
+    const info = TIER_INFO[g.tier] || TIER_INFO[0];
+    const block = document.createElement("div");
+    block.className = "tier-group";
+    block.innerHTML = `
+      <div class="tier-head">
+        <span class="tier-badge tier-${g.tier}">${escapeHtml(info.label)}</span>
+        <span class="tier-name">${escapeHtml(info.name)}</span>
+      </div>
+      <p class="tier-note">${escapeHtml(info.note)}</p>
+      <div class="tier-items"></div>`;
+    const list = block.querySelector(".tier-items");
+    g.items.forEach((item) => list.appendChild(renderItem(item)));
+    container.appendChild(block);
+  });
+}
+
+function suggestedGroups() {
+  const s = ((state.run.orient || {}).suggested_markets) || {};
+  return [1, 2, 3].map((t) => ({ tier: t, items: (s[`tier${t}`] || []).filter(Boolean) }));
+}
+
+function cmiGroups() {
+  const cands = (state.run.candidates || []).slice(0, 15);
+  const groups = [1, 2, 3].map((t) => ({ tier: t, items: cands.filter((c) => c.tier === t) }));
+  groups.push({ tier: 0, items: cands.filter((c) => ![1, 2, 3].includes(c.tier)) });
+  return groups;
+}
+
+// Confirm stays disabled until something is chosen; the label says what will happen next.
+function updateStep1ConfirmLabel() {
+  const btn = document.getElementById("step1-confirm-btn");
+  const label = document.getElementById("step1-confirm-label");
+  const hint = document.getElementById("step1-none-selected-hint");
+  if (!btn || !label || !hint || !state.run || state.run.stage !== "orient_done") return;
+  const has = step1HasSelection();
+  btn.disabled = !has;
+  hint.hidden = has;
+  label.textContent = (state.run.pickedMarkets || []).length
+    ? "Find competitor reports and continue to Step 2"
+    : state.run.pickedCmi ? "Continue to Step 2 with this CMI report" : "Continue to Step 2";
+  document.getElementById("step1-cmi-clear").hidden = !state.run.pickedCmi;
+  document.getElementById("step1-agent-clear").hidden = !(state.run.pickedMarkets || []).length;
+
+  // With a CMI report chosen, the report stands alone: the link boxes are switched off and say why.
+  const cmiOnly = !!state.run.pickedCmi;
+  const links = document.getElementById("step1-links-section");
+  links.classList.toggle("is-off", cmiOnly);
+  links.querySelectorAll("input, button").forEach((el) => { el.disabled = cmiOnly; });
+  document.getElementById("step1-links-hint").textContent = cmiOnly
+    ? "Not used: a CMI report is chosen and is used on its own. Clear the CMI choice to add report links."
+    : "Paste any report pages you already have. Checking a link is optional: it only gives early feedback on whether the link looks usable and never blocks anything.";
+  renderSelectionSummary();
+}
+
+// A live recap of what is chosen, so the editor can see the whole decision before continuing.
+function renderSelectionSummary() {
+  const el = document.getElementById("step1-selection-summary");
+  if (!el || !state.run) return;
+  const chips = [];
+  (state.run.pickedMarkets || []).forEach((m) => chips.push({ kind: "Market", text: m }));
+  if (state.run.pickedCmi) chips.push({ kind: "CMI report", text: state.run.pickedCmi.keyword });
+  step1PickedUrls().forEach((u) => chips.push({ kind: "Link", text: u.replace(/^https?:\/\/(www\.)?/, "") }));
+  el.hidden = !chips.length;
+  el.innerHTML = chips.length
+    ? `<span class="selection-summary-label">Selected</span>` + chips.map((c) =>
+        `<span class="sel-chip"><span class="sel-chip-kind">${escapeHtml(c.kind)}</span>${escapeHtml(clip(c.text, 46))}</span>`).join("")
+    : "";
+}
+
+// Search-engine titles can be very long; the full title stays in the link's tooltip.
+function clip(text, max) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max - 1).replace(/\s+\S*$/, "") + "\u2026" : s;
+}
+
+// Own-link rows are (re)built from state.run.reportUrls, so a re-render never loses what was
+// typed; typing itself only writes back to state and never re-renders (that would drop focus).
+function renderStep1UrlInputs() {
+  const wrap = document.getElementById("step1-report-urls");
+  const addBtn = document.getElementById("step1-add-url-btn");
+  if (!wrap || !addBtn || !state.run || state.run.stage !== "orient_done") return;
+  if (!Array.isArray(state.run.reportUrls)) state.run.reportUrls = [""];
+
+  wrap.innerHTML = "";
+  state.run.reportUrls.forEach((url, i) => {
+    const entry = document.createElement("div");
+    entry.className = "report-url-entry";
+    entry.innerHTML = `
+      <div class="report-url-row">
+        <input type="text" class="text-input report-url-input" placeholder="Paste a report link (https://...)" value="${escapeHtml(url || "")}">
+        <button type="button" class="btn btn-secondary btn-small report-url-check">Check</button>
+        <button type="button" class="report-url-remove" title="Remove this link"${i === 0 ? " hidden" : ""}>&times;</button>
+      </div>
+      <p class="url-check-result" hidden></p>
+    `;
+    entry.querySelector("input").addEventListener("input", (e) => {
+      state.run.reportUrls[i] = e.target.value;
+      updateStep1ConfirmLabel();
+    });
+    entry.querySelector(".report-url-check").addEventListener("click", () => checkReportUrl(entry));
+    entry.querySelector(".report-url-remove").addEventListener("click", () => {
+      state.run.reportUrls.splice(i, 1);
+      if (!state.run.reportUrls.length) state.run.reportUrls = [""];   // one input remains as the minimum
+      renderStep1UrlInputs();
+      updateStep1ConfirmLabel();
+    });
+    wrap.appendChild(entry);
+  });
+  addBtn.hidden = state.run.reportUrls.length >= MAX_REPORT_URLS;
+}
+
+// Optional early feedback on one own link — asks the backend to look at it. Whatever the check
+// says, it never gates anything: Confirm stays enabled and the decision stays with the editor.
+async function checkReportUrl(entry) {
+  if (!state.run || state.run.stage !== "orient_done") return;
+  const resultEl = entry.querySelector(".url-check-result");
+  const url = String(entry.querySelector("input").value || "").trim();
+  resultEl.hidden = false;
+  if (!url) {
+    resultEl.className = "url-check-result";
+    resultEl.textContent = "Paste a link first, then check it.";
+    return;
+  }
+  resultEl.className = "url-check-result";
+  resultEl.innerHTML = `<i data-lucide="loader-circle" class="spin"></i> Checking this link...`;
+  iconify();
+  try {
+    const data = await apiPost("/check_report_url", { run_token: state.run.token, url, market: (state.run.pickedMarkets || [])[0] || "" });
+    resultEl.className = `url-check-result ${data.ok ? "ok" : "fail"}`;
+    resultEl.textContent = data.message || (data.ok ? "This link looks usable." : "This link could not be checked.");
+  } catch (e) {
+    resultEl.className = "url-check-result fail";
+    resultEl.textContent = e.message || `The check could not run just now. You can still continue.`;
   }
 }
 
@@ -820,9 +1166,6 @@ function renderStep1Panel() {
   document.getElementById("step1-topic").textContent = orient.topic_summary || "";
   document.getElementById("step1-bridge").textContent = orient.bridge_angle || "";
 
-  const marketsList = document.getElementById("step1-markets");
-  marketsList.innerHTML = (orient.candidate_markets || []).map((m) => `<li>${escapeHtml(m)}</li>`).join("");
-
   const claims = orient.claims_to_back || [];
   document.getElementById("step1-claims").innerHTML = claims.length
     ? claims.map((c) => `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}`
@@ -834,39 +1177,121 @@ function renderStep1Panel() {
   doneBlock.hidden = isOrientDone;
 
   if (isOrientDone) {
-    const candidates = (state.run.candidates || []).slice(0, 5);
-    const container = document.getElementById("step1-report-candidates");
-    container.innerHTML = "";
-    if (!state.run.pickedReport && candidates.length) state.run.pickedReport = candidates[0];
+    if (!Array.isArray(state.run.pickedMarkets)) state.run.pickedMarkets = [];
 
-    candidates.forEach((c, i) => {
+    // Agent-suggested markets: radio buttons, ONE market at most, none pre-selected. Picking one means "find competitor
+    // reports for it" (the reports themselves are chosen in Step 2). It excludes a CMI pick.
+    renderTierGroups(document.getElementById("step1-suggested"), suggestedGroups(), (name) => {
       const label = document.createElement("label");
-      const selected = state.run.pickedReport && state.run.pickedReport.news_id === c.news_id;
-      label.className = "radio-option" + (selected ? " selected" : "");
-      label.innerHTML = `
-        <input type="radio" name="report-pick" value="${c.news_id}" ${selected ? "checked" : ""}>
-        <span>${escapeHtml(c.keyword)}<span class="option-caption">report id ${c.news_id}</span></span>
-      `;
+      const on = state.run.pickedMarkets.includes(name);
+      label.className = "market-option" + (on ? " selected" : "");
+      label.innerHTML = `<input type="radio" name="agent-pick" value="${escapeHtml(name)}" ${on ? "checked" : ""}><span class="market-name">${escapeHtml(name)}</span>`;
       label.querySelector("input").addEventListener("change", () => {
-        state.run.pickedReport = c;
-        renderStep1Panel();
+        state.run.pickedMarkets = [name];
+        if (state.run.pickedCmi) {
+          state.run.pickedCmi = null;
+          document.querySelectorAll("#step1-cmi .market-option").forEach((el) => {
+            el.classList.remove("selected");
+            el.querySelector("input").checked = false;
+          });
+        }
+        document.querySelectorAll("#step1-suggested .market-option").forEach((el) => el.classList.remove("selected"));
+        label.classList.add("selected");
+        updateStep1ConfirmLabel();
       });
-      container.appendChild(label);
-    });
+      return label;
+    }, "The agent has no market names to suggest for this article. Pick a CMI market or add a report link.");
 
-    const picked = state.run.pickedReport;
-    const linkEl = document.getElementById("step1-report-link");
-    linkEl.textContent = picked ? picked.url : "";
-    linkEl.href = picked ? picked.url : "#";
+    // CMI markets: radio buttons, one report at most (its link goes into the article).
+    renderTierGroups(document.getElementById("step1-cmi"), cmiGroups(), (c) => {
+      const label = document.createElement("label");
+      const on = !!state.run.pickedCmi && state.run.pickedCmi.news_id === c.news_id;
+      label.className = "market-option" + (on ? " selected" : "");
+      label.innerHTML = `<input type="radio" name="cmi-pick" value="${c.news_id}" ${on ? "checked" : ""}>
+        <span class="market-name">${escapeHtml(c.keyword)}<span class="option-caption">report id ${c.news_id} &middot; <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">open report</a></span></span>`;
+      label.querySelector("input").addEventListener("change", () => {
+        state.run.pickedCmi = c;
+        state.run.pickedMarkets = [];          // a CMI report is used on its own
+        document.querySelectorAll("#step1-suggested .market-option").forEach((el) => {
+          el.classList.remove("selected");
+          el.querySelector("input").checked = false;
+        });
+        document.querySelectorAll("#step1-cmi .market-option").forEach((el) => el.classList.remove("selected"));
+        label.classList.add("selected");
+        updateStep1ConfirmLabel();
+      });
+      return label;
+    }, "No CMI report fits this article closely enough to suggest. Tick an agent-suggested market or add a report link.");
+
+    renderStep1UrlInputs();
+    updateStep1ConfirmLabel();
   } else {
-    const chosen = state.run.chosenCandidate;
+    const rep = state.run.report;
     const link = document.getElementById("step1-confirmed-link");
-    if (chosen) { link.textContent = chosen.keyword; link.href = chosen.url; }
+    if (rep) {
+      link.textContent = rep.name;
+      if (rep.url) link.href = rep.url; else link.removeAttribute("href");
+    }
+
+    const sources = (state.run.factSheet && state.run.factSheet.sources) || [];
+    document.getElementById("step1-sources-block").hidden = !sources.length;
+    document.getElementById("step1-sources").innerHTML = sources.map((s) => {
+      const kind = s.kind === "cmi" ? "CMI report" : "Competitor report (figures adjusted)";
+      const name = s.url ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.name)}</a>` : escapeHtml(s.name);
+      return `<li>${name} <span class="option-caption">${kind}</span></li>`;
+    }).join("");
 
     const all = document.getElementById("step1-all-candidates");
     all.innerHTML = (state.run.candidates || []).slice(0, 10)
       .map((c) => `<li><a href="${c.url}" target="_blank" rel="noopener">${escapeHtml(c.keyword)}</a></li>`).join("");
   }
+}
+
+// ---------------------------------------------------------------- render: step2 competitor-report picker
+function renderStep2Pick() {
+  const found = state.run.foundReports || [];
+  if (!Array.isArray(state.run.pickedFound)) state.run.pickedFound = [];
+  const list = document.getElementById("step2-found-list");
+  list.innerHTML = "";
+  const markets = [...new Set([...(state.run.pickedMarkets || []), ...found.map((r) => r.market)])];
+  markets.forEach((m) => {
+    const rows = found.filter((r) => r.market === m);
+    const block = document.createElement("div");
+    block.className = "tier-group";
+    block.innerHTML = `<div class="tier-head"><span class="tier-name">${escapeHtml(m)}</span></div><div class="tier-items"></div>`;
+    const items = block.querySelector(".tier-items");
+    if (!rows.length) {
+      items.innerHTML = `<p class="market-empty">No competitor report was found for this market. You can go back and add a link of your own, or let the agent search again by continuing.</p>`;
+    }
+    rows.forEach((r) => {
+      const label = document.createElement("label");
+      const on = state.run.pickedFound.includes(r.url);
+      label.className = "market-option" + (on ? " selected" : "");
+      label.innerHTML = `<input type="checkbox" value="${escapeHtml(r.url)}" ${on ? "checked" : ""}>
+        <span class="market-name"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.title || r.host)}">${escapeHtml(clip(r.title || r.host, 110))}</a>
+        <span class="option-caption"><span class="host-chip">${escapeHtml(r.host)}</span>${r.snippet ? escapeHtml(clip(r.snippet, 150)) : ""}</span></span>`;
+      label.querySelector("input").addEventListener("change", (e) => {
+        state.run.pickedFound = e.target.checked
+          ? [...state.run.pickedFound, r.url]
+          : state.run.pickedFound.filter((u) => u !== r.url);
+        label.classList.toggle("selected", e.target.checked);
+        updateStep2PickLabel();
+      });
+      items.appendChild(label);
+    });
+    list.appendChild(block);
+  });
+  updateStep2PickLabel();
+}
+
+function updateStep2PickLabel() {
+  const n = (state.run.pickedFound || []).length;
+  document.getElementById("step2-pick-confirm-label").textContent = n
+    ? `Continue with ${n} selected report${n === 1 ? "" : "s"}`
+    : "Continue and let the agent choose the reports";
+  document.getElementById("step2-pick-hint").textContent = n
+    ? "Only the ticked reports are read for figures."
+    : "Nothing ticked: the agent reads the best-matching reports it found for each market.";
 }
 
 // ---------------------------------------------------------------- render: step2 panel (fetch market evidence online)
@@ -893,7 +1318,7 @@ function renderFactSheet(fs) {
       return `<li>${label}: <strong>${escapeHtml(entry.value)}</strong>${entry.when ? ` <span class="option-caption">(${escapeHtml(entry.when)})</span>` : ""}` +
         ` <span class="option-caption">source: ${sourceEl(entry)}</span>${hist(entry)}</li>`;
     }
-    return `<li class="factsheet-gap">${label}: <strong>gap</strong> <span class="option-caption">the report is silent — ` +
+    return `<li class="factsheet-gap">${label}: <strong>gap</strong> <span class="option-caption">no figure could be confirmed from the report page —` +
       (gaps.includes(key)
         ? "no outside page filled it, so the article states no figure for it"
         : "the figure gap search ran for this") + `</span></li>`;
@@ -905,6 +1330,9 @@ function renderFactSheet(fs) {
     const more = n > max ? ` +${n - max} more` : "";
     return `<li>${label} (${n}): <span class="option-caption">${shown.join(" &middot; ")}${more}</span></li>`;
   };
+  // Where the non-headline facts came from: a competitor report is never labelled as CMI's.
+  const base = fs.report_mode === "external" ? "competitor report (figures adjusted)"
+    : fs.report_mode === "mixed" ? "CMI and competitor reports" : "CMI report";
   const out = [
     headline(fs.size, "Market size", "size"),
     headline(fs.forecast, "Forecast", "forecast"),
@@ -916,42 +1344,137 @@ function renderFactSheet(fs) {
       ` <span class="option-caption">source: <a href="${escapeHtml(fsrc.url)}" target="_blank" rel="noopener">${escapeHtml(fsrc.name)}</a></span></li>`);
   }
   for (const seg of fs.segments || []) {
-    out.push(`<li>Segmentation — ${escapeHtml(seg.type)}: <strong>${escapeHtml((seg.items || []).join(", "))}</strong> ` +
-      `<span class="option-caption">source: CMI report</span></li>`);
+    const figs = seg.figures || {};
+    const names = (seg.items || []).map((n) => figs[n] ? `${n} (${figs[n].figure})` : n).join(", ");
+    const lead = seg.dominant
+      ? ` <span class="option-caption">leader: ${escapeHtml(seg.dominant.name)} (${seg.dominant.basis === "stated" ? "stated by the source" : "worked out from its figures"})</span>`
+      : "";
+    out.push(`<li>Segmentation — ${escapeHtml(seg.type)}: <strong>${escapeHtml(names)}</strong>${lead} ` +
+      `<span class="option-caption">source: ${base}</span></li>`);
   }
   const regions = fs.regions || {};
   if (regions.leader || regions.fastest) {
     out.push(`<li>Regions — leading: ${escapeHtml(regions.leader ? regions.leader.name : "(gap)")}${hist(regions.leader)}` +
       ` · fastest: ${escapeHtml(regions.fastest ? regions.fastest.name : "(gap)")}${hist(regions.fastest)}` +
-      ` <span class="option-caption">source: CMI report</span></li>`);
+      ` <span class="option-caption">source: ${base}</span></li>`);
   }
   for (const it of fs.us || []) {
-    out.push(`<li>U.S.: <strong>${escapeHtml(it.text)}</strong>${hist(it)} <span class="option-caption">source: CMI report</span></li>`);
+    out.push(`<li>U.S.: <strong>${escapeHtml(it.text)}</strong>${hist(it)} <span class="option-caption">source: ${base}</span></li>`);
   }
-  const extra = statementList("Drivers", fs.drivers) + statementList("Restraints", fs.restraints)
+  const extra = statementList("Drivers", fs.drivers)
     + statementList("Opportunities", fs.opportunities);
   out.push(extra);
   if ((fs.players || []).length) {
-    out.push(`<li>Key players: <strong>${escapeHtml(fs.players.join(", "))}</strong> <span class="option-caption">source: CMI report</span></li>`);
+    out.push(`<li>Key players: <strong>${escapeHtml(fs.players.join(", "))}</strong> <span class="option-caption">source: ${base}</span></li>`);
+  }
+  // The audit of every figure moved by 3-5%: the source's own value beside the value the article uses.
+  const audit = fs.variance || [];
+  if (audit.length) {
+    out.push(`<li class="factsheet-audit"><strong>Adjusted figures (${audit.length})</strong> <span class="option-caption">the source's value, then the value the article uses</span><ul class="plain-list">` +
+      audit.map((a) => `<li>${escapeHtml(a.field)}: ${escapeHtml(a.original)} &rarr; <strong>${escapeHtml(a.shown)}</strong> ` +
+        `<span class="option-caption">${a.url ? `<a href="${escapeHtml(a.url)}" target="_blank" rel="noopener">${escapeHtml(a.source || a.url)}</a>` : escapeHtml(a.source)}</span></li>`).join("") +
+      `</ul></li>`);
   }
   return out.filter(Boolean).join("");
+}
+
+// One evidence result per row: title link, then kind, date and source, then a short snippet.
+function hitListHtml(hits) {
+  return hits.map((h) => {
+    let host = "web";
+    try { host = new URL(h.url).hostname.replace(/^www\./, ""); } catch { /* keep "web" */ }
+    const kind = h.is_news ? "News" : "Web";
+    const date = h.date ? h.date.slice(0, 10) : "undated";
+    const snippet = (h.snippet || "").trim();
+    return `<li><a href="${escapeHtml(h.url)}" target="_blank" rel="noopener">${escapeHtml(h.title)}</a>`
+      + ` <span class="option-caption">${kind} &middot; ${escapeHtml(date)} &middot; ${escapeHtml(h.source || host)}</span>`
+      + (snippet ? `<span class="option-caption">${escapeHtml(snippet.length > 220 ? snippet.slice(0, 220) + "…" : snippet)}</span>` : "")
+      + `</li>`;
+  }).join("");
+}
+
+// The evidence search for the picked market starts when its competitor reports are being found; this shows it beside
+// the reports as it arrives. Step 2 reuses it once the editor continues.
+let earlyPoll = null;
+function stopEarlyPoll() {
+  if (earlyPoll) { clearTimeout(earlyPoll); earlyPoll = null; }
+}
+
+function renderEarlyEvidence() {
+  const run = state.run;
+  const status = document.getElementById("step2-early-status");
+  const skeleton = document.getElementById("step2-early-skeleton");
+  const list = document.getElementById("step2-early-hits");
+  const st = run.earlyState || "running";
+  const hits = run.earlyHits || [];
+  skeleton.hidden = st !== "running";
+  list.innerHTML = st === "done" && hits.length ? hitListHtml(hits) : "";
+  status.textContent = st === "running"
+    ? "Searching the web for supporting evidence while you choose the reports\u2026"
+    : st === "done"
+      ? (hits.length
+          ? `${hits.length} supporting web result(s) found for this market. They are used in the article together with the reports you tick above.`
+          : "No supporting results survived filtering yet. Continue and the agent will search again with the report's own segments and players.")
+      : "The early evidence search did not finish. Continue and the agent will search again.";
+}
+
+function pollEarlyEvidence() {
+  stopEarlyPoll();
+  const run = state.run;
+  if (!run || run.stage !== "reports_found" || run.earlyState === "done" || run.earlyState === "failed") return;
+  earlyPoll = setTimeout(async () => {
+    earlyPoll = null;
+    if (!state.run || state.run !== run || run.stage !== "reports_found") return;
+    try {
+      const data = await fetch(`${API_BASE}/step2/early_evidence?run_token=${encodeURIComponent(run.token)}`).then((r) => r.json());
+      run.earlyState = data.state === "none" ? "failed" : data.state;
+      run.earlyHits = data.hits || [];
+    } catch { /* keep polling */ }
+    if (state.run === run && run.stage === "reports_found") renderEarlyEvidence();
+    pollEarlyEvidence();
+  }, 3000);
 }
 
 function renderStep2Panel() {
   const spinner = document.getElementById("step2-spinner");
   const content = document.getElementById("step2-content");
-  if (!state.run || !["search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done", "finalized"].includes(state.run.stage)) {
-    spinner.hidden = true; content.hidden = true; return;
+  const pickBlock = document.getElementById("step2-pick-block");
+  if (!state.run || !["finding_pending", "reports_found", "search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done", "finalized"].includes(state.run.stage)) {
+    spinner.hidden = true; content.hidden = true; pickBlock.hidden = true;
+    document.getElementById("step2-skeleton").hidden = true; return;
   }
 
-  const pending = state.run.stage === "search_pending";
+  const finding = state.run.stage === "finding_pending";
+  const picking = state.run.stage === "reports_found";
+  const pending = state.run.stage === "search_pending" || finding;
+  document.getElementById("step2-spinner-text").textContent = finding
+    ? "Step 2: finding competitor reports for the markets you picked…"
+    : "Step 2: searching the web for supporting evidence (this can take a little while)…";
   spinner.hidden = !pending;
-  content.hidden = pending;
-  if (pending) return;
+  document.getElementById("step2-skeleton").hidden = !finding;
+  pickBlock.hidden = !picking;
+  if (picking) { renderStep2Pick(); renderEarlyEvidence(); pollEarlyEvidence(); } else stopEarlyPoll();
+  content.hidden = pending || picking;
+  if (pending || picking) return;
+
+  // Report-source warnings (e.g. when the agent had to find the report itself on the internet):
+  // the very first thing on this screen, above the confirmed report and the fact sheet, so the
+  // editor reads them before any figure.
+  const warnings = state.run.warnings || [];
+  const warnBox = document.getElementById("step2-warnings");
+  warnBox.hidden = warnings.length === 0;
+  document.getElementById("step2-warnings-list").innerHTML =
+    warnings.map((w) => `<p>${escapeHtml(w)}</p>`).join("");
+  const clientList = state.run.clients || [];
+  document.getElementById("step2-clients-card").hidden = clientList.length === 0;
+  document.getElementById("step2-clients-list").innerHTML = clientCheckHtml(clientList);
 
   const report = state.run.report;
   const link = document.getElementById("step2-report-link");
-  if (report) { link.textContent = report.name; link.href = report.url; }
+  if (report) {
+    link.textContent = report.name;
+    if (report.url) link.href = report.url; else link.removeAttribute("href");
+  }
 
   const hits = state.run.hits || [];
   document.getElementById("step2-hits-count").textContent = hits.length;
@@ -965,17 +1488,7 @@ function renderStep2Panel() {
     ).join("");
   }
   document.getElementById("step2-hits").innerHTML = hits.length
-    ? hits.map((h) => {
-        let host = "web";
-        try { host = new URL(h.url).hostname.replace(/^www\./, ""); } catch { /* keep "web" */ }
-        const kind = h.is_news ? "News" : "Web";
-        const date = h.date ? h.date.slice(0, 10) : "undated";
-        const snippet = (h.snippet || "").trim();
-        return `<li><a href="${escapeHtml(h.url)}" target="_blank" rel="noopener">${escapeHtml(h.title)}</a>`
-          + ` <span class="option-caption">${kind} &middot; ${escapeHtml(date)} &middot; ${escapeHtml(h.source || host)}</span>`
-          + (snippet ? `<span class="option-caption">${escapeHtml(snippet.length > 220 ? snippet.slice(0, 220) + "…" : snippet)}</span>` : "")
-          + `</li>`;
-      }).join("")
+    ? hitListHtml(hits)
     : `<li class="empty-note">No results survived filtering for this market (too old, off-topic, or the search returned nothing). You can still continue — the writer will rely on the CMI report alone.</li>`;
 
   const claimList = (state.run.orient && state.run.orient.claims_to_back) || [];
@@ -1006,9 +1519,23 @@ function renderStep2Panel() {
   document.getElementById("step2-factsheet-block").hidden = !factSheet;
   if (factSheet) document.getElementById("step2-factsheet").innerHTML = renderFactSheet(factSheet);
 
+  // How the keywords were found: the real phrases people type, and the keyword forms in the order they will be offered to the planner.
+  const kw = (state.run.demand && state.run.demand.keyword_research) || null;
+  document.getElementById("step2-keywords-block").hidden = !kw;
+  if (kw) {
+    const sourceLabel = { search: "typed in searches", "ranking pages": "used by the pages that rank", standard: "standard keyword" };
+    document.getElementById("step2-keywords-method").textContent = kw.method || "";
+    document.getElementById("step2-keywords-pool").innerHTML = (kw.pool || []).slice(0, 10).map((r) =>
+      `<li><strong>${escapeHtml(r.key)}</strong> <span class="option-caption">${escapeHtml(sourceLabel[r.source] || r.source)} &middot; fits the ${escapeHtml(r.section.replace("_", " "))} section</span></li>`).join("");
+    const phrases = (kw.suggestions || []).slice(0, 12);
+    document.getElementById("step2-keywords-phrases").innerHTML = phrases.length
+      ? phrases.map((s) => `<li>${escapeHtml(s.query)} <span class="option-caption">${(s.engines || []).length > 1 ? "both Google and Bing" : escapeHtml(((s.engines || [])[0] || "search").replace(/^./, (c) => c.toUpperCase()))}</span></li>`).join("")
+      : `<li class="empty-note">The search boxes returned nothing for this market, so the standard keyword forms are used.</li>`;
+  }
+
   const msqs = (state.run.demand && state.run.demand.questions) || [];
   document.getElementById("step2-msqs-block").hidden = msqs.length === 0;
-  const answerableLabel = { size: "size", growth: "growth", trends: "trend", drivers: "drivers", challenges: "challenges",
+  const answerableLabel = { size: "size", growth: "growth", trends: "trend", drivers: "drivers",
     technology_impact: "technology", segments: "segments", region: "region", us: "U.S.", players: "players",
     outlook: "outlook", opportunities: "opportunities" };
   document.getElementById("step2-msqs").innerHTML = msqs.map((q) => {
@@ -1040,7 +1567,10 @@ function renderStep3Panel() {
 
   const report = state.run.report;
   const link = document.getElementById("step3-report-link");
-  if (report) { link.textContent = report.name; link.href = report.url; }
+  if (report) {
+    link.textContent = report.name;
+    if (report.url) link.href = report.url; else link.removeAttribute("href");
+  }
   const reportTextEl = document.getElementById("step3-report-text");
   reportTextEl.innerHTML = report && report.text
     ? report.text.split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${escapeHtml(p)}</p>`).join("")
@@ -1148,6 +1678,9 @@ function renderStep4Panel() {
 
   document.getElementById("step4-title").textContent = state.run.title || "";
   document.getElementById("step4-sections").innerHTML = renderSections(state.run.sections || []);
+  const step4Clients = state.run.clients || [];
+  document.getElementById("step4-clients-card").hidden = step4Clients.length === 0;
+  document.getElementById("step4-clients-list").innerHTML = clientCheckHtml(step4Clients);
 
   // Once finalized, this step4 tab becomes read-only history — Finish/Cancel no longer apply,
   // and regenerating from here on is done via final-regenerate-btn on the final page instead.
@@ -1205,7 +1738,14 @@ function _splitBulletSegments(segments) {
 // Shared by the plain and highlighted renderers: `renderInline(segments)` turns one line's
 // segments into inline HTML (escaping/highlighting is the caller's job), this just decides
 // whether a paragraph becomes <p> or <p>+<ul><li>.
+// A trend's own heading travels as a paragraph starting with "### " (the backend's subheads.SUBHEAD_PREFIX).
+const SUBHEAD_PREFIX = "### ";
 function _renderParagraph(segments, renderInline) {
+  const first = (segments && segments[0] && segments[0].text) || "";
+  if (first.startsWith(SUBHEAD_PREFIX)) {
+    const text = segments.map((s) => s.text).join("").slice(SUBHEAD_PREFIX.length);
+    return `<h5 class="trend-head">${escapeHtml(text)}</h5>`;
+  }
   const split = _splitBulletSegments(segments);
   if (!split) return `<p>${renderInline(segments)}</p>`;
   const leadHtml = split.lead.some((s) => s.text.trim()) ? `<p>${renderInline(split.lead)}</p>` : "";

@@ -63,6 +63,13 @@ def pad(words_target: int, sentences: list[str]) -> str:
     return (t + " " + filler(words_target - have)).strip()
 
 
+def trend_block(n: int) -> list[str]:
+    """One trend: a sub-heading entry, then three paragraphs; the first carries a year (the dated development)."""
+    return [f"### Trend {n} Is Raising Demand For Widget Services",
+            pad(40, [f"In 2026 a named study reported change {'ABC'[n - 1]} in widget demand."]),
+            filler(40), filler(40)]
+
+
 def good_draft() -> list[dict]:
     """A deliberate draft for PLAN: intro (link + sponsor + filler), transition, plan's market
     sections in order with the plan's headings, every keyword/key/long-tail placed by hand."""
@@ -83,7 +90,7 @@ def good_draft() -> list[dict]:
         ]},
         {"heading": plan_sec["trends"]["heading"], "sop": ["trends"], "paragraphs": [
             pad(30, [f"What is changing the {MARKET} first shows in its trends, and {ls['L2']} leads the list."]),
-            "\n".join(f"- {filler(57)}" for _ in range(3)),
+            *[p for n in (1, 2, 3) for p in trend_block(n)],
         ]},
         {"heading": plan_sec["segmentation"]["heading"], "sop": ["segmentation"], "paragraphs": [
             pad(50, [f"How the {MARKET} is divided: a segmentation into Browser Extension and Cloud Based types."]),
@@ -94,7 +101,7 @@ def good_draft() -> list[dict]:
             pad(75, ["Data Aggregation services form the other part worth a closer look."]),
         ]},
         {"heading": plan_sec["country_us"]["heading"], "sop": ["country_us"], "paragraphs": [
-            pad(70, [f"North America leads the {MARKET}, and cloud based widget services by region is where that shows.",
+            pad(70, [f"The U.S. leads the {MARKET}, and cloud based widget services by region is where that shows.",
                      f"A review of widget exports opened in the U.S."]),
             pad(110, [f"The United States carries the biggest share of the {MARKET} today."]),
         ]},
@@ -137,6 +144,8 @@ def by_name(results, name):
 TITLE = PLAN["title"]
 good = run_v2(TITLE, good_draft())
 for r in good:
+    if r.name == "No point is made twice across sections":
+        continue    # the builders pad every section with the same filler sentence; the check has its own tests
     check(f"good: {r.name}", r.passed, r.detail)
 check("good: length lands in the band", by_name(good, "Length").passed, by_name(good, "Length").detail)
 
@@ -505,10 +514,29 @@ check("faq: an unbacked figure in an answer fails", not by_name(run, "FAQ questi
 
 # ------------------------------------------------------------------ SOP specifics: trends, sub-segments, U.S.
 
+check("trends: the good draft's three sub-headed trends of three paragraphs pass",
+      by_name(run_v2(TITLE, good_draft()), "Trends: three sub-headed").passed)
+
 d = good_draft()
 d[3]["paragraphs"].pop()
 run = run_v2(TITLE, d)
-check("trends: only 2 trend items fail", not by_name(run, "Three trends").passed)
+check("trends: a trend with only two paragraphs fails", not by_name(run, "Trends: three sub-headed").passed,
+      by_name(run, "Trends: three sub-headed").detail)
+
+d = good_draft()
+d[3]["paragraphs"] = [p for p in d[3]["paragraphs"] if p != "### Trend 3 Is Raising Demand For Widget Services"]
+run = run_v2(TITLE, d)
+check("trends: a missing sub-heading fails (two trends, one of six paragraphs)", not by_name(run, "Trends: three sub-headed").passed,
+      by_name(run, "Trends: three sub-headed").detail)
+
+d = good_draft()
+d[3]["paragraphs"][2] = filler(40)
+run = run_v2(TITLE, d)
+check("trends: a trend whose first paragraph has no figure or year fails", not by_name(run, "Trends: three sub-headed").passed,
+      by_name(run, "Trends: three sub-headed").detail)
+
+check("trends: the sub-headings are not counted as prose (word counts and sentence checks read the sections without them)",
+      all(not p.startswith("### ") for s in checks.subheads.strip_subheads(good_draft()) for p in s["paragraphs"]))
 
 d = good_draft()
 d[4]["paragraphs"] = d[4]["paragraphs"][:1]
@@ -721,6 +749,7 @@ d[2]["paragraphs"].append(
     "The hours are spent on review. The notes are kept in one drawer. The wins are counted by the office. "
     "The lines are built from one template. The leads are found by hand. The fees are paid by the buyer. "
     "The goods are bought in pairs. The checks are done each week. The trends are seen in every chart.")
+d[2]["paragraphs"] += [d[2]["paragraphs"][-1]] * 2    # the trends now carry nine filler paragraphs: keep the passive share well above 1 in 6
 run = run_v2(TITLE, d)
 r = by_name(run, VOICE_NAME)
 check("voice: a draft with mostly passive sentences fails (soft)", not r.passed, r.detail)
@@ -733,9 +762,10 @@ PILE_NAME = "No long-tail phrase is pasted as a noun pile"
 # a long phrase of nearly all content words, assigned to the subsegment section (its fact sits there)
 inp4 = test_planning.make_inputs()
 inp4.longtails = inp4.longtails + [
-    {"id": "L4", "keyword": "custom cloud based widget services marketplace pricing", "fact": "fs.segments.0", "why": "x"}]
+    {"id": "L4", "keyword": "custom cloud based widget services marketplace pricing", "fact": "fs.segments.0.dominant", "why": "x"}]
+inp4.items["fs.segments.0.dominant"] = test_planning.item("fs.segments.0.dominant", "segments", "Dominant category in By Type: Cloud Based (the report states it leads this split)", {"subsegment"})
 raw4 = test_planning.good_plan()
-raw4["sections"][3]["facts"] = ["W2", "fs.segments.0", "fs.segments.1"]   # L4 rests on fs.segments.0
+raw4["sections"][3]["facts"] = ["W2", "fs.segments.0.dominant"]   # L4 rests on the leader fact (a split's category list is stated in the segmentation section only)
 raw4["sections"][3]["longtail"] = "L4"
 plan4 = planning.validate_plan(raw4, inp4, test_planning.LOG)
 lt_by_sop = {s["sop"]: s["longtail"] for s in plan4["sections"]}
@@ -872,9 +902,10 @@ check("long-tail loose: the tight matcher finds no use in the spread sentence (t
       checks.longtail_spans(LT_SPREAD_SENT, "zorb widget services pricing") == [])
 inp5 = test_planning.make_inputs()
 inp5.longtails = inp5.longtails + [
-    {"id": "L5", "keyword": "zorb widget services pricing", "fact": "fs.segments.0", "why": "x"}]
+    {"id": "L5", "keyword": "zorb widget services pricing", "fact": "fs.segments.0.dominant", "why": "x"}]
+inp5.items["fs.segments.0.dominant"] = test_planning.item("fs.segments.0.dominant", "segments", "Dominant category in By Type: Cloud Based (the report states it leads this split)", {"subsegment"})
 raw5 = test_planning.good_plan()
-raw5["sections"][3]["facts"] = ["W2", "fs.segments.0", "fs.segments.1"]   # L5 rests on fs.segments.0
+raw5["sections"][3]["facts"] = ["W2", "fs.segments.0.dominant"]   # L5 rests on the leader fact (a split's category list is stated in the segmentation section only)
 raw5["sections"][3]["longtail"] = "L5"      # the sub-segment section, where its fact sits
 plan5 = planning.validate_plan(raw5, inp5, test_planning.LOG)
 d = good_draft()
@@ -939,7 +970,7 @@ check("disconnected: the active-voice soft check still runs by default",
 check("disconnected: hard checks still run by default",
       any(n.startswith("Draft structure matches") for n in default_names))
 check("disconnected: other soft checks still run by default (length band, tertiary terms)",
-      any(n == "Length is 1,200-1,500 words (soft)" for n in default_names))
+      any(n == "Length is 1,300-1,700 words (soft)" for n in default_names))
 
 flagged = run_v2(TITLE, d, include_disconnected=True)
 flagged_names = [r.name for r in flagged]
@@ -949,6 +980,68 @@ check("disconnected: with the flag all five soft checks (that apply to the draft
 check("disconnected: adding the flag loses nothing else (default == flagged minus the five)",
       default_names == [n for n in flagged_names if n not in DISC_NAMES],
       str([n for n in flagged_names if n not in DISC_NAMES and n not in default_names]))
+
+# ------------------------------------------------------------------ outside report: no link, a loud warning
+
+INP_OUT = test_planning.make_inputs()
+INP_OUT.link_report, INP_OUT.report_mode = False, "external"
+INP_OUT.outside_audit = [{"field": "size", "original": "USD 500.0 million", "shown": "USD 521.0 million", "source": "rival.example", "url": "https://rival.example/r"}]
+nolink_draft = good_draft()
+nolink_draft[0]["paragraphs"][0] = pad(26, [f"Start at the source: {MARKET}, where this guide gathers its findings."])
+out = checks.run_checks_v2(TITLE, nolink_draft, PLAN, INP_OUT, faq=GOOD_FAQ, sponsor_brand_terms=["Northway Specialists"],
+                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+out_names = [r.name for r in out]
+check("outside: no CMI link check runs when no report is linked", not any("CMI link" in n or "CMI report linked" in n for n in out_names), str(out_names))
+warn = next((r for r in out if r.name.startswith("WARNING")), None)
+check("outside: a warning check names the competitor report and fails visibly", warn is not None and not warn.passed)
+check("outside: the warning lists the source value, the shown value and the URL",
+      warn is not None and "USD 500.0 million" in warn.detail and "USD 521.0 million" in warn.detail and "https://rival.example/r" in warn.detail)
+check("outside: a normal CMI run carries no warning", not any(r.name.startswith("WARNING") for r in good))
+
+# ------------------------------------------------------------------ the report's main figures are all in the article
+fig_inp = test_planning.make_inputs()
+fig_inp.items["fs.forecast"] = test_planning.item("fs.forecast", "forecast", "Market forecast: USD 3.4 billion (2032)", {"report_context"})
+fig_inp.items["fs.segments.0.i1"] = test_planning.item("fs.segments.0.i1", "segment_item", "Cloud Based (By Type): 48.2%", {"subsegment", "segmentation"})
+fig_inp.segments = [
+    {"id": "fs.segments.0", "type": "By Type", "items": ["Browser Extension", "Cloud Based", "Others"], "dominant": {"name": "Cloud Based", "basis": "stated"}},
+    {"id": "fs.segments.1", "type": "By Industry", "items": ["Engineering & Manufacturing", "Media"]},
+]
+
+
+def fig_sections(ctx: str, seg: str, sub: str = "") -> list[dict]:
+    return [{"heading": "h", "sop": ["report_context"], "paragraphs": [ctx]},
+            {"heading": "h", "sop": ["segmentation"], "paragraphs": [seg]},
+            {"heading": "h", "sop": ["subsegment"], "paragraphs": [sub or "Nothing else."]}]
+
+
+all_in = fig_sections("The market was worth USD 1.2 billion in 2025, is forecast at USD 3.4 billion by 2032 and grows at 13.1% a year.",
+                      "The market splits by type into browser extension, cloud based and other tools, and by industry into engineering and "
+                      "manufacturing and media.", "Cloud based tools hold 48.2% of revenue and lead the split.")
+check("report figures: size, forecast, growth rate, categories and the share all stated -> no problem",
+      checks.v2_report_figure_problems(all_in, fig_inp) == [], str(checks.v2_report_figure_problems(all_in, fig_inp)))
+no_forecast = fig_sections("The market was worth USD 1.2 billion in 2025 and grows at 13.1% a year.",
+                           all_in[1]["paragraphs"][0], all_in[2]["paragraphs"][0])
+probs = checks.v2_report_figure_problems(no_forecast, fig_inp)
+check("report figures: a forecast left out of the article is named", any("3.4" in p and "forecast" in p.lower() for p in probs), str(probs))
+no_share = fig_sections(all_in[0]["paragraphs"][0], all_in[1]["paragraphs"][0], "Cloud based tools lead the split.")
+probs = checks.v2_report_figure_problems(no_share, fig_inp)
+check("report figures: a segment share left out of the article is named", any("48.2" in p for p in probs), str(probs))
+no_cat = fig_sections(all_in[0]["paragraphs"][0], "The market splits by type into browser extension and cloud based tools.", all_in[2]["paragraphs"][0])
+probs = checks.v2_report_figure_problems(no_cat, fig_inp)
+check("report figures: a split's category left out is named, 'Others' is not required",
+      any("Engineering & Manufacturing" in p for p in probs) and not any("Others" in p for p in probs), str(probs))
+year_only = fig_sections("The market is forecast at USD 3.4 billion and was worth USD 1.2 billion, growing at 13.1% a year.",
+                         all_in[1]["paragraphs"][0], all_in[2]["paragraphs"][0])
+check("report figures: a year is not a figure (the year of a figure may be left out)",
+      checks.v2_report_figure_problems(year_only, fig_inp) == [], str(checks.v2_report_figure_problems(year_only, fig_inp)))
+check("report figures: the check reports as a failed row in the full check list",
+      any(not r.passed and r.name.startswith("CMI report figures stated") for r in run_v2("T", no_forecast + [], faq=[])),
+      "")
+
+fig_inp.segments = fig_inp.segments + [{"id": "fs.segments.2", "type": "By Application", "items": ["Media", "Others (Banking and Finance, Non-profit and Government Organizations)"]}]
+check("report figures: a parenthesis inside a category, and 'Others', are not required in the article",
+      not any("Others" in p or "Banking" in p for p in checks.v2_report_figure_problems(all_in, fig_inp)),
+      str(checks.v2_report_figure_problems(all_in, fig_inp)))
 
 # ------------------------------------------------------------------ summary
 

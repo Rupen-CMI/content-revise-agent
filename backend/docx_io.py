@@ -7,6 +7,7 @@ from typing import BinaryIO
 from urllib.parse import urlparse
 
 import docx
+import subheads
 from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
 
@@ -34,6 +35,9 @@ class Paragraph:
     index: int
     text: str
     links: list[Link] = field(default_factory=list)
+    # The run's client links by id ("L1" -> Link), set on the run's sponsor paragraph when the writer restates the client
+    # paragraph: the [[CLIENT_LINK:L1|words]] tokens in a draft resolve to their URLs through it (pipeline.expand_segments).
+    client_links: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -155,6 +159,9 @@ def write_docx(
         elif s["heading"]:
             document.add_heading(s["heading"], level=2)
         for para_text in s["paragraphs"]:
+            if subheads.is_subhead(para_text):
+                document.add_heading(subheads.subhead_text(para_text), level=3)
+                continue
             lead, items = split_bullet_lines(para_text)
             if lead.strip():
                 _add_run_segments(document.add_paragraph(), lead)

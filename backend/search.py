@@ -77,6 +77,30 @@ _HUB_TITLE_RE = re.compile(
 _BARE_COMPANY_TITLE_RE = re.compile(
     r"^[\w .,&'’-]{2,70}\b(corp|corporation|co|inc|ltd|llc|plc|holdings?|group|ag|sa|se|nv)\.?$", re.IGNORECASE
 )
+# A market-report page: a research firm's (or a report mill's) own listing of a market's size, share, forecast and trends. The CMI report is
+# fetched on its own, so another firm's report page is never evidence. It is recognised by its SHAPE, not by a list of sites, because new
+# report mills appear faster than any list can be kept: a title that says "<...> Market" followed by a report word ("Market Size, Share, Trends &
+# Growth", "Market Research Report", "Market Analysis") or by a year ("Market (2026 - 2033)", "Market 2026", "Market by 2034"), or a host named
+# like a report mill ("allmarketanalysis", "dirmarketresearch", "futuremarketreport", "marketintelo"). Dated news gets the narrower title rule.
+_REPORT_WORDS = (r"size|share|forecasts?|analysis|outlook|reports?|insights?|trends|growth|statistics|segmentation|opportunit\w*|cagr|study|overview")
+_REPORT_YEAR_TAIL = r"|\bmarkets?\b\W{0,8}20[2-4]\d\b|\bmarkets?\b[^|]{0,40}\b(?:by|to|through|till|until)\s+20[2-4]\d\b"
+_REPORT_PAGE_TITLE_RE = re.compile(r"\bmarkets?\b(?:\W+\w+){0,3}?\W+(?:" + _REPORT_WORDS + r")\b" + _REPORT_YEAR_TAIL, re.IGNORECASE)
+_REPORT_NEWS_TITLE_RE = re.compile(r"\bmarkets?\b(?:\W+\w+){0,3}?\W+(?:size|share|forecasts?|reports?|cagr|outlook)\b" + _REPORT_YEAR_TAIL, re.IGNORECASE)
+_REPORT_MILL_HOST_RE = re.compile(
+    r"markets?(?:research|reports?|analysis|insights?|intelo|intelligence|size|study|studies|data|stats|trends|growth|decipher|digits|future)"
+    r"|(?:research|insights?|reports?|analysis|intelligence)markets?|researchandmarkets")
+
+
+def report_page_reason(hit: "SearchHit") -> str | None:
+    """Why this hit is a market-report page (so not evidence), or None. Trusted trade press is exempt from the title rule."""
+    if _REPORT_MILL_HOST_RE.search(re.sub(r"[^a-z0-9]", "", hit.host)):
+        return "a market-report site"
+    if sources.is_trusted(hit.host):
+        return None
+    pattern = _REPORT_NEWS_TITLE_RE if hit.is_news else _REPORT_PAGE_TITLE_RE
+    return "a market-report page" if pattern.search(hit.title) else None
+
+
 # Section/landing pages and profile pages ("Newsroom", "Nasdaq Watch", "United States", "Ross Allardice")
 # are 1-3 words; real headlines carrying a fact are longer.
 _MIN_TITLE_WORDS = 4
@@ -584,6 +608,11 @@ def filter_hits(
             dropped += 1
             logger.info(f"[filter] DROP (blocked host {hit.host}): {hit.title!r}")
             continue
+        reason = report_page_reason(hit)
+        if reason:
+            dropped += 1
+            logger.info(f"[filter] DROP ({reason}) [{hit.host}] {hit.title!r}")
+            continue
         own_site = _is_key_player_own_site(hit.host, list(key_players))
         if own_site and not sources.is_trusted(hit.host):
             dropped += 1
@@ -771,6 +800,11 @@ def filter_claim_hits(
         if any(hit.host == b or hit.host.endswith("." + b) for b in _CLAIM_BLOCKED_HOSTS):
             dropped += 1
             logger.info(f"[filter:claim] DROP (blocked host {hit.host}): {hit.title!r}")
+            continue
+        reason = report_page_reason(hit)
+        if reason:
+            dropped += 1
+            logger.info(f"[filter:claim] DROP ({reason}) [{hit.host}] {hit.title!r}")
             continue
         title_words = len(hit.title.split())
         if (

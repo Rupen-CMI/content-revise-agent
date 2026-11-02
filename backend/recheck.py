@@ -18,6 +18,7 @@ import docx
 from docx.oxml.ns import qn
 
 import checks
+import subheads
 from config import CMI_HOST
 from prompts import SPONSOR_TOKEN
 
@@ -40,10 +41,12 @@ def _is_cmi(url: str) -> bool:
     return urlparse(url).netloc.lower().endswith(CMI_HOST)
 
 
-def read_blocks(raw: bytes) -> list[dict]:
+def read_blocks(raw: bytes, client_urls: dict[str, str] | None = None) -> list[dict]:
     """Every non-empty paragraph of the docx as {text, heading, bullet, bold}. A hyperlink to the CMI
-    site becomes the CMI link placeholder, the form the checks and the renderer expect."""
+    site becomes the CMI link placeholder, the form the checks and the renderer expect; a hyperlink to a client's
+    page (`client_urls`: url -> link id) becomes that client's link token."""
     document = docx.Document(BytesIO(raw))
+    client_urls = {u.rstrip("/"): i for u, i in (client_urls or {}).items()}
     rels = {rid: rel.target_ref for rid, rel in document.part.rels.items() if "hyperlink" in rel.reltype}
     blocks: list[dict] = []
     for p in document.paragraphs:
@@ -54,6 +57,8 @@ def read_blocks(raw: bytes) -> list[dict]:
                 url = rels.get(child.get(qn("r:id")))
                 if url and _is_cmi(url) and text.strip():
                     text = f"[[CMI_LINK:{text}]]"
+                elif url and url.rstrip("/") in client_urls and text.strip():
+                    text = f"[[CLIENT_LINK:{client_urls[url.rstrip('/')]}|{text.strip()}]]"
             pieces.append(text)
         text = "".join(pieces).strip()
         if not text:
@@ -68,7 +73,8 @@ def read_blocks(raw: bytes) -> list[dict]:
         runs = [r for r in p.runs if r.text.strip()]
         blocks.append({
             "text": text,
-            "heading": style.startswith("Heading") or style == "Title",
+            "heading": (style.startswith("Heading") or style == "Title") and style != "Heading 3",
+            "subhead": style == "Heading 3",
             "bullet": bool(bullet),
             "bold": bool(runs) and all(r.bold for r in runs),
         })
@@ -95,7 +101,9 @@ def _paragraphs(blocks: list[dict]) -> list[str]:
     '\\n- item' lines (checks and renderers treat that as one paragraph with a bulleted list)."""
     out: list[str] = []
     for b in blocks:
-        if b["bullet"]:
+        if b.get("subhead"):
+            out.append(subheads.make_subhead(b["text"]))
+        elif b["bullet"]:
             if out:
                 out[-1] += "\n- " + b["text"]
             else:
@@ -117,7 +125,7 @@ def _split_opening(pre: list[str], run_sections: list[dict], sponsor_text: str) 
     orig_t = sum(_words(p, sponsor_text) for s in run_sections if s.get("sop") == ["transition"] for p in s["paragraphs"])
     if len(pre) < 2 or orig_t == 0:
         return pre, []
-    first = max(1, 1 + max((i for i, p in enumerate(pre) if SPONSOR_TOKEN in p), default=-1))
+    first = max(1, 1 + max((i for i, p in enumerate(pre) if SPONSOR_TOKEN in p or "[[CLIENT_LINK:" in p), default=-1))
     if first > len(pre) - 1:
         return pre, []
     target = orig_i / (orig_i + orig_t)
@@ -164,9 +172,11 @@ def _parse_faq(blocks: list[dict], run_faq: list[dict]) -> list[dict]:
             for i, qa in enumerate(pairs) if qa["answer"]]
 
 
-def parse(raw: bytes, run_title: str, run_sections: list[dict], run_faq: list[dict], sponsor_text: str) -> dict:
-    """{title, sections, faq, notes}: the humanized draft in the run's own shape."""
-    blocks = read_blocks(raw)
+def parse(raw: bytes, run_title: str, run_sections: list[dict], run_faq: list[dict], sponsor_text: str,
+          client_urls: dict[str, str] | None = None) -> dict:
+    """{title, sections, faq, notes}: the humanized draft in the run's own shape. When the run restated its client paragraph,
+    `sponsor_text` is empty and `client_urls` maps each client link's URL to its id."""
+    blocks = read_blocks(raw, client_urls)
     if not blocks:
         raise ValueError("document has no text")
     notes: list[str] = []
@@ -185,7 +195,7 @@ def parse(raw: bytes, run_title: str, run_sections: list[dict], run_faq: list[di
     owner: dict[int, int] = {}   # block index -> run index (-1 = FAQ)
     pairs = []
     for bi, b in enumerate(blocks):
-        if b["bullet"] or len(b["text"].split()) > 25:
+        if b["bullet"] or b.get("subhead") or len(b["text"].split()) > 25:
             continue
         floor = _HEADING_MIN_RATIO if b["heading"] else _PLAIN_HEADING_MIN_RATIO
         for k, h in unused.items():

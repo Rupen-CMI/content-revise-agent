@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -14,6 +14,7 @@ import feeds
 import freshness
 import intent
 import llm
+import polarity
 import prompts
 import reports
 import search
@@ -90,12 +91,21 @@ class RevampResult:
         return expand_segments(paragraph, self.sponsor, self.report.url)
 
 
-def _cmi_link_segments(text: str, report_url: str | None) -> list[Segment]:
+_LINK_TOKEN_RE = re.compile(prompts.CMI_LINK_PATTERN + "|" + prompts.CLIENT_LINK_PATTERN)
+
+
+def _cmi_link_segments(text: str, report_url: str | None, client_links: dict | None = None) -> list[Segment]:
+    """(text, url) segments: [[CMI_LINK:name]] becomes the report URL and [[CLIENT_LINK:Ln|words]] its client's URL. A client
+    link whose id is unknown is left as its plain words, never as a broken link."""
     out: list[Segment] = []
     pos = 0
-    for m in re.finditer(prompts.CMI_LINK_PATTERN, text):
+    for m in _LINK_TOKEN_RE.finditer(text):
         out.append((text[pos:m.start()], None))
-        out.append((m.group(1), report_url))
+        if m.group(1) is not None:
+            out.append((m.group(1), report_url))
+        else:
+            link = (client_links or {}).get(m.group(2))
+            out.append((m.group(3), link.url if link else None))
         pos = m.end()
     out.append((text[pos:], None))
     return [s for s in out if s[0]]
@@ -109,10 +119,11 @@ def expand_segments(paragraph: str, sponsor: Paragraph, report_url: str | None) 
     if paragraph.strip() == prompts.SPONSOR_TOKEN:
         return sponsor_segments(sponsor)
     out: list[Segment] = []
+    client_links = getattr(sponsor, "client_links", None) or {}
     parts = paragraph.split(prompts.SPONSOR_TOKEN)
     for i, part in enumerate(parts):
         if part:
-            out.extend(_cmi_link_segments(part, report_url))
+            out.extend(_cmi_link_segments(part, report_url, client_links))
         if i < len(parts) - 1:
             out.extend(sponsor_segments(sponsor))
     return [s for s in out if s[0]]
@@ -150,7 +161,8 @@ def _format_hits(hits: list[search.SearchHit]) -> str:
     for i, h in enumerate(hits, 1):
         tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
         body = h.excerpt or h.snippet[:300]
-        lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}\n      {body}")
+        us = " | found by the U.S. search" if h.scope == "us" else ""
+        lines.append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}{us}\n      {body}")
     return "\n".join(lines) or "(no results)"
 
 
@@ -179,6 +191,46 @@ def _bare_market_names(names) -> list[str]:
             seen.add(bare.lower())
             out.append(bare)
     return out
+
+
+_MAX_SUGGESTED_PER_TIER = 3
+
+
+def normalize_suggested_markets(orient: dict) -> dict:
+    """Normalise ORIENT's suggested_markets into exactly {"tier1": [...], "tier2": [...], "tier3": [...]}:
+    a missing or malformed value becomes empty lists, every name is run through _bare_market_names
+    (segmentation qualifiers stripped), at most _MAX_SUGGESTED_PER_TIER per tier, and a name already
+    used in an earlier tier is dropped (case-insensitive: a market appears in one tier only).
+    orient["own_market"] (bare-named) always leads tier1 when present, moved there from a later tier
+    if the model misfiled it; when tier1 still ends up empty, the first candidate_markets name is
+    promoted so the UI never shows an empty Tier 1. Pure function, no logging: feed it anything."""
+    raw = orient.get("suggested_markets") if isinstance(orient, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    tiers: dict[str, list[str]] = {}
+    used: set[str] = set()
+    for key in ("tier1", "tier2", "tier3"):
+        names = _bare_market_names(raw.get(key) if isinstance(raw.get(key), list) else [])
+        kept: list[str] = []
+        for n in names:
+            if len(kept) >= _MAX_SUGGESTED_PER_TIER:
+                break
+            if n.lower() in used:
+                continue
+            used.add(n.lower())
+            kept.append(n)
+        tiers[key] = kept
+    own = _bare_market_names([m for m in [orient.get("own_market")] if isinstance(m, str)]) if isinstance(orient, dict) else []
+    if own:
+        own_low = own[0].lower()
+        for key in ("tier1", "tier2", "tier3"):
+            tiers[key] = [n for n in tiers[key] if n.lower() != own_low]
+        tiers["tier1"].insert(0, own[0])
+        del tiers["tier1"][_MAX_SUGGESTED_PER_TIER:]
+    if not tiers["tier1"]:
+        cands = (orient.get("candidate_markets") or []) if isinstance(orient, dict) else []
+        first = next((c for c in cands if isinstance(c, str) and c.strip()), None)
+        tiers["tier1"] = [first] if first else []
+    return {"tier1": tiers["tier1"], "tier2": tiers["tier2"], "tier3": tiers["tier3"]}
 
 
 # The originals' claims list is capped here too: the publisher block is now a single short
@@ -251,6 +303,8 @@ def run_orient(article: SourceArticle, sponsor: Paragraph, logger: logging.Logge
         sponsor=sponsor.text,
     ), call_name="orient", temperature=0.1, logger=logger)
     orient["candidate_markets"] = _bare_market_names(orient.get("candidate_markets"))
+    # Tiered suggested markets for the Step 1 UI (list 1 of 2; list 2 is the tiered CMI catalog).
+    orient["suggested_markets"] = normalize_suggested_markets(orient)
     if config.SEARCH_CLAIMS_ENABLED:
         orient["claims_to_back"] = _normalize_claims(orient.get("claims_to_back"), sponsor.text, logger)
     else:
@@ -351,8 +405,65 @@ def run_match_catalog(
     logger.info("ranked candidates: " + ", ".join(f"{c.news_id}:{c.keyword}" for c in candidates))
 
     if not candidates:
-        raise PipelineError(f"No CMI report matched any of: {', '.join(names + keywords)}")
+        # Not an error any more: the editor sees an empty list, and Step 2 finds the market's report on the internet.
+        logger.warning(f"no CMI report matched any of: {', '.join(names + keywords)}")
     return candidates
+
+
+def run_tier_catalog(
+    orient: dict, article: SourceArticle, candidates: list[reports.CatalogEntry],
+    logger: logging.Logger, limit: int = 15,
+) -> list[reports.CatalogEntry]:
+    """CALL: tier the catalog candidates against the blog topic (Tier 1 direct match, Tier 2
+    adjacent/structural, Tier 3 shared driver — the definitions in prompts.TIER_CATALOG_USER),
+    with ONE LLM call. Returns the entries that land in tier 1-3 (tier stamped on them via
+    dataclasses.replace), ordered by tier then by their original match rank; tier 0 and any
+    report the model left unanswered are dropped. Best-effort like the long-tail generation:
+    an LLMError or an unusable answer falls back to the first 5 candidates untiered, so the
+    Step 1 UI always has something to show and the run never fails over this step."""
+    section(logger, "CALL: TIER CATALOG")
+    if not candidates:
+        logger.info("[tier-catalog] no catalog candidates to tier")
+        return []
+    cands = list(candidates[:limit])
+    numbered = "\n".join(f"{i}. {c.keyword}" for i, c in enumerate(cands, 1))
+    try:
+        result = llm.chat_json(
+            prompts.TIER_CATALOG_SYSTEM, prompts.TIER_CATALOG_USER.format(
+                title=article.title,
+                topic_summary=str(orient.get("topic_summary") or "(not available)"),
+                bridge_angle=str(orient.get("bridge_angle") or "(not available)"),
+                candidates=numbered,
+            ),
+            call_name="tier_catalog", temperature=0.1, logger=logger,
+        )
+    except llm.LLMError:
+        logger.warning("[tier-catalog] tiering failed; returning the first 5 candidates untiered", exc_info=True)
+        return [replace(c, tier=None) for c in cands[:5]]
+
+    # Validate in code, never trust the model's shape: ids outside 1..n and non-integer tiers are
+    # dropped, a later duplicate placement for the same report is ignored in favour of the first.
+    placements: dict[int, int] = {}
+    for row in result.get("tiers") if isinstance(result, dict) and isinstance(result.get("tiers"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            rid, tier = int(row.get("id")), int(row.get("tier"))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= rid <= len(cands)) or tier not in (0, 1, 2, 3):
+            continue
+        placements.setdefault(rid, tier)
+    placed = [(rid, t) for rid, t in placements.items() if t >= 1]
+    if not placements:
+        logger.warning("[tier-catalog] the model returned no valid placements; returning the first 5 candidates untiered")
+        return [replace(c, tier=None) for c in cands[:5]]
+    logger.info(f"[tier-catalog] placed {len(placed)}/{len(cands)} report(s) "
+                f"({len(placements) - len(placed)} at tier 0, {len(cands) - len(placements)} unanswered): "
+                + "; ".join(f"tier {t}: {cands[rid - 1].keyword}" for rid, t in placed))
+    placed.sort()                 # rank order first…
+    placed.sort(key=lambda x: x[1])  # …then a stable sort by tier keeps that rank order within each tier
+    return [replace(cands[rid - 1], tier=t) for rid, t in placed]
 
 
 def _market_search_queries(market_name: str) -> list[str]:
@@ -1306,6 +1417,7 @@ def run_select(
     _normalize_selection_tags(selection, hits, logger)
     _strip_players_tag(selection, logger)
     _drop_stale_facts(selection, logger)
+    _drop_negative_facts(selection, logger, report.name)
     _drop_market_sizing_facts(selection, logger, headline_figures)
     _verify_selection_figures(selection, hits, logger)
     _normalize_claim_backing(selection, claims, claim_flat, logger)
@@ -1584,6 +1696,25 @@ def _drop_stale_facts(selection: dict, logger: logging.Logger) -> None:
     selection["evidence"] = kept
 
 
+def _drop_negative_facts(selection: dict, logger: logging.Logger, market_name: str = "") -> None:
+    """Positive-only backstop: SELECT is told to reject a setback (prompts.SELECT_USER, test 4); a selected fact or detail
+    that still reads as one is removed, since the articles carry only favourable developments. A negative detail is
+    blanked when the fact itself is fine."""
+    ignore = polarity.market_words(market_name)
+    kept = []
+    for e in selection.get("evidence") or []:
+        hits = polarity.negative_hits(str(e.get("fact", "")), ignore)
+        if hits:
+            logger.info(f"[select] dropped {e.get('id')}: its fact reads as a setback {hits}")
+            continue
+        detail_hits = polarity.negative_hits(str(e.get("detail", "")), ignore)
+        if detail_hits:
+            logger.info(f"[select] blanked the detail of {e.get('id')}: it reads as a setback {detail_hits}")
+            e["detail"] = ""
+        kept.append(e)
+    selection["evidence"] = kept
+
+
 # Market sizing belongs to the CMI report alone. SELECT is told to reject it (prompts.SELECT_USER, test 3); this is the
 # backstop for a model that keeps one anyway: a fact that gives the size/forecast/growth of a market or industry, or that
 # attributes anything to a rival market-research firm, would put a second, contradicting figure in the draft. The last
@@ -1650,6 +1781,7 @@ def _headline_figures(fs: dict | None) -> dict | None:
         entry = fs.get(key)
         if isinstance(entry, dict):
             raw |= _figures(str(entry.get("value", "")))
+            raw |= _figures(str(entry.get("original_value", "")))     # an outside report's own figure is just as much a restatement
     floats: set[float] = set()
     for r in raw:
         try:

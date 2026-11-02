@@ -35,7 +35,7 @@ _RESEARCH_SOURCE_RE = re.compile(
     r"Grand View|MarketsandMarkets|Fortune Business)\b", re.IGNORECASE,
 )
 # A point may not hold a measurement — a number with a unit of measure (KB, ms, kg, mph…) or a spelled-out unit of
-# measure — because a measurement is detail a lay reader never needs in a plain-language opening, in any industry.
+# measure — because a measurement is detail a reader outside the guest article's field never needs in the opening, in any industry.
 _JARGON_RE = re.compile(
     r"\d+(?:[.,]\d+)?\s?(?:kb|mb|gb|tb|ms|hz|khz|mhz|ghz|mg|mcg|kg|km|kph|mph|mm|cm|ml|kw|kwh|mw|gw|psi|rpm|bpm|hp)\b"
     r"|\b(?:kilobytes?|megabytes?|gigabytes?|terabytes?|milliseconds?|kilograms?|kilometres?|kilometers?|kilowatts?|"
@@ -96,7 +96,7 @@ def normalize_points(raw: dict, article_body: str, brand_terms: list[str], logge
 def run_publisher_points(
     article: SourceArticle, sponsor: Paragraph, market_name: str, logger: logging.Logger,
 ) -> dict:
-    """CALL: boil the guest article down to plain points. Best-effort: a failure returns no points, and the planner then
+    """CALL: boil the guest article down to a few points. Best-effort: a failure returns no points, and the planner then
     builds the intro from the article's title and subject alone."""
     section(logger, "CALL: PUBLISHER POINTS")
     body, removed = freshness.strip_stale_developments(article.body)

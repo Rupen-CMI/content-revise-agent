@@ -16,7 +16,11 @@ import logging
 import re
 from datetime import date
 
+import config
 import llm
+import clients
+import sentsplit
+import subheads
 import planning
 import prompts
 from docx_io import Paragraph
@@ -30,30 +34,46 @@ import reports
 LINK_WORDS = 100        # the SOP wants the report link inside the first 100 words (200 is the hard limit the check uses)
 _DETAIL_CHARS = 300
 _SHAPES = {
-    "report_context": 'One paragraph. It states the market\'s size and where it is heading only as far as the listed facts do.',
-    "trends": 'One paragraph string: a single lead-in sentence, then exactly three lines (never two, never four) that each start with "\\n- ", one distinct trend per line (what is changing and what it does to the market, resting on a listed fact where one is given). The lead-in sentence names the market by its full name (never "this market"). The lead-in and the three lines are the whole paragraph.',
-    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. No line, and not the lead-in either, says what the segmentation lets anyone see or do, or why the segmentation matters. Nothing else.',
-    "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: what drives its adoption, where it is used and what it adds to the market, using only the listed facts; where the facts say little, it says little. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
-    "country_us": 'Plain prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers where the market is strongest and, where facts allow, the United States, in 100 to 200 words in all; fewer than 100 words is a miss, so carry the region picture with the listed facts plus your own plain sentences about what that picture means for buyers.',
-    "key_players": 'Two entries in "paragraphs", both plain prose with no bullet lines. First: a short plain passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
-    "key_players_names_only": 'Two entries in "paragraphs", both plain prose with no bullets. First: a short passage on how crowded or concentrated the field is, naming the companies the facts name together in its opening sentence, using only what the listed facts say. Second: here no company has a listed fact, so the companies stay named together in one or two complete sentences; never give a company a detail the facts do not supply.',
-    "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, steady growth, a modest pace). It still uses the market\'s full name once. Its last sentence is the CMI analyst\'s view.',
+    "report_context": 'One or two paragraphs. It states every listed headline figure as its fact gives it: the market size with its year, the forecast value with its year and the growth rate with its period, then the leading and the fastest-growing region where they are listed. It says where the market is heading only as far as the listed facts show.',
+    "trends": 'A list "paragraphs" of exactly 13 plain-text entries, in this order. Entry 1: a lead-in paragraph of 30 to 45 words that names the market by its full name, states the three trends in one sentence and says in one sentence what they change together. Then, for each of three distinct trends, four entries: first a sub-heading entry, the string "### " followed by the trend\'s heading (6 to 12 words that state the consequence for this market, for example what is raising demand for what; never a bare label, never a question); then three paragraphs of 35 to 55 words each. Paragraph one: the development itself, anchored in a listed fact: name the organisation, study, launch or event, give its date, and state its figure and its limits (scope, sample, stage) as the fact states them. Paragraph two: the mechanism: how the development changes demand, adoption or competition in this market, tied to a listed driver or segment where one is given. Paragraph three: the commercial implication: what providers, buyers or investors in this market can do or should expect, framed as inference from the facts above and adding no new fact. A trend with few listed facts keeps all three paragraphs by reasoning more fully from what its facts show, never by adding a fact. The section ends with the third trend\'s third paragraph: no closing or summary paragraph, and no bullets anywhere in the section.',
+    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. Where a listed fact names the category that leads that type, or gives a category\'s share or value, the same line states it with its figure, as the fact gives it. No line, and not the lead-in either, says what the segmentation lets anyone see or do, or why the segmentation matters. Nothing else.',
+    "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: it states the sub-segment\'s listed share or value with its year and says that it leads its split where a fact says so, then what drives its adoption, where it is used and what it adds to the market, stating only what the listed facts state and reasoning from them (the mechanism, the buyer, the use) for what follows; where the facts say little, the paragraph stays short and adds no fact. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
+    "country_us": 'Prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers the United States and only the United States: its demand, adoption, drivers and developments as the listed facts give them, in 100 to 200 words in all. Name no other region or country anywhere in the section, not even for comparison; fewer than 100 words is a miss, so carry the U.S. picture with the listed facts plus your own analytical sentences about what it means for providers and buyers in the U.S.',
+    "key_players": 'Two entries in "paragraphs", both prose with no bullet lines. First: a short passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
+    "key_players_names_only": 'Two entries in "paragraphs", both prose with no bullets. First: a short passage on how crowded or concentrated the field is, naming the companies the facts name together in its opening sentence, using only what the listed facts say. Second: here no company has a listed fact, so the companies stay named together in one or two complete sentences; never give a company a detail the facts do not supply.',
+    "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, the growth rate stated earlier) and puts no label of its own on the pace ("modest", "rapid", "steady", "strong"), because the figures already say it. It uses the market\'s full name once, inside a sentence about the market itself, never a sentence about the name. It restates no fact, region, segment or company from the sections above, not even in other words: it looks ahead. Its last sentence is the CMI analyst\'s view.',
 }
 
 # SOPs whose SHAPE text asks for one lead-in sentence followed by "\n- " bullet lines: the bullet lines
 # are reserved for the section's listed facts, so a REQUIRED secondary keyword can only be covered
 # inside the lead-in sentence (see the extra instruction _keyword_lines appends for these sections).
-_LIST_SHAPED = frozenset({"trends", "segmentation"})
+_LIST_SHAPED = frozenset({"segmentation"})
 
 
 # ------------------------------------------------------------------------------------------------- prompt
 
+def _trim_detail(detail: str) -> str:
+    """The detail cut at the last sentence end (else the last whole word) within _DETAIL_CHARS, so the writer is never handed
+    a half-word to repeat as if it were a name."""
+    detail = " ".join(str(detail).split())
+    if len(detail) <= _DETAIL_CHARS:
+        return detail
+    cut = detail[:_DETAIL_CHARS]
+    end = max(cut.rfind(". "), cut.rfind("; "))
+    return cut[:end + 1] if end > _DETAIL_CHARS // 2 else cut[:cut.rfind(" ")].rstrip(",;: ")
+
+
+REQUIRED_KINDS = frozenset({"size", "forecast", "cagr", "segment_item"})     # the figures every post must state (checks.v2_report_figure_problems)
+
+
 def _fact_text(item: dict) -> str:
     note = " [historical: state its year, never as current]" if item.get("historical") else ""
+    if item["kind"] in REQUIRED_KINDS:
+        note += " [REQUIRED: state this figure in the section]"
     if item["kind"] == "evidence":
         line = f"- [{item['id']}] {item['text']} (source: {item['source']}){note}"
         if item.get("detail"):
-            line += f"\n    detail: {item['detail'][:_DETAIL_CHARS]}"
+            line += f"\n    detail: {_trim_detail(item['detail'])}"
         return line
     if item["source"] not in ("CMI report", ""):
         return (f"- [{item['id']}] {item['text']} (source: {item['source']}, NOT CMI: the paragraph carrying this "
@@ -95,15 +115,29 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
     rows = [f'### {i}. {s["sop"]}  |  heading: "{s["heading"]}"  |  about {s["words"]} words']
     rows.append(f'Purpose (what the reader learns here): {s["point"] or "(the section\'s ordinary job)"}')
     if msq:
-        rows.append("The heading is a question people really search. Answer it directly in the first one or two sentences (about 40 to 60 words), in plain words, then continue with the section.")
-    if s["length"] == "short":
-        rows.append("Keep this section short and plain; it is fine to land under the budget.")
-    elif s["length"] == "qualitative":
-        rows.append("Write about the leading regions only. Do not discuss the United States in particular, and keep to the lower end of the budget.")
+        rows.append("The heading is a question people really search. Answer it directly in the first one or two sentences (about 40 to 60 words), in precise terms, then continue with the section.")
+    if s["length"] == "short" and s["sop"] != "trends":
+        rows.append("This section has few facts: state them exactly and add the analysis they support (what they mean for buyers and providers "
+                    "in this market) without adding a fact. It may land under the budget.")
+    elif s["length"] == "us_missing":
+        rows.append("No verified U.S. fact was found for this market. Do not write about any other region or country. "
+                    "The section's entire paragraph is the single line: [EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]")
     facts_rows = [_fact_text(inp.items[f]) for f in s["facts"]]
-    rows.append("Facts to use:\n" + ("\n".join(facts_rows) if facts_rows else "- (none)"))
+    if s["sop"] == "trends" and s.get("trend_groups"):
+        parts = []
+        for n, g in enumerate(s["trend_groups"], 1):
+            name = g["trend"] or "(the planner gave this trend no name: name it from its facts)"
+            body = "\n".join(_fact_text(inp.items[f]) for f in g["facts"]) or "- (no listed fact: reason from the section's purpose without adding a fact)"
+            parts.append(f"Trend {n}: {name}\n{body}")
+        rows.append("Facts to use, by trend (each trend is written only from its own facts, and its sub-heading states that trend):\n" + "\n".join(parts))
+    else:
+        rows.append("Facts to use:\n" + ("\n".join(facts_rows) if facts_rows else "- (none)"))
     if s["sop"] == "subsegment" and s.get("sub_segments"):
         rows.append("Sub-segments to cover: " + "; ".join(f'{x["name"]} (from the split "{x["split"]}")' for x in s["sub_segments"]) + ".")
+    if s["sop"] == "trends":
+        rows.append("The section keeps all three trends with three paragraphs each, however few facts are listed: where facts are few, reason "
+                    "more fully from them (what they show, why it matters in this market, what follows commercially) without adding a fact. "
+                    "Spread the listed facts across the three trends, two or three to a trend, none used twice.")
     rows.append("Keywords:\n" + _keyword_lines(s, inp))
     if s["snippet"]:
         rows.append(f'Guest example (optional, at most one sentence, only if it makes the point clearer): "{points[s["snippet"]]}"')
@@ -116,38 +150,68 @@ def build_write_prompt(plan: dict, inp: planning.PlanInputs, sponsor: Paragraph,
     points = {p["id"]: p["text"] for p in inp.points}
     blocks = [_section_block(i, s, inp, points) for i, s in enumerate(plan["sections"], 1)]
     mode = sponsor_mode(sponsor.text)
+    linked = getattr(inp, "link_report", True)
     total = plan["budgets"]["target"]
     # The transition band is 5-10% of the body (checks.block_share_problems). A transition that slides
     # under the band floor brings the whole draft down with it, so the prompt carries a floor in words:
     # about three quarters of the planned transition budget, and never below 65.
     transition_words = int(plan["transition"]["words"])
     transition_floor = max(65, int(transition_words * 0.75))
-    if mode == "phrase":
+    named = "names the market through the report link" if linked else "names the market in plain words"
+    lead = "the lead-in paragraph with the report link" if linked else "the lead-in paragraph"
+    client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
+    if client_list:
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and names the market through the report link, inside its first {LINK_WORDS} words; "
+            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
+            "then one paragraph, of the opening's own explanation, that carries every client link (see THE CLIENT LINKS); then, only "
+            "if the budget has room, one short closing paragraph that leads towards the market."
+        )
+        intro_shape = f'["<{lead}>", "<the paragraph that carries the [[CLIENT_LINK:...]] link(s), without naming any client>", "<an optional short closing paragraph>"]'
+    elif mode == "phrase":
+        opening_shape = (
+            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
             "then a second paragraph of your own in which the placeholder sits INSIDE one of your sentences, with your own words before and after it "
             "(the retained text is a short linked phrase, not a paragraph, so it never stands alone on a line). Nothing else is needed."
         )
         # The output template must MATCH that shape: showing the placeholder as a paragraph of its own here made the
         # model return exactly that, which breaks the phrase-mode placement rule.
-        intro_shape = f'["<the lead-in paragraph with the report link>", "<a paragraph of your own that embeds {prompts.SPONSOR_TOKEN} inside one of its sentences>"]'
+        intro_shape = f'["<{lead}>", "<a paragraph of your own that embeds {prompts.SPONSOR_TOKEN} inside one of its sentences>"]'
     else:
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and names the market through the report link, inside its first {LINK_WORDS} words; "
+            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
             "then the retained paragraph's slot; then, only if the budget has room, one short closing paragraph."
         )
-        intro_shape = f'["<the lead-in paragraph with the report link>", "{prompts.SPONSOR_TOKEN}", "<an optional short closing paragraph>"]'
+        intro_shape = f'["<{lead}>", "{prompts.SPONSOR_TOKEN}", "<an optional short closing paragraph>"]'
+    if client_list:
+        client_block = clients.client_block(client_list)
+        opening_limit = (f"at most {plan['intro']['own_words']} words of your own lead-in and closing, plus the paragraph that carries "
+                         f"the client links, of about {clients.paragraph_words(client_list)} words")
+    else:
+        client_block = (
+            "- The retained paragraph is written by someone else and is placed by code. Never write its words or a paraphrase of them. "
+            "Read it, so that your lead-in prepares the reader for whatever it takes for granted (a term, a comparison, something it "
+            f'refers back to). Its words are: "{sponsor.text}"\n- {_sponsor_rule(mode, sponsor.text)}')
+        opening_limit = f"at most {plan['intro']['own_words']} words of your own, plus the retained text"
+    text = _format_write_user(plan, inp, sponsor, report, today, mode, linked, total, transition_words, transition_floor,
+                              opening_shape, intro_shape, blocks, points, client_block, opening_limit)
+    return text + ("\n\n" + prompts.STYLE_ANCHORS if config.WRITE_STYLE_ANCHORS else "")
+
+
+def _format_write_user(plan, inp, sponsor, report, today, mode, linked, total, transition_words, transition_floor,
+                       opening_shape, intro_shape, blocks, points, client_block, opening_limit) -> str:
     return prompts.WRITE_USER.format(
         title=plan["title"], market_name=report.name, today=today or date.today().isoformat(),
         intro_own=plan["intro"]["own_words"], intro_angle=inp.intro_angle or "(the guest article's title)",
         intro_points="\n".join(f"  - {points[p]}" for p in plan["intro"]["points"]) or "  - (none)",
-        sponsor_rule=_sponsor_rule(mode, sponsor.text), link_token=f"[[CMI_LINK:{report.name}]]", opening_shape=opening_shape,
+        sponsor_rule=_sponsor_rule(mode, sponsor.text), opening_shape=opening_shape,
+        link_rule=(f"The link is written exactly once, as [[CMI_LINK:{report.name}]], and it is the first time the market's name appears."
+                   if linked else "The opening carries no link: the market's name is plain text. No report is cited anywhere in the post: never write 'the report', 'the research' or 'according to a report' (state each fact plainly, as the market's own fact), and name no research firm."),
         intro_shape=intro_shape,
         transition_words=transition_words,
         transition_floor=transition_floor,
         transition_point=plan["transition"]["point"] or "explain why the guest article's subject belongs to this wider market and what the reader will learn next",
         sections="\n\n".join(blocks), total_words=total, sponsor_token=prompts.SPONSOR_TOKEN,
-        sponsor_text=sponsor.text,
+        sponsor_text=sponsor.text, client_block=client_block, opening_limit=opening_limit,
     )
 
 
@@ -156,16 +220,27 @@ def build_write_prompt(plan: dict, inp: planning.PlanInputs, sponsor: Paragraph,
 # Sentences that talk about the writing process or about what the sources lack. A prompt rule against them is not reliable,
 # so they are removed in code (the sentence goes; nothing is rewritten).
 _META_RE = re.compile(
-    r"\b(?:listed|given|supplied|provided|available)\s+(?:facts?|information|details?|data)\b"
+    r"\b(?:listed|supplied|provided)\s+facts?\b|\bfacts?\s+(?:listed|supplied|provided|given)\b"
     r"|\bthe\s+facts?\s+(?:say|carry|show|give|do not|does not|don't)\b"
-    r"|\bthe\s+(?:plan|brief)\b"
+    r"|\b(?:according\s+to|per|following|in\s+line\s+with)\s+the\s+(?:plan|brief)\b"
+    r"|\bthe\s+(?:plan|brief)\s+(?:says|calls|requires|asks|states|gives|lists|specif\w+)\b"
     r"|\b(?:report|source|sources)\s+(?:does|do)\s+not\s+(?:put|break|give|say|state|list|name)\b"
     r"|\bnot\s+(?:broken\s+out|listed|stated|given|provided)\s+(?:in|by)\b"
     r"|\b(?:says|say)\s+little\s+more\b|\bstays?\s+(?:broad|at\s+the\s+regional\s+level)\b"
-    r"|\bno\s+(?:further|more|specific)\s+(?:detail|data|figures?)\s+(?:is|are|was|were)\b",
+    r"|\bno\s+(?:further|more|specific)\s+(?:detail|data|figures?)\s+(?:is|are|was|were)\b"
+    r"|\bthe\s+(?:observation|finding|statement|source|figure)\s+(?:is\s+(?:qualitative|descriptive)|does\s+not\s+(?:quantify|state|measure|give))\b"
+    r"|\brather\s+than\s+any\s+measured\b|\bdoes\s+not\s+quantify\b",
     re.IGNORECASE,
 )
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE_SPLIT_RE = sentsplit.SPLIT_RE
+
+
+def _holds_link(sentence: str) -> bool:
+    """A sentence carrying the retained-paragraph placeholder, a client link token or the CMI report link: the backstops
+    never cut, reword or remove it, because a lost link is a lost backlink (the checks report anything wrong with such a
+    sentence). Precedent: a sentence "CMI's analysis of the [[CMI_LINK:...]] examines how vendors..." was removed as a
+    coverage advert and the post went out with no report link at all."""
+    return prompts.SPONSOR_TOKEN in sentence or "[[CLIENT_LINK:" in sentence or "[[CMI_LINK:" in sentence
 
 
 # A sentence that does nothing but advertise what a study, survey, report or site covers — no figure and no finding of
@@ -191,7 +266,7 @@ def _is_coverage_ad(sent: str) -> bool:
     """Whether a sentence only advertises a publication's coverage: a publication-type subject word inside its first
     8 words (possessives included), a coverage verb, and neither a figure (checks._fact_numbers) nor a finding verb in
     the sentence itself."""
-    if prompts.SPONSOR_TOKEN in sent:
+    if _holds_link(sent):
         return False
     lowered = sent.lower()
     if "key players" in lowered or re.search(r"\bnames\b", lowered):
@@ -208,6 +283,31 @@ def _is_coverage_ad(sent: str) -> bool:
     return not _FINDING_VERB_RE.search(sent)
 
 
+# A sentence the backstops remove can be the one a following sentence refers to ("Apertera announced ... ." then "Its chief executive
+# observed ..."). Without its antecedent that sentence reads as damage, so it goes with it: a sentence that opens on a reference
+# directly after a removed sentence is removed too, and so on down the run (the whole-text check reports any that still get through).
+_ORPHAN_OPENER_RE = re.compile(
+    r"^(?:(?:it|its|they|their|he|she|this|that|these|those|such|on that|in that|from that|at that|by that)\b"
+    r"|the (?:company|firm|provider|vendor|group|deal|acquisition|merger|move|launch|announcement|partnership|result|study|survey|"
+    r"finding|figure|plan|system|platform|tool)\b)", re.I)
+
+
+def _drop_orphans(kept: list[str], removed: set[int]) -> list[str]:
+    """`kept` is a line's sentences in order and `removed` the indexes the caller removed: the sentences left, minus any that open
+    on a reference directly after a removed one."""
+    out: list[str] = []
+    gap = False
+    for i, sent in enumerate(kept):
+        if i in removed:
+            gap = True
+            continue
+        if gap and not _holds_link(sent) and _ORPHAN_OPENER_RE.match(sent.strip()):
+            continue
+        gap = False
+        out.append(sent)
+    return out
+
+
 def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[dict]:
     """Remove sentences that describe the facts or the plan instead of the market, or that advertise a publication's
     coverage without reporting any finding from it. Works line by line so bullet lists keep
@@ -218,10 +318,11 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
             lines = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                good = [x for x in kept if not (_META_RE.search(x) or _is_coverage_ad(x))]
+                gone = {i for i, x in enumerate(kept) if not _holds_link(x) and (_META_RE.search(x) or _is_coverage_ad(x))}
+                good = _drop_orphans(kept, gone)
                 if len(good) != len(kept):
                     logger.info(f"[write] removed {len(kept) - len(good)} process-language sentence(s) from {s['sop'] or 'the opening'}: "
-                                + " | ".join(x[:110] for x in kept if _META_RE.search(x) or _is_coverage_ad(x)))
+                                + " | ".join(x[:110] for x in kept if x not in good))
                 if good:
                     lines.append(" ".join(good))
             if lines:
@@ -452,7 +553,7 @@ def strip_reader_filler(sections: list[dict], logger: logging.Logger) -> list[di
                 out = []
                 for sent in [x for x in _SENTENCE_SPLIT_RE.split(text) if x.strip()]:
                     m = _READER_TAIL_RE.search(sent)
-                    if (m and prompts.SPONSOR_TOKEN not in sent and len(sent[:m.start()].split()) >= 5):
+                    if (m and not _holds_link(sent) and len(sent[:m.start()].split()) >= 5):
                         originals.append(m.group(0)[:80])
                         sent = sent[:m.start()].rstrip() + (sent[-1] if sent[-1] in ".!?" else "")
                         n += 1
@@ -489,15 +590,15 @@ def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, spons
             lines: list[str] = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                good, gone = [], []
-                for sent in kept:
+                gone_ix: set[int] = set()
+                for si, sent in enumerate(kept):
                     text = checks._sponsor_replacement(sent, sponsor_text) if sponsor_text else sent
                     bad = sorted(n for n in checks._fact_numbers(text)
                                  if n not in allowed and not re.fullmatch(r"(?:19|20)\d\d", n))
-                    if bad:
-                        gone.append(sent)
-                    else:
-                        good.append(sent)
+                    if bad and not _holds_link(sent):
+                        gone_ix.add(si)
+                good = _drop_orphans(kept, gone_ix)
+                gone = [x for x in kept if x not in good]
                 if gone:
                     logger.info(f"[write] removed {len(gone)} untraced-figure sentence(s) from {label}: "
                                 + " | ".join(x[:110] for x in gone))
@@ -543,8 +644,8 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
                 named_line: set[str] = set()    # outside sources named in earlier sentences of this line
-                good, gone = [], []
-                for sent in kept:
+                good, gone, gone_ix = [], [], set()
+                for si, sent in enumerate(kept):
                     low = sent.lower()
                     strong = [n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)]
                     repeats = sorted(n for n in strong if n in printed)
@@ -552,10 +653,15 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
                         srcs = {owned[n] for n in repeats}
                         if not all(checks._names_source(low, src) or src in named_line for src in srcs):
                             gone.append(sent)
+                            gone_ix.add(si)
                             continue
                     good.append(sent)
                     named_line |= {src for src in set(owned.values()) if checks._names_source(low, src)}
                     printed.update(n for n in strong if n in owned)
+                if gone_ix:       # a sentence that refers to a removed one goes with it
+                    kept_after = _drop_orphans(kept, gone_ix)
+                    gone += [x for x in good if x not in kept_after]
+                    good = [x for x in good if x in kept_after]
                 if gone:
                     logged = "; ".join(f"{n} ({owned[n]} printed earlier)" for n in
                                        sorted({n for sent in gone for n in checks._fact_numbers(sent)
@@ -569,6 +675,31 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
         s["paragraphs"] = paragraphs
     return [s for s in sections if s["paragraphs"]]
 
+
+
+def enforce_trend_shape(sections: list[dict], logger: logging.Logger) -> list[dict]:
+    """The trends section is a lead-in and three trends of three paragraphs each (the SOP's shape). A model sometimes writes a
+    fourth trend, a fourth paragraph or a closing summary: the extras are cut here and logged. A section with fewer than
+    the shape needs is left as written, for the trend check to report."""
+    for s in sections:
+        if "trends" not in (s.get("sop") or []):
+            continue
+        lead, blocks = subheads.split_blocks(s["paragraphs"])
+        if not blocks:
+            continue
+        kept = blocks[:subheads.TRENDS_PER_SECTION]
+        out = lead[:1]
+        cut_paragraphs = 0
+        for heading, paras in kept:
+            out.append(subheads.make_subhead(heading))
+            out += paras[:subheads.PARAGRAPHS_PER_TREND]
+            cut_paragraphs += max(0, len(paras) - subheads.PARAGRAPHS_PER_TREND)
+        extra_trends, extra_lead = len(blocks) - len(kept), max(0, len(lead) - 1)
+        if extra_trends or cut_paragraphs or extra_lead:
+            logger.info(f"[write] trends: cut {extra_trends} extra trend(s), {cut_paragraphs} extra paragraph(s) and {extra_lead} extra lead-in "
+                        "paragraph(s) so the section keeps its shape of three trends with three paragraphs each")
+        s["paragraphs"] = out
+    return sections
 
 
 def evidence_citations(sections: list[dict], inp: planning.PlanInputs) -> list[dict]:
@@ -691,21 +822,32 @@ def run_write_v2(
     prompt = build_write_prompt(plan, inp, sponsor, report)
     written = llm.chat_json(prompts.WRITE_SYSTEM, prompt, temperature=0.3, call_name="write", logger=logger, max_tokens=7000)
     sections = strip_meta_sentences(assemble_sections(written, plan, logger), logger)
-    # the placement repair runs before the other strips so they all see the token in the shape the checks expect
-    sections = repair_sponsor_placement(sections, logger, sponsor.text)
-    sections = strip_untraced_figures(sections, inp, sponsor.text, logger)
+    client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
+    if client_list:
+        # the writer restated the client paragraph: every link is one correct token in the opening (the URLs stay in code)
+        sections = clients.normalize_tokens(sections, client_list, logger)
+        allowed_text = clients.source_text(client_list)
+    else:
+        # the placement repair runs before the other strips so they all see the token in the shape the checks expect
+        sections = repair_sponsor_placement(sections, logger, sponsor.text)
+        allowed_text = sponsor.text
+    sections = strip_untraced_figures(sections, inp, allowed_text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
-    sections = fix_pointing_determiners(sections, logger)
-    sections = join_bare_pointers(sections, logger)
     sections = strip_reader_filler(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
+    sections = enforce_trend_shape(sections, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")
     title = _plain(plan["title"])
-    problems = _sponsor_problems(sections, sponsor.text) + _link_placement_problems(sections, sponsor.text, report.name)
+    if client_list:
+        problems = clients.link_problems(sections, client_list) + (
+            _link_placement_problems(clients.plain_sections(sections), "", report.name) if getattr(inp, "link_report", True) else [])
+    else:
+        problems = _sponsor_problems(sections, sponsor.text) + (
+            _link_placement_problems(sections, sponsor.text, report.name) if getattr(inp, "link_report", True) else [])
     if problems:
         logger.warning(f"[write] placement problems found (no retry is run): {'; '.join(problems)}")
-    if _sponsor_location_problem(sections):
+    if not client_list and _sponsor_location_problem(sections):
         logger.warning("[write] inserting the sponsor placeholder as intro paragraph 2 so the paid link is not lost")
         sections = _force_sponsor_placeholder(sections)
     citations = evidence_citations(sections, inp)

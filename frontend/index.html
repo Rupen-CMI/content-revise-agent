@@ -159,12 +159,12 @@
       <div class="scroll-box article-scroll" id="article-body"></div>
 
       <section class="sidebar-section" id="sponsor-section" hidden>
-        <h2 class="section-title">Sponsor paragraph</h2>
-        <p class="field-hint">Paragraphs with an outside link — pick the one with the paid backlink:</p>
-        <p class="field-hint" id="sponsor-choice-hint" style="color:var(--danger)" hidden>Select which paragraph is the paid backlink before starting — more than one paragraph has an outside link, so this can't be guessed for you.</p>
+        <h2 class="section-title">Client paragraphs</h2>
+        <p class="field-hint">Outside links in this article, grouped by the client they point to:</p>
+        <p class="field-hint" id="sponsor-choice-hint" style="color:var(--danger)" hidden>Tick every client whose backlink the post must carry and choose one paragraph for each client — outside links can be a client's, an author's or a plain citation, so this can't be guessed for you.</p>
         <div class="radio-list" id="sponsor-candidates"></div>
         <details class="preview-box">
-          <summary><i data-lucide="chevron-right"></i> Preview selected paragraph</summary>
+          <summary><i data-lucide="chevron-right"></i> Preview selected paragraphs</summary>
           <p id="sponsor-preview-text"></p>
         </details>
         <p class="locked-note" id="sponsor-locked-note" hidden><i data-lucide="lock"></i> Locked while a run is in progress.</p>
@@ -207,10 +207,6 @@
             <span class="kv-label">How it connects to a market</span>
             <p class="kv-value" id="step1-bridge"></p>
           </div>
-          <div class="kv-block">
-            <span class="kv-label">Markets considered</span>
-            <ul class="tag-list" id="step1-markets"></ul>
-          </div>
           <div class="kv-block kv-block-last">
             <span class="kv-label">Claims in your article that need backing</span>
             <p class="field-hint">Statements the article makes as fact without a source. After you confirm the market, the agent looks for outside sources that support, qualify or correct each one; the draft uses what it finds and softens or drops what it cannot back.</p>
@@ -219,13 +215,40 @@
         </div>
 
         <div id="step1-confirm-block" class="content-card">
-          <h3 class="subheading subheading-first">Confirm the market</h3>
-          <p class="field-hint">The top match is selected by default. Review the matched reports below and change the selection if a different one is the better fit.</p>
-          <div class="radio-list" id="step1-report-candidates"></div>
-          <p class="report-link"><i data-lucide="external-link"></i> <a id="step1-report-link" href="#" target="_blank" rel="noopener"></a></p>
+          <h3 class="subheading subheading-first">Choose the market for your article</h3>
+          <p class="field-hint">Pick from either list, or both, and add report links of your own if you have them. The tier shows how closely a market fits your article. You decide what is used.</p>
+          <div class="market-columns">
+            <section class="market-col" aria-labelledby="market-col-agent-title">
+              <header class="market-col-head">
+                <span class="market-col-title" id="market-col-agent-title"><i data-lucide="sparkles"></i> Agent-suggested markets</span>
+                <span class="market-col-note">Pick one market. Competitor reports for it are found in the next step, and there you choose which to use.</span>
+                <button type="button" class="link-btn" id="step1-agent-clear" hidden>Clear selection</button>
+              </header>
+              <div class="market-col-body" id="step1-suggested"></div>
+            </section>
+            <section class="market-col" aria-labelledby="market-col-cmi-title">
+              <header class="market-col-head">
+                <span class="market-col-title" id="market-col-cmi-title"><i data-lucide="library"></i> CMI markets</span>
+                <span class="market-col-note">Pick one. Its CMI report is used on its own and linked in the article. No competitor reports are used.</span>
+                <button type="button" class="link-btn" id="step1-cmi-clear" hidden>Clear selection</button>
+              </header>
+              <div class="market-col-body" id="step1-cmi"></div>
+            </section>
+          </div>
           <hr class="divider">
+          <div id="step1-links-section">
+            <h3 class="subheading">Have your own report links?</h3>
+            <p class="field-hint" id="step1-links-hint">Paste any report pages you already have. Checking a link is optional: it only gives early feedback on whether the link looks usable and never blocks anything.</p>
+            <div class="report-url-list" id="step1-report-urls"></div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-secondary btn-small" id="step1-add-url-btn"><i data-lucide="plus"></i> Add another report</button>
+            </div>
+          </div>
+          <hr class="divider">
+          <div class="selection-summary" id="step1-selection-summary" aria-live="polite"></div>
+          <p class="field-hint" id="step1-none-selected-hint">Choose at least one market, or add a report link, to continue.</p>
           <div class="btn-row">
-            <button class="btn btn-primary" id="step1-confirm-btn"><i data-lucide="arrow-right"></i> Confirm market and continue to Step 2</button>
+            <button class="btn btn-primary" id="step1-confirm-btn" disabled><i data-lucide="arrow-right"></i> <span id="step1-confirm-label">Continue to Step 2</span></button>
             <button class="btn btn-ghost" id="step1-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
           </div>
         </div>
@@ -234,6 +257,10 @@
           <div class="kv-block">
             <span class="kv-label">Confirmed market</span>
             <p class="kv-value"><a id="step1-confirmed-link" href="#" target="_blank" rel="noopener"></a></p>
+          </div>
+          <div class="kv-block" id="step1-sources-block" hidden>
+            <span class="kv-label">Reports used for the figures</span>
+            <ul class="plain-list" id="step1-sources"></ul>
           </div>
           <div class="kv-block kv-block-last">
             <span class="kv-label">All matched CMI reports considered</span>
@@ -248,9 +275,47 @@
       <h2 class="panel-title">Market evidence</h2>
       <div class="spinner-block" id="step2-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
-        <span>Step 2: searching the web for supporting evidence (this can take a little while)…</span>
+        <span id="step2-spinner-text">Step 2: searching the web for supporting evidence (this can take a little while)…</span>
+      </div>
+      <div class="skeleton-list" id="step2-skeleton" hidden aria-hidden="true">
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+      </div>
+      <div id="step2-pick-block" hidden>
+        <div class="content-card">
+          <h3 class="subheading subheading-first">Competitor reports found</h3>
+          <p class="field-hint">These reports were found for the market you picked. Tick every report whose figures you want to use. Their figures are adjusted by a few percent in the article, no report is linked, and the SOP check asks you to verify every value.</p>
+          <div id="step2-found-list"></div>
+          <hr class="divider">
+          <p class="field-hint" id="step2-pick-hint"></p>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="step2-pick-confirm-btn"><i data-lucide="arrow-right"></i> <span id="step2-pick-confirm-label">Continue</span></button>
+            <button class="btn btn-ghost" id="step2-pick-back-btn"><i data-lucide="arrow-left"></i> Back to Step 1</button>
+          </div>
+        </div>
+        <div class="content-card" id="step2-early-card">
+          <h3 class="subheading subheading-first">Market evidence found</h3>
+          <p class="field-hint" id="step2-early-status">Searching the web for supporting evidence while you choose the reports&hellip;</p>
+          <div class="skeleton-list" id="step2-early-skeleton" aria-hidden="true">
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+          </div>
+          <ul class="plain-list" id="step2-early-hits"></ul>
+        </div>
       </div>
       <div id="step2-content" hidden>
+        <div id="step2-warnings" class="warning-box" hidden>
+          <p class="warning-box-title"><i data-lucide="alert-triangle"></i> <span>Please verify before continuing</span></p>
+          <div class="warning-box-list" id="step2-warnings-list"></div>
+        </div>
+        <div class="content-card" id="step2-clients-card" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Client check</span>
+            <p class="field-hint">What each client's own website says it offers. It is used only to keep the sentences around the link accurate: the post never names or describes the client, and the link is its only mention.</p>
+            <div id="step2-clients-list"></div>
+          </div>
+        </div>
         <div class="content-card">
           <div class="kv-block kv-block-last">
             <span class="kv-label">Confirmed report</span>
@@ -292,6 +357,18 @@
             <span class="kv-label">Most searched questions</span>
             <p class="field-hint">What people actually search about this market. The 2-3 that become article headings are picked when the article is planned (Step 4); the rest are answered in the FAQ. Answerability is checked in Step 3, once the evidence is in.</p>
             <ul class="plain-list" id="step2-msqs"></ul>
+          </div>
+        </div>
+        <div class="content-card" id="step2-keywords-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Keyword research</span>
+            <p class="field-hint" id="step2-keywords-method"></p>
+            <h4 class="kw-subhead">Secondary keywords, most searched first</h4>
+            <p class="field-hint">The article's secondary keywords are chosen from this list when it is planned (Step 4), at most one per section.</p>
+            <ul class="plain-list kw-list" id="step2-keywords-pool"></ul>
+            <h4 class="kw-subhead">Phrases people type</h4>
+            <p class="field-hint">Real searches that name this market. The long-tail keywords come from here.</p>
+            <ul class="plain-list kw-list" id="step2-keywords-phrases"></ul>
           </div>
         </div>
         <div id="step2-confirm-block" class="btn-row">
@@ -366,6 +443,13 @@
         <div class="kv-block">
           <span class="kv-label">New title</span>
           <p class="kv-value" id="step4-title"></p>
+        </div>
+        <div class="content-card" id="step4-clients-card" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Client paragraph</span>
+            <p class="field-hint">The post never names or describes the client: the link is its only mention, placed in the opening's own sentences. The original paragraph is here to compare.</p>
+            <div id="step4-clients-list"></div>
+          </div>
         </div>
         <div class="content-card article-render" id="step4-sections"></div>
         <div class="btn-row">

@@ -173,7 +173,17 @@ def run_cost_summary(logger: logging.Logger) -> list[str]:
 
 def _parse_json(text: str) -> dict:
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (text or "").strip())
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # A model sometimes closes a complete answer with one bracket too many ("...]}]}}"), and repeats it on every retry. The answer
+        # itself is whole, so it is read; trailing text that is anything but stray closing brackets still fails.
+        if e.msg != "Extra data":
+            raise
+        value, end = json.JSONDecoder().raw_decode(text)
+        if isinstance(value, dict) and not text[end:].strip(" \n\r\t}]"):
+            return value
+        raise
 
 
 def chat_json(

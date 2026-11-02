@@ -25,21 +25,21 @@ HEADING_QUESTIONS_MIN, HEADING_QUESTIONS_MAX = 2, 3
 SECONDARY_MIN, SECONDARY_MAX = 4, 6
 LONGTAIL_MIN, LONGTAIL_MAX = 2, 3
 TERMS_PER_SECTION, SNIPPETS_MAX, INTRO_POINTS_MIN, INTRO_POINTS_MAX = 3, 3, 2, 3
-_FACTS_MAX = {"report_context": 4, "trends": 7, "segmentation": 3, "subsegment": 5, "country_us": 6, "key_players": 6, "conclusion": 3}
+_FACTS_MAX = {"report_context": 6, "trends": 9, "segmentation": 12, "subsegment": 5, "country_us": 4, "key_players": 4, "conclusion": 3}
 _TRANSITION_MAX_WORDS = 40
 
 # Block word budgets (plan section 3.6b): hard caps on the share of the article body, met by construction.
-# The article targets 1,350 words whatever the market carries (a short section fills its gap with plain
+# The article targets 1,550 words whatever the market carries (a short section fills its gap with plain
 # explanation), the intro budgets to ~18% (hard-capped 20%, growing-article exception for a long retained
 # paragraph), and the transition and market block take fixed shares of that target.
-MAX_WORDS = 1500
-TARGET_WORDS = 1350               # §3.6b: the SOP's 1,200-1,500 lands the target at its middle
+MAX_WORDS = 1700
+TARGET_WORDS = 1550               # §3.6b: three detailed paragraphs per trend lift the SOP band to 1,300-1,700
 INTRO_SHARE, INTRO_CAP = 0.18, 0.20   # the intro budgets to ~18% of the target, hard-capped at 20%
 TRANSITION_SHARE = 0.075          # inside the 5-10% band
 MIN_OWN_INTRO_WORDS = 20          # one lead-in sentence carrying the report link, beside the retained paragraph
-_SECTION_WEIGHTS = {"report_context": 110, "trends": 190, "segmentation": 70, "subsegment": 190,
+_SECTION_WEIGHTS = {"report_context": 130, "trends": 450, "segmentation": 110, "subsegment": 190,
                     "country_us": 150, "key_players": 150, "conclusion": 100}
-_FACTS_FOR_FULL_BUDGET = {"report_context": 3, "trends": 5, "segmentation": 3, "subsegment": 4, "country_us": 4, "key_players": 4}
+_FACTS_FOR_FULL_BUDGET = {"report_context": 5, "trends": 7, "segmentation": 5, "subsegment": 4, "country_us": 4, "key_players": 4}
 _MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
 _SECTION_BOUNDS = {"country_us": (110, 165)}  # the U.S. SOP is 100-200 words; the writer overshoots a budget a little
 _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sections run short of their SOP shapes
@@ -47,17 +47,16 @@ _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sect
 # Which sections a report fact may sit in; headline figures live in report_context only so each is stated once.
 _FACT_SECTIONS = {
     "size": {"report_context"}, "forecast": {"report_context"}, "cagr": {"report_context"},
-    "segments": {"segmentation", "subsegment"}, "regions": {"country_us"}, "us": {"country_us"},
-    "drivers": {"trends", "report_context", "subsegment", "country_us"},
-    "restraints": {"trends", "subsegment", "country_us"},
+    "segments": {"segmentation", "subsegment"}, "regions": {"report_context"}, "us": {"country_us"},
+    "drivers": {"trends", "report_context", "subsegment"},
     "opportunities": {"conclusion", "trends", "subsegment"},
+    "segment_item": {"subsegment", "segmentation"},   # one category's stated share or value; added by code (see validate_plan)
     "players": {"key_players"},
 }
 _EVIDENCE_TAG_SECTIONS = {
-    "trends": {"trends", "subsegment", "country_us"}, "us": {"country_us"}, "players": {"key_players", "trends"},
-    "context": {"report_context", "segmentation", "subsegment", "trends", "key_players", "country_us"},
+    "trends": {"trends", "subsegment"}, "us": {"country_us"}, "players": {"key_players", "trends"},
+    "context": {"report_context", "segmentation", "subsegment", "trends", "key_players"},
 }
-_SHARED_FACTS = ("fs.segments.",)   # a segment split may serve both segmentation and the sub-segment analysis
 
 _FALLBACK_HEADINGS = {
     "report_context": "{market} Size and Growth",
@@ -93,11 +92,11 @@ _TITLE_HARD_MIN, _TITLE_HARD_MAX, _TITLE_SOFT_MIN, _TITLE_SOFT_MAX = 30, 80, 40,
 # --------------------------------------------------------------------------------------------------- budgets
 
 def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, fact_counts: dict[str, int] | None = None) -> dict:
-    """Word budgets per block (§3.6b). The article targets 1,350 words regardless of how much material
+    """Word budgets per block (§3.6b). The article targets 1,550 words regardless of how much material
     the market carries — a section with fewer facts gets a smaller slice of the same market block and
     fills its gap with plain explanation, not a shorter article. The intro budgets to about 18% of the
     target (never below the retained paragraph plus one lead-in sentence), and the article grows inside
-    the 1,500-word ceiling when a long retained paragraph would otherwise break the 20% intro cap; the
+    the 1,700-word ceiling when a long retained paragraph would otherwise break the 20% intro cap; the
     transition takes 7.5%; the market block takes the remainder, split by each SOP section's weight
     scaled by its fact count, with the SOP minimums clamped (U.S. 110-190) and any clamp redistributed
     across the other sections.
@@ -113,7 +112,7 @@ def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, f
         eff[s] = _SECTION_WEIGHTS[s] * factor
     if sum(eff.values()) < _THIN_MATERIAL_SHARE * sum(_SECTION_WEIGHTS.values()):
         notes.append("the material is thin: several market sections carry few facts; their budgets shrink "
-                     "inside the same 1,350-word target, and the writing fills the gap with explanation")
+                     f"inside the same {TARGET_WORDS:,}-word target, and the writing fills the gap with explanation")
     total = TARGET_WORDS
     need = sponsor_words + MIN_OWN_INTRO_WORDS
     cap_total = math.ceil(need / (INTRO_CAP - 0.01))
@@ -171,10 +170,15 @@ class PlanInputs:
     secondary_pool: list[tuple[str, str]] = field(default_factory=list)   # (key, default section)
     sponsor_words: int = 0
     has_us_facts: bool = False
+    link_report: bool = True                 # False when no CMI report backs the article: it links to no report
+    report_mode: str = "cmi"                 # "cmi", "external" or "mixed" (see facts.merge_fact_sheets)
+    outside_audit: list[dict] = field(default_factory=list)   # {field, original, shown, source, url} per varied figure
+    clients: list = field(default_factory=list)               # clients.Client: the writer restates each client's paragraph
 
 
 def build_inputs(
     market_name: str, fs: dict, evidence_items: list[dict], demand_result: dict, publisher_result: dict, sponsor_words: int,
+    clients: list | tuple = (),
 ) -> PlanInputs:
     """Assemble the planner's world: every fact the plan may cite (report facts and selected news evidence) with the
     sections it may sit in, the answerable questions, the keyword pools and the guest points."""
@@ -199,9 +203,24 @@ def build_inputs(
         market_name=market_name, intro_angle=publisher_result.get("intro_angle", ""), points=list(publisher_result.get("points") or []),
         questions=list(demand_result.get("questions") or []), items=items, segments=list(fs.get("segments") or []),
         terms=list(demand_result.get("terms") or []), longtails=longtails,
-        secondary_pool=[(suffix, sec) for suffix, sec in _SECONDARY_KEYWORD_SUFFIXES],
+        secondary_pool=_secondary_pool(demand_result),
         sponsor_words=sponsor_words, has_us_facts=us,
+        link_report=fs.get("report_mode", "cmi") != "external", report_mode=fs.get("report_mode", "cmi"),
+        outside_audit=list(fs.get("variance") or []), clients=list(clients or []),
     )
+
+
+def _secondary_pool(demand_result: dict) -> list[tuple[str, str]]:
+    """The secondary-keyword pool, most searched first: the keyword research's own ranking (real searches and the forms the
+    ranking pages target) when it ran, else the fixed list."""
+    rows = ((demand_result or {}).get("keyword_research") or {}).get("pool") or []
+    pool, seen = [], set()
+    for r in rows:
+        key = str(r.get("key") or "").strip()
+        if key and r.get("section") in ORDER and key.lower() not in seen:
+            pool.append((key, r["section"]))
+            seen.add(key.lower())
+    return pool[:14] or [(suffix, sec) for suffix, sec in _SECONDARY_KEYWORD_SUFFIXES]
 
 
 def _fmt_points(inp: PlanInputs) -> str:
@@ -216,7 +235,7 @@ def _fmt_questions(inp: PlanInputs) -> str:
 def _fmt_items(inp: PlanInputs, evidence: bool) -> str:
     rows = []
     for i in inp.items.values():
-        if (i["kind"] == "evidence") != evidence:
+        if (i["kind"] == "evidence") != evidence or i.get("auto"):
             continue
         if evidence:
             suits = ", ".join(sorted(i["sections"] & set(ORDER))) or "any"
@@ -274,7 +293,62 @@ def fallback_title(market_name: str, plan_sections: list[dict]) -> str:
     return f"What Is Driving the {market_name}?" if has_drivers else f"Where the {market_name} Is Heading"
 
 
+# ------------------------------------------------------------------------------------------------- topic clusters
+
+_TOPIC_KINDS = frozenset({"evidence", "drivers", "opportunities", "us"})
+_TOPIC_STOP = frozenset({
+    "about", "after", "also", "because", "being", "between", "could", "every", "from", "have", "into", "more", "most",
+    "other", "over", "should", "than", "that", "their", "there", "these", "they", "this", "those", "through", "under",
+    "which", "while", "with", "would", "market", "markets", "global", "growth", "demand", "industry", "companies",
+    "company", "firms", "says", "said", "will", "new",
+})
+_TOPIC_SIMILARITY = 0.5
+_TOPIC_MIN_STEMS = 4
+
+
+def _topic_stems(text: str) -> frozenset[str]:
+    return frozenset(facts._stem(w) for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+                     if len(w) > 3 and w not in _TOPIC_STOP and not w.isdigit())
+
+
+def topic_clusters(items: dict[str, dict]) -> dict[str, int]:
+    """Cluster id per fact id for the facts that can make a trend or evidence point (evidence, drivers, opportunities, U.S.
+    statements): two facts are one cluster when their content words overlap by at least half of the shorter one's, or
+    they share a figure and two content words. A point is made once in the article, so a cluster supplies one fact to
+    the whole plan. Union-find over pairs; pure."""
+    ids = [i for i, it in items.items() if it["kind"] in _TOPIC_KINDS and not it.get("auto")]
+    stems = {i: _topic_stems(f"{items[i]['text']} {items[i].get('detail', '')[:200]}") for i in ids}
+    figures = {i: facts._numbers(items[i]["text"]) - {n for n in facts._numbers(items[i]["text"]) if len(n) == 4 and n.startswith(("19", "20"))}
+               for i in ids}
+    parent = {i: i for i in ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a_pos, a in enumerate(ids):
+        for b in ids[a_pos + 1:]:
+            shared = stems[a] & stems[b]
+            small = min(len(stems[a]), len(stems[b]))
+            same_text = small >= _TOPIC_MIN_STEMS and len(shared) / small >= _TOPIC_SIMILARITY
+            same_figure = bool(figures[a] & figures[b]) and len(shared) >= 2
+            if same_text or same_figure:
+                parent[find(a)] = find(b)
+    roots: dict[str, int] = {}
+    return {i: roots.setdefault(find(i), len(roots)) for i in ids}
+
+
 # --------------------------------------------------------------------------------------------- validate and repair
+
+_REGION_SPLIT_RE = re.compile(r"region|geograph|countr|area|location", re.I)
+
+
+def _is_region_split(name: str) -> bool:
+    """A geographic split ("By Region"): regions are the report-context and U.S. sections' business, never a sub-segment."""
+    return bool(_REGION_SPLIT_RE.search(name or ""))
+
 
 def _split_key(name: str) -> str:
     """A segment split's name without the words the fact list wraps around it ("Segmentation type", "By type")."""
@@ -345,6 +419,52 @@ def _longtail_restates_heading(lt: dict, s: dict, msq_by_id: dict) -> bool:
     return all(checks._stem(w) in qstems for w in content)
 
 
+_TREND_COUNT, _TREND_FACTS_MAX = 3, 3
+
+
+def _trend_groups(raw_groups, kept: list[str], inp: PlanInputs, repair) -> list[dict]:
+    """Three trends, each with its own facts. Starts from the planner's groups (only facts the trends section kept, none
+    twice, at most three a trend), hands every kept fact the planner left ungrouped to the trend that needs it most, then
+    makes sure no trend lacks dated news evidence while another holds two. Returns exactly three {trend, facts} groups;
+    a trend with no fact at all is possible when the section has too few (the writer then reasons from the section's point)."""
+    groups: list[dict] = []
+    seen: set[str] = set()
+    for g in raw_groups if isinstance(raw_groups, list) else []:
+        if not isinstance(g, dict) or len(groups) >= _TREND_COUNT:
+            continue
+        ids = []
+        for fid in g.get("facts") if isinstance(g.get("facts"), list) else []:
+            fid = str(fid).strip()
+            if fid in kept and fid not in seen and len(ids) < _TREND_FACTS_MAX:
+                ids.append(fid)
+                seen.add(fid)
+        groups.append({"trend": " ".join(str(g.get("trend") or "").split()), "facts": ids})
+    if len(groups) < _TREND_COUNT:
+        repair(f"trends: the planner named {len(groups)} trend group(s); the rest were added empty")
+        groups += [{"trend": "", "facts": []} for _ in range(_TREND_COUNT - len(groups))]
+    is_news = lambda fid: inp.items[fid]["kind"] == "evidence"  # noqa: E731
+    leftover = [f for f in kept if f not in seen]
+    # news evidence first, to the trend with the fewest news items; then everything else to the smallest group
+    for fid in sorted(leftover, key=lambda f: not is_news(f)):
+        pool = [g for g in groups if len(g["facts"]) < _TREND_FACTS_MAX]
+        if not pool:
+            repair(f"trends: fact {fid} dropped (at most {_TREND_FACTS_MAX} per trend)")
+            continue
+        key = (lambda g: (sum(is_news(f) for f in g["facts"]), len(g["facts"]))) if is_news(fid) else (lambda g: len(g["facts"]))
+        min(pool, key=key)["facts"].append(fid)
+        repair(f"trends: fact {fid} was not in any trend group and was given to one")
+    for _ in range(_TREND_COUNT):       # no trend without dated news while another holds two
+        bare = next((g for g in groups if not any(is_news(f) for f in g["facts"])), None)
+        donor = next((g for g in groups if sum(is_news(f) for f in g["facts"]) >= 2), None)
+        if bare is None or donor is None or bare is donor or len(bare["facts"]) >= _TREND_FACTS_MAX:
+            break
+        moved = [f for f in donor["facts"] if is_news(f)][-1]
+        donor["facts"].remove(moved)
+        bare["facts"].append(moved)
+        repair(f"trends: news item {moved} moved to a trend that had none")
+    return groups
+
+
 def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     """Turn the planner's raw answer into a plan that satisfies every structural rule. Pure: no network, no model.
     Returns {title, title_basis, intro, transition, sections, faq, budgets, repairs}."""
@@ -369,6 +489,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
 
     # ---- facts: only known ids, only where they may sit, each stated in one section only
     used_facts: set[str] = set()
+    clusters = topic_clusters(inp.items)
+    used_topics: dict[int, str] = {}     # cluster id -> the fact that already makes that point
     sections: list[dict] = []
     for sop in ORDER:
         r = raw_by_sop.get(sop, {})
@@ -382,21 +504,31 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
                 repair(f"{sop}: unknown fact id {fid!r} dropped")
             elif sop not in item["sections"]:
                 repair(f"{sop}: fact {fid} does not belong in this section and was dropped")
-            elif fid in used_facts and not fid.startswith(_SHARED_FACTS):
+            elif fid in used_facts:
                 repair(f"{sop}: fact {fid} is already used in another section and was dropped")
             elif fid in kept:
                 continue
+            elif fid in clusters and clusters[fid] in used_topics and used_topics[clusters[fid]] != fid:
+                repair(f"{sop}: fact {fid} makes the same point as {used_topics[clusters[fid]]}, which is already in the plan, and was dropped")
             elif len(kept) >= _FACTS_MAX[sop]:
                 repair(f"{sop}: fact {fid} dropped (at most {_FACTS_MAX[sop]} per section)")
             else:
                 kept.append(fid)
                 used_facts.add(fid)
+                if fid in clusters:
+                    used_topics[clusters[fid]] = fid
         sections.append({
             "sop": sop, "heading": " ".join(str(r.get("heading") or "").split()), "msq": None,
             "point": " ".join(str(r.get("point") or "").split()), "facts": kept,
             "secondary": None, "longtail": None, "terms": [], "snippet": None, "_raw": r,
         })
     by_sop = {s["sop"]: s for s in sections}
+
+    # ---- trends: three trends, each resting on its own facts (the section's fact list is their union)
+    trends = by_sop["trends"]
+    trends["trend_groups"] = _trend_groups(trends["_raw"].get("trend_groups"), trends["facts"], inp, repair)
+    grouped = {f for g in trends["trend_groups"] for f in g["facts"]}
+    trends["facts"] = [f for f in trends["facts"] if f in grouped]      # the section keeps the planner's order
 
     # ---- sub-segments (the subsegment section): two categories from different splits of the report
     sub = by_sop["subsegment"]
@@ -406,12 +538,15 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             picks.append((str(it.get("split") or "").strip(), str(it.get("name") or "").strip()))
     valid: list[dict] = []
     for split, name in picks:
-        seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(split)), None)
+        seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(split) and not _is_region_split(g["type"])), None)
         cat = next((i for i in seg["items"] if facts._norm(i) == facts._norm(name)), None) if seg else None
         if seg and cat and all(v["split"] != seg["type"] for v in valid):
             valid.append({"split": seg["type"], "name": cat})
     if len(valid) < 2 and len(inp.segments) >= 1:
-        defaults = [{"split": g["type"], "name": g["items"][0]} for g in inp.segments if g.get("items")]
+        ordered = sorted((g for g in inp.segments if not _is_region_split(g["type"])),
+                         key=lambda g: not g.get("dominant"))     # splits with a known leader first
+        defaults = [{"split": g["type"], "name": (g.get("dominant") or {}).get("name") or g["items"][0]}
+                    for g in ordered if g.get("items")]
         for d in defaults:
             if len(valid) >= 2:
                 break
@@ -419,7 +554,85 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
                 valid.append(d)
         if valid != [{"split": s, "name": n} for s, n in picks][:len(valid)]:
             repair("the two sub-segments were not valid choices from different splits; defaults from the report were used")
-    sub["sub_segments"] = valid[:2]
+    valid = valid[:2]
+    # The sub-segment of a split is its DOMINANT category whenever the report states it or its figures show it; the
+    # planner's taste never overrides that. A pick from a split with no known leader gives way to a split that has one.
+    spare = [g for g in inp.segments
+             if g.get("dominant") and not _is_region_split(g["type"]) and all(v["split"] != g["type"] for v in valid)]
+    for v in valid:
+        seg = next(g for g in inp.segments if g["type"] == v["split"])
+        if not seg.get("dominant") and spare:
+            g = spare.pop(0)
+            repair(f"sub-segment pick from {v['split']!r}, whose leading category is unknown, moved to {g['type']!r}, whose leader is known")
+            v["split"], v["name"], seg = g["type"], g["dominant"]["name"], g
+        if seg.get("dominant") and v["name"] != seg["dominant"]["name"]:
+            repair(f"sub-segment {v['name']!r} of {v['split']!r} replaced by the split's dominant category {seg['dominant']['name']!r}")
+            v["name"] = seg["dominant"]["name"]
+    sub["sub_segments"] = valid
+    for v in valid:                  # its split, the split's leader and its own stated figure all travel with the pick
+        seg = next(g for g in inp.segments if g["type"] == v["split"])
+        # A piece of evidence is stated once in the article. The split's category list belongs to the segmentation section; the
+        # split's leader and the picked category's own figure belong to the sub-segment section, and nowhere else.
+        wanted = []
+        if seg.get("dominant"):
+            wanted.append(f"{seg['id']}.dominant")
+        wanted += [f"{seg['id']}.i{k}" for k, n in enumerate(seg["items"]) if n == v["name"] and n in (seg.get("figures") or {})]
+        for fid in wanted:
+            if fid in inp.items and fid not in sub["facts"]:
+                sub["facts"].append(fid)
+                used_facts.add(fid)
+
+    # ---- the report's main figures always reach the article, whatever the planner chose: the headline figures and the
+    # leading and fastest-growing regions in report_context; every segment split, every leading category and every stated
+    # category share in segmentation, except those of the two sub-segments, which sit beside their pick in subsegment
+    ctx = by_sop["report_context"]
+    headline = [f for f, it in inp.items.items() if it["kind"] in ("size", "forecast", "cagr") and "report_context" in it["sections"]]
+    regions = [f for f, it in inp.items.items() if it["kind"] == "regions" and "report_context" in it["sections"]]
+    ordered = (headline + regions + [f for f in ctx["facts"] if f not in headline and f not in regions])[:_FACTS_MAX["report_context"]]
+    for fid in headline + regions:
+        if fid in ordered and fid not in ctx["facts"]:
+            repair(f"report_context: the report's figure {fid} was added (the market's main figures always reach the article)")
+    ctx["facts"] = ordered
+    used_facts.update(ordered)
+    seg_sec = by_sop["segmentation"]
+    # the sub-segment section keeps its picks' leader and figure and never a split's category list; the segmentation section
+    # keeps the category lists and never a fact the sub-segment section states (one piece of evidence, one place)
+    list_ids = {g["id"] for g in inp.segments}
+    for fid in [f for f in sub["facts"] if f in list_ids]:
+        sub["facts"].remove(fid)
+        repair(f"subsegment: the category list {fid} belongs to the segmentation section and was removed here")
+    for fid in [f for f in seg_sec["facts"] if f in sub["facts"]]:
+        seg_sec["facts"].remove(fid)
+        repair(f"segmentation: fact {fid} is stated in the sub-segment analysis and was removed here (one piece of evidence, one place)")
+    picked_split = {v["split"]: v["name"] for v in valid}
+    needed: list[str] = []
+    for seg in inp.segments:
+        needed.append(seg["id"])
+        pick = picked_split.get(seg["type"])
+        if seg.get("dominant") and pick is None:
+            needed.append(f"{seg['id']}.dominant")
+        for k, name in enumerate(seg["items"]):
+            if name in (seg.get("figures") or {}) and name != pick:
+                needed.append(f"{seg['id']}.i{k}")
+    for fid in needed:
+        if fid in inp.items and "segmentation" in inp.items[fid]["sections"] and fid not in seg_sec["facts"]:
+            seg_sec["facts"].append(fid)
+            used_facts.add(fid)
+            repair(f"segmentation: the report's segment fact {fid} was added (every segment split and stated figure reaches the article)")
+
+    # ---- the U.S. section always receives the U.S. facts that exist, whatever the planner chose to leave out
+    us_section = by_sop["country_us"]
+    for fid, item in inp.items.items():
+        if len(us_section["facts"]) >= _FACTS_MAX["country_us"]:
+            break
+        if ("country_us" in item["sections"] and (item["kind"] == "us" or "us" in item["tags"])
+                and fid not in used_facts and fid not in us_section["facts"]
+                and not (fid in clusters and clusters[fid] in used_topics)):
+            us_section["facts"].append(fid)
+            used_facts.add(fid)
+            if fid in clusters:
+                used_topics[clusters[fid]] = fid
+            repair(f"country_us: U.S. fact {fid} was added (the section takes every U.S. fact there is)")
 
     # ---- question headings: 2-3, each an answerable question that can head its section
     used_q: set[str] = set()
@@ -592,13 +805,13 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             s["length"] = "normal"        # it pulls the post together from what is already there, so it needs no facts of its own
         elif not s["facts"] or (s["sop"] == "key_players" and all(fid == "fs.players" for fid in s["facts"])):
             s["length"] = "short"     # no facts, or only a list of names with no detail to say about any of them
-        elif s["sop"] == "country_us" and not any(
-                inp.items[f]["kind"] in ("us", "regions") or "us" in inp.items[f]["tags"] for f in s["facts"]):
-            s["length"] = "qualitative"
         else:
             s["length"] = "normal"
-        if s["sop"] == "country_us" and not inp.has_us_facts and s["length"] == "normal":
-            s["length"] = "qualitative"
+        if s["sop"] == "country_us":
+            # The section is about the United States and nothing else, so only U.S. facts count; with none it is
+            # flagged for the editor instead of being filled with another region's picture.
+            has_us = any(inp.items[f]["kind"] == "us" or "us" in inp.items[f]["tags"] for f in s["facts"])
+            s["length"] = "normal" if has_us else "us_missing"
     budgets = compute_budgets(
         inp.sponsor_words, {s["sop"]: s["length"] for s in sections},
         {s["sop"]: len([f for f in s["facts"] if f != "fs.players"]) + (1 if "fs.players" in s["facts"] else 0) for s in sections})

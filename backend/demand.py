@@ -15,6 +15,7 @@ import checks
 import facts
 import intent
 import llm
+import polarity
 import prompts
 from pipeline import _faq_tokens, _is_definition_question, _market_core
 from pipeline_log import section
@@ -27,9 +28,9 @@ _LONGTAIL_GLUE_WORDS = checks._LONGTAIL_GLUE_WORDS
 # Kind of search need -> the SOP section whose job answers it (the section its question may head).
 INTENT_SECTION = {
     "size": "report_context", "growth": "report_context",
-    "trends": "trends", "drivers": "trends", "challenges": "trends", "technology_impact": "trends",
+    "trends": "trends", "drivers": "trends", "technology_impact": "trends",
     "segments": "segmentation",
-    "region": "country_us", "us": "country_us",
+    "region": "report_context", "us": "country_us",
     "players": "key_players",
     "outlook": "conclusion", "opportunities": "conclusion",
 }
@@ -70,6 +71,11 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
         if not q.endswith("?"):
             q = q.rstrip(".!") + "?"
         q = q[0].upper() + q[1:]
+        q = re.sub(r"\bai\b", "AI", q)
+        # a search-style phrase arrives in lower case ("in the united states?"); a heading and an FAQ question print it as written
+        q = re.sub(r"\b(?:united states|united kingdom|north america|latin america|asia pacific|middle east|europe|india|china|japan|"
+                   r"germany|france|canada|australia|brazil|mexico|africa|asia)\b", lambda m: m.group(0).title(), q)
+        q = re.sub(r"\b((?:in|across|for|of|to|from) the )(us|usa|uk|eu)\b", lambda m: m.group(1) + m.group(2).upper(), q, flags=re.I)
         words = q.split()
         if not _MSQ_MIN_WORDS <= len(words) <= _MSQ_MAX_WORDS:
             logger.info(f"[demand] dropped question (length {len(words)}): {q!r}")
@@ -83,6 +89,10 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
             continue
         if _is_definition_question(q):
             logger.info(f"[demand] dropped question (a definition): {q!r}")
+            continue
+        negative = polarity.negative_hits(q, polarity.market_words(market_name))
+        if negative:
+            logger.info(f"[demand] dropped question (asks about downside {negative}): {q!r}")
             continue
         tokens = _content_words(q, market_name)
         twin = next((k for k in kept if tokens and (tokens & k["_tokens"])
@@ -210,7 +220,7 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
     return out
 
 
-def run_search_demand(market_name: str, fs: dict, logger: logging.Logger) -> dict:
+def run_search_demand(market_name: str, fs: dict, logger: logging.Logger, real_queries: list[str] = ()) -> dict:
     """CALL: what people search about this market. Best-effort: a failure returns empty pools, logged, never fatal.
     Returns {"questions": [...], "terms": [...], "long_tail": [...]}."""
     section(logger, "CALL: SEARCH DEMAND")
@@ -218,7 +228,9 @@ def run_search_demand(market_name: str, fs: dict, logger: logging.Logger) -> dic
     try:
         raw = llm.chat_json(
             prompts.SEARCH_DEMAND_SYSTEM,
-            prompts.SEARCH_DEMAND_USER.format(market_name=market_name, facts=_format_facts(flat)),
+            prompts.SEARCH_DEMAND_USER.format(
+                market_name=market_name, facts=_format_facts(flat),
+                real_queries="\n".join(f"- {q}" for q in list(real_queries)[:25]) or "(none found)"),
             temperature=0.3, call_name="search_demand", logger=logger,
         )
     except llm.LLMError:
@@ -245,7 +257,6 @@ def _answerable_by(intent_kind: str, fs: dict, evidence_groups: set[str]) -> boo
         "growth": has("forecast") or has("cagr"),
         "trends": "trends" in evidence_groups or has("drivers"),
         "drivers": has("drivers"),
-        "challenges": has("restraints"),
         "technology_impact": "trends" in evidence_groups,
         "segments": has("segments"),
         "region": bool(regions.get("leader") or regions.get("fastest")),

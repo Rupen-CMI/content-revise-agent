@@ -73,7 +73,7 @@ def make_inputs() -> planning.PlanInputs:
                   {"id": "fs.segments.1", "type": "By Application", "items": ["Data Aggregation", "Market Research"]}],
         terms=["cloud based", "browser extension", "data aggregation"],
         longtails=[{"id": "L1", "keyword": "cloud based widget services by region", "fact": "fs.regions.leader", "why": "x"},
-                   {"id": "L2", "keyword": "widget piracy risk", "fact": "fs.restraints.0", "why": "x"},
+                   {"id": "L2", "keyword": "widget piracy watch", "fact": "fs.restraints.0", "why": "x"},
                    {"id": "L3", "keyword": "widget us review", "fact": "fs.us.0", "why": "x"}],
         secondary_pool=list(planning._SECONDARY_KEYWORD_SUFFIXES), sponsor_words=84, has_us_facts=True,
     )
@@ -271,20 +271,26 @@ check("facts: a fact used twice stays in the first section only", "W1" not in S(
 raw = good_plan()
 raw["sections"][0]["facts"] = ["fs.size", "fs.cagr", "fs.drivers.0", "W2", "fs.opportunities.0"]
 p = plan_of(raw)
-check("facts: at most four per section", len(S(p, "report_context")["facts"]) <= 4, str(S(p, "report_context")["facts"]))
+check("facts: at most six in the opening section, the headline figures always among them",
+      len(S(p, "report_context")["facts"]) <= 6 and {"fs.size", "fs.cagr"} <= set(S(p, "report_context")["facts"]),
+      str(S(p, "report_context")["facts"]))
 
 raw = good_plan()
 raw["sections"][2]["facts"] = ["fs.segments.0", "fs.segments.1"]
 raw["sections"][3]["facts"] = ["fs.segments.0", "W2"]
 p = plan_of(raw)
-check("facts: a segment split may serve both segmentation and the sub-segment analysis", "fs.segments.0" in S(p, "subsegment")["facts"])
+check("facts: a split's category list is stated once, in the segmentation section only (one piece of evidence, one place)",
+      "fs.segments.0" in S(p, "segmentation")["facts"] and "fs.segments.0" not in S(p, "subsegment")["facts"],
+      str((S(p, "segmentation")["facts"], S(p, "subsegment")["facts"])))
+every = [f for sec in p["sections"] for f in sec["facts"]]
+check("facts: no fact id appears in two sections of the plan", len(every) == len(set(every)), str([f for f in set(every) if every.count(f) > 1]))
 
 raw = good_plan()
 raw["sections"][5]["facts"] = []
 raw["sections"][4]["facts"] = []
 p = plan_of(raw)
-check("lengths: a section without facts is short; a U.S. section without U.S. or regional facts is short too",
-      S(p, "key_players")["length"] == "short" and S(p, "country_us")["length"] == "short")
+check("lengths: a section without facts is short; the U.S. section is handed every U.S. fact there is",
+      S(p, "key_players")["length"] == "short" and S(p, "country_us")["facts"] == ["fs.us.0"] and S(p, "country_us")["length"] == "normal")
 raw = good_plan()
 raw["sections"][4]["facts"] = ["fs.regions.leader"]
 inp = make_inputs()
@@ -296,7 +302,14 @@ raw = good_plan()
 raw["sections"][5]["facts"] = ["fs.players", "W1"]
 raw["sections"][1]["facts"] = ["fs.drivers.0", "fs.restraints.0"]
 check("lengths: ... normal once a news detail backs a company", S(plan_of(raw), "key_players")["length"] == "normal")
-check("lengths: a U.S. section with only regional facts and no U.S. facts is qualitative", S(plan_of(raw, inp), "country_us")["length"] == "qualitative")
+inp = make_inputs()
+del inp.items["fs.us.0"]
+inp.longtails = [lt for lt in inp.longtails if lt["fact"] != "fs.us.0"]
+check("lengths: a U.S. section with no U.S. fact at all is flagged for the editor, never filled with another region",
+      S(plan_of(raw, inp), "country_us")["length"] == "us_missing")
+check("facts: a regional fact cannot sit in the U.S. section", "country_us" not in planning._FACT_SECTIONS["regions"])
+check("facts: general trend evidence cannot sit in the U.S. section",
+      "country_us" not in planning._EVIDENCE_TAG_SECTIONS["trends"] and "country_us" not in planning._EVIDENCE_TAG_SECTIONS["context"])
 
 # ------------------------------------------------------------------ keywords
 raw = good_plan()
@@ -330,7 +343,7 @@ inp3 = make_inputs()
 inp3.longtails = [
     {"id": "L9", "keyword": "top companies widgets market", "fact": "fs.players", "why": "x"},  # every word sits in Q5
     {"id": "L1", "keyword": "cloud based widget services by region", "fact": "fs.regions.leader", "why": "x"},
-    {"id": "L2", "keyword": "widget piracy risk", "fact": "fs.restraints.0", "why": "x"},
+    {"id": "L2", "keyword": "widget piracy watch", "fact": "fs.restraints.0", "why": "x"},
 ]
 raw = good_plan()
 for s in raw["sections"]:
@@ -416,9 +429,39 @@ check("robustness: a missing plan still promotes two question headings", sum(1 f
 p = plan_of({"sections": "nope", "title": 5})
 check("robustness: nonsense input is survived", len(p["sections"]) == 7)
 
+# ------------------------------------------------------------------ trend groups: three trends, each with its own facts
+class _TrendInp:
+    items = {"fs.drivers.0": {"kind": "drivers"}, "fs.drivers.1": {"kind": "drivers"}, "fs.drivers.2": {"kind": "drivers"},
+             "W1": {"kind": "evidence"}, "W2": {"kind": "evidence"}, "W3": {"kind": "evidence"}, "W4": {"kind": "evidence"}}
+
+
+def _groups(raw_groups, kept):
+    notes = []
+    return planning._trend_groups(raw_groups, kept, _TrendInp, notes.append), notes
+
+
+kept = ["fs.drivers.0", "fs.drivers.1", "fs.drivers.2", "W1", "W2", "W3"]
+g, notes = _groups([{"trend": "A", "facts": ["fs.drivers.0", "W1"]}, {"trend": "B", "facts": ["fs.drivers.1", "W2"]},
+                    {"trend": "C", "facts": ["fs.drivers.2", "W3"]}], kept)
+check("trend groups: a valid grouping passes through untouched", [x["facts"] for x in g] == [["fs.drivers.0", "W1"], ["fs.drivers.1", "W2"], ["fs.drivers.2", "W3"]] and notes == [], str(notes))
+g, notes = _groups([{"trend": "A", "facts": ["W1", "W2", "W3", "fs.drivers.0"]}, {"trend": "B", "facts": ["fs.drivers.1"]}], kept)
+check("trend groups: at most three facts a trend, a missing third group is added, ungrouped facts are given out",
+      len(g) == 3 and all(len(x["facts"]) <= 3 for x in g) and sorted(f for x in g for f in x["facts"]) == sorted(kept), str(g))
+check("trend groups: no trend is left without dated news while another holds two",
+      all(any(f.startswith("W") for f in x["facts"]) for x in g), str(g))
+g, _ = _groups([{"trend": "A", "facts": ["W1", "W1", "ghost"]}, {"trend": "B", "facts": ["W1", "W2"]}, {"trend": "C", "facts": []}], ["W1", "W2", "fs.drivers.0"])
+check("trend groups: unknown ids and a fact in two groups are dropped (one fact, one trend)",
+      sum(x["facts"].count("W1") for x in g) == 1 and not any("ghost" in x["facts"] for x in g), str(g))
+g, _ = _groups(None, [])
+check("trend groups: no groups and no facts still gives three empty trends", len(g) == 3 and all(x["facts"] == [] for x in g))
+tplan = planning.validate_plan(good_plan(), make_inputs(), LOG)
+tsec = next(s for s in tplan["sections"] if s["sop"] == "trends")
+check("trend groups: validate_plan always returns three groups and the section's facts are their union",
+      len(tsec["trend_groups"]) == 3 and sorted(tsec["facts"]) == sorted(f for x in tsec["trend_groups"] for f in x["facts"]), str(tsec["trend_groups"]))
+
 # ------------------------------------------------------------------ budgets
 b = planning.compute_budgets(84)
-check("budgets: the target is the SOP's middle, 1,350", b["target"] == planning.TARGET_WORDS, str(b["target"]))
+check("budgets: the target is the raised SOP middle, 1,550", b["target"] == planning.TARGET_WORDS, str(b["target"]))
 check("budgets: the intro share is under its cap, the transition inside its band",
       b["intro_total"] / b["target"] <= planning.INTRO_CAP and 0.05 <= b["transition"] / b["target"] <= 0.10, str(b))
 total = b["intro_total"] + b["transition"] + b["market_total"]
@@ -426,13 +469,13 @@ check("budgets: the blocks add up to the target within rounding", abs(total - b[
 check("budgets: the market block is at least 70%", b["market_total"] / total >= 0.70, str(b["market_total"] / total))
 check("budgets: the U.S. section stays inside the SOP's 100-200 words", 100 <= b["sections"]["country_us"] <= 200, str(b["sections"]))
 check("budgets: the intro's own words are its budget minus the retained paragraph", b["intro_own"] == b["intro_total"] - 84)
-big = planning.compute_budgets(260)
+big = planning.compute_budgets(300)
 check("budgets: a very long retained paragraph lengthens the article, within the ceiling, and keeps the intro cap",
       big["target"] > b["target"] and big["target"] <= planning.MAX_WORDS and big["intro_total"] / big["target"] <= planning.INTRO_CAP and big["notes"], str(big))
 thin = planning.compute_budgets(84, {}, {"trends": 0, "key_players": 0})
 check("budgets: a thin section gets fewer words than a normal one", thin["sections"]["trends"] < b["sections"]["trends"])
 few = planning.compute_budgets(84, {}, {"report_context": 1, "trends": 1, "segmentation": 1, "subsegment": 0, "country_us": 1, "key_players": 0})
-check("budgets: fewer facts shrink a section inside the same 1,350-word target, and the shares still hold",
+check("budgets: fewer facts shrink a section inside the same 1,550-word target, and the shares still hold",
       few["target"] == b["target"] and few["sections"]["trends"] < b["sections"]["trends"]
       and few["intro_total"] / few["target"] <= planning.INTRO_CAP and 0.05 <= few["transition"] / few["target"] <= 0.10, str(few))
 check("budgets: a section's budget never falls below its floor share of its weight", few["sections"]["subsegment"] > 0)
@@ -454,6 +497,41 @@ check("prompt: lists report facts and evidence with their ids", "fs.size" in tex
 check("prompt: marks a historical fact", "historical: give its year" in text)
 bad = [l for l in prompts.PLAN_USER.splitlines() if "Key Trends" in l or "Zzz" in l]
 check("prompt: contains no sample titles or placeholder markets", not bad, str(bad))
+
+# ------------------------------------------------------------------ the report's main figures always reach the plan
+big = make_inputs()
+big.items["fs.forecast"] = item("fs.forecast", "forecast", "Market forecast: USD 3.4 billion (2032)", {"report_context"})
+big.items["fs.regions.leader"] = item("fs.regions.leader", "regions", "Leading region: North America (42.6% share in 2026)", {"report_context"})
+big.items["fs.regions.fastest"] = item("fs.regions.fastest", "regions", "Fastest-growing region: Asia Pacific", {"report_context"})
+big.segments = [
+    {"id": "fs.segments.0", "type": "By Type", "items": ["Browser Extension", "Cloud Based"],
+     "figures": {"Cloud Based": {"figure": "48.2%"}}, "dominant": {"name": "Cloud Based", "basis": "stated"}},
+    {"id": "fs.segments.1", "type": "By Application", "items": ["Data Aggregation", "Market Research"],
+     "figures": {"Market Research": {"figure": "37%"}}, "dominant": {"name": "Market Research", "basis": "stated"}},
+    {"id": "fs.segments.2", "type": "By Mode", "items": ["Online", "Offline"],
+     "figures": {"Online": {"figure": "55.9%"}}, "dominant": {"name": "Online", "basis": "stated"}},
+]
+big.items["fs.segments.2"] = item("fs.segments.2", "segments", "Segmentation By Mode: Online, Offline", {"segmentation", "subsegment"})
+for g in big.segments:
+    big.items[f"{g['id']}.dominant"] = item(f"{g['id']}.dominant", "segments", f"Dominant category in {g['type']}: {g['dominant']['name']}", {"segmentation", "subsegment"})
+    for k, name in enumerate(g["items"]):
+        if name in g["figures"]:
+            big.items[f"{g['id']}.i{k}"] = item(f"{g['id']}.i{k}", "segment_item", f"{name} ({g['type']}): {g['figures'][name]['figure']}",
+                                                {"subsegment", "segmentation"})
+raw = good_plan()
+raw["sections"][0]["facts"] = ["fs.size"]                 # the planner left the forecast, growth rate and regions out
+raw["sections"][2]["facts"] = ["fs.segments.0"]           # and most segment splits
+p = plan_of(raw, big)
+ctx_facts, seg_facts, sub_facts = S(p, "report_context")["facts"], S(p, "segmentation")["facts"], S(p, "subsegment")["facts"]
+check("figures: size, forecast, growth rate and both regions always reach report_context",
+      {"fs.size", "fs.forecast", "fs.cagr", "fs.regions.leader", "fs.regions.fastest"} <= set(ctx_facts), str(ctx_facts))
+check("figures: every segment split is in segmentation", {"fs.segments.0", "fs.segments.1", "fs.segments.2"} <= set(seg_facts), str(seg_facts))
+check("figures: the split with no sub-segment pick has its leader and share in segmentation",
+      {"fs.segments.2.dominant", "fs.segments.2.i0"} <= set(seg_facts), str(seg_facts))
+check("figures: the two sub-segments keep their leader and share in subsegment, stated once",
+      {"fs.segments.0.dominant", "fs.segments.0.i1", "fs.segments.1.dominant", "fs.segments.1.i1"} <= set(sub_facts)
+      and not ({"fs.segments.0.i1", "fs.segments.1.i1"} & set(seg_facts)), f"{sub_facts} / {seg_facts}")
+check("figures: the facts that were added are logged as repairs", any("fs.forecast" in r for r in p["repairs"]) and any("fs.segments.2.i0" in r for r in p["repairs"]))
 
 print()
 if FAILURES:

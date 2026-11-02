@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+import sentsplit
+import subheads
 import freshness
 from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
 
@@ -21,7 +23,7 @@ def count_cmi_opinions(paragraphs: list[str]) -> int:
     """Sentences that attribute a view to a CMI analyst/expert/research team."""
     n = 0
     for p in paragraphs:
-        for sentence in re.split(r"(?<=[.!?])\s+", p):
+        for sentence in sentsplit.split(p):
             if _CMI_OPINION_RE.search(sentence):
                 n += 1
     return n
@@ -287,7 +289,7 @@ def longtail_spans(text: str, phrase: str) -> list[tuple[int, int]]:
 
 # The existing sentence splitter (every other place in this file splits inline); lifted here so the
 # loose matcher below and its callers agree on where a sentence ends.
-_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_SENT_SPLIT_RE = sentsplit.SPLIT_RE
 
 
 def keyword_words_in_sentence(text: str, phrase: str, use_stems: bool = True) -> list[tuple[int, int]] | None:
@@ -369,7 +371,7 @@ def longtail_pile_notes(sections: list[dict], phrases: list[str], sponsor_text: 
         for s in sections:
             label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
             for p in s.get("paragraphs") or []:
-                for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+                for sentence in sentsplit.split(_sponsor_replacement(p, sponsor_text)):
                     sentence = sentence.strip()
                     if not sentence:
                         continue
@@ -1405,7 +1407,7 @@ def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
             # and the memory resets at every line — a new line that uses the source's figure names it again.
             for line in _sponsor_replacement(p, " ").split("\n"):
                 named_line: set[str] = set()    # outside sources named in earlier sentences of this line
-                for sentence in re.split(r"(?<=[.!?])\s+", line):
+                for sentence in sentsplit.split(line):
                     low = sentence.lower()
                     named_line |= {src for _, src, _ in outside if _names_source(low, src)}
                     sent_nums = _fact_numbers(sentence)
@@ -1525,7 +1527,7 @@ def v2_vague_reference_problems(sections: list[dict], faq: list[dict] = ()) -> l
                 if line.startswith(marker):
                     line = line[len(marker):].strip()
                     break
-            for sentence in re.split(r"(?<=[.!?])\s+", line):
+            for sentence in sentsplit.split(line):
                 sentence = sentence.lstrip(_VAGUE_LEADING_CHARS).strip()
                 if len(sentence.split()) < 3:
                     continue
@@ -1542,6 +1544,71 @@ def v2_vague_reference_problems(sections: list[dict], faq: list[dict] = ()) -> l
     for qa in faq:
         label = f"FAQ answer to {str(qa.get('question') or '')[:40]!r}"
         out.extend(flagged(label, str(qa.get("answer") or "")))
+    return out
+
+
+_CATEGORY_FILLER = frozenset({"and", "the", "of", "for", "other", "others"})
+
+
+def _category_words(name: str) -> set[str]:
+    """The words a category must show in the article. A parenthesis only lists what the category holds ("Others (Banking and
+    Finance, ...)"), so it is not required, and "Others" itself names no category."""
+    import facts
+    name = re.sub(r"\([^)]*\)", " ", name)
+    return {w for w in facts._norm(name).split() if w not in _CATEGORY_FILLER and len(w) > 1}
+
+
+def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
+    """The market's main CMI figures reach the article: the size, forecast and growth rate, every stated segment share and
+    value, every segment split's categories and its leading category. A figure counts when its number is in the market
+    sections (a year does not count); a category counts when all its words sit in the segmentation or sub-segment text."""
+    import facts
+    import planning
+    if inp is None:
+        return []
+    market = " ".join(p for s in sections if _is_market_section(s) for p in s["paragraphs"])
+    market_numbers = _fact_numbers(market)
+    seg_text = facts._norm(" ".join(p for s in sections if s.get("sop") and s["sop"][0] in ("segmentation", "subsegment")
+                                    for p in s["paragraphs"]))
+    seg_words = set(seg_text.split())
+    out: list[str] = []
+    for fid, it in inp.items.items():
+        if it["kind"] not in ("size", "forecast", "cagr", "segment_item"):
+            continue
+        figures = {n for n in _fact_numbers_with_words(it["text"]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+        if it["kind"] == "segment_item":                      # "<category> (<split>): <figure>": the figure is after the colon
+            figures = {n for n in _fact_numbers_with_words(it["text"].split(":", 1)[-1]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+        missing = sorted(figures - market_numbers)
+        if missing:
+            out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the article")
+    for seg in inp.segments:
+        absent = [c for c in seg["items"] if _category_words(c) and not _category_words(c) <= seg_words]
+        if absent:
+            out.append(f"segmentation by {seg['type']}: {', '.join(absent)} not named in the segmentation or sub-segment text")
+        dom = seg.get("dominant")
+        if dom and _category_words(dom["name"]) and not _category_words(dom["name"]) <= seg_words:
+            out.append(f"segmentation by {seg['type']}: the leading category {dom['name']} is not named")
+    return out
+
+
+def v2_trend_shape_problems(sections: list[dict]) -> list[str]:
+    """The trends section is a lead-in paragraph, then three trends, each a sub-heading followed by three paragraphs, the
+    first of which carries a figure or a year (the dated development the trend rests on). Reads the sections WITH their
+    sub-headings."""
+    sec = next((s for s in sections if "trends" in (s.get("sop") or [])), None)
+    if sec is None:
+        return ["there is no trends section"]
+    lead, blocks = subheads.split_blocks(sec.get("paragraphs") or [])
+    out: list[str] = []
+    if not lead:
+        out.append("the trends section has no lead-in paragraph")
+    if len(blocks) != subheads.TRENDS_PER_SECTION:
+        out.append(f"the trends section has {len(blocks)} sub-headed trend(s), not {subheads.TRENDS_PER_SECTION}")
+    for i, (heading, paras) in enumerate(blocks, 1):
+        if len(paras) != subheads.PARAGRAPHS_PER_TREND:
+            out.append(f"trend {i} ({heading[:50]!r}) has {len(paras)} paragraph(s), not {subheads.PARAGRAPHS_PER_TREND}")
+        elif not re.search(r"\d", paras[0]):
+            out.append(f"trend {i} ({heading[:50]!r}) opens with no figure or year to anchor it")
     return out
 
 
@@ -1614,7 +1681,7 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
     retained sponsor paragraph's own wording is blanked the way the other sentence checks blank it. The notes
     carry the offending sentences so the rate can be tuned against real drafts."""
     sentences = [s2.strip() for s in sections for p in s.get("paragraphs") or []
-                 for s2 in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, " ")) if s2.strip()]
+                 for s2 in sentsplit.split(_sponsor_replacement(p, " ")) if s2.strip()]
     passive = [s2 for s2 in sentences
                if (m := _V2_PASSIVE_RE.search(s2)) is not None
                and m.group("part").lower() not in _V2_PASSIVE_ADJ_WORDS]
@@ -1662,52 +1729,91 @@ def run_checks_v2(
     import planning
 
     faq = list(faq or [])
+    # the trends' sub-headings live inside `paragraphs`; every check below reads the sections without them, and only
+    # the trend-shape check reads the raw ones
+    raw_sections = sections
+    sections = subheads.strip_subheads(sections)
+    import clients as clients_mod
+    import config
+    client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
+    token_sections = sections
+    if client_list:
+        # the writer restated the client paragraph and wrote each link as a token: every check below reads the linked words as plain
+        # text, and only the client-link checks read the tokens
+        sections = clients_mod.plain_sections(sections)
+        sponsor_text = clients_mod.source_text(client_list)         # its figures may appear in the restatement
+        sponsor_brand_terms = []
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
     market_name = getattr(inp, "market_name", "") or report_name
     results: list[CheckResult] = []
 
-    # ---- kept: the retained sponsor paragraph, placed once, unaltered, in the intro slot
-    token_count = full.count(SPONSOR_TOKEN)
-    placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
-    non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
-    leaked = placed != 1 and non_token_overlap >= 6
-    results.append(CheckResult(
-        "Retained backlink paragraph placed once, unaltered",
-        token_count == 1,
-        (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
-         "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
-    ))
-    intro_paragraphs = sections[0]["paragraphs"] if sections else []
-    in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro_paragraphs)
-    results.append(CheckResult(
-        "Retained paragraph sits in the intro, not mid-article",
-        in_intro_slot,
-        "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section",
-    ))
+    # ---- the client paragraph: restated by the writer, with every client link kept once, in the opening
+    if client_list:
+        link_issues = clients_mod.link_problems(token_sections, client_list)
+        results.append(CheckResult("Client backlinks: every link present once, with its own words, in the opening",
+                                   not link_issues, "; ".join(link_issues)))
+        naming_issues = clients_mod.naming_problems(token_sections, client_list)
+        results.append(CheckResult("Client not named or promoted: the backlink is its only mention",
+                                   not naming_issues, "; ".join(naming_issues)))
+        feature_issues = clients_mod.feature_problems(token_sections, client_list, market_name, getattr(inp, "intro_angle", "") or "")
+        results.append(CheckResult("Client's offer not described: the opening speaks of the market, not of what the client sells",
+                                   not feature_issues, "; ".join(feature_issues)))
+    else:
+        # ---- kept: the retained sponsor paragraph, placed once, unaltered, in the intro slot
+        token_count = full.count(SPONSOR_TOKEN)
+        placed = sum(p.count(SPONSOR_TOKEN) for p in paragraphs)
+        non_token_overlap = _longest_shared_run(full.replace(SPONSOR_TOKEN, ""), sponsor_text) if sponsor_text else 0
+        leaked = placed != 1 and non_token_overlap >= 6
+        results.append(CheckResult(
+            "Retained backlink paragraph placed once, unaltered",
+            token_count == 1,
+            (f"placed {token_count} time(s)" + (" — the model appears to have written out the retained "
+             "paragraph's own words instead of the placeholder; check the intro manually" if leaked else "")),
+        ))
+        intro_paragraphs = sections[0]["paragraphs"] if sections else []
+        in_intro_slot = token_count == 1 and any(SPONSOR_TOKEN in p for p in intro_paragraphs)
+        results.append(CheckResult(
+            "Retained paragraph sits in the intro, not mid-article",
+            in_intro_slot,
+            "" if in_intro_slot else "expected the placeholder exactly once in the unheaded intro section",
+        ))
+
+
+    # ---- an outside report stood in for CMI's: the editor must verify every value before going on
+    outside_audit = getattr(inp, "outside_audit", [])
+    if getattr(inp, "report_mode", "cmi") != "cmi":
+        rows = [f"{a['field']}: source {a['original']} -> shown {a['shown']} ({a['url']})" for a in outside_audit]
+        results.append(CheckResult(
+            "WARNING: a competitor report was used instead of CMI's. Verify all values before proceeding",
+            False,
+            "No report is linked in this article. Figures shown are adjusted by 3-5% from the source's. " + "; ".join(rows[:12])
+            + (f" (+{len(rows) - 12} more)" if len(rows) > 12 else ""),
+        ))
 
     # ---- kept: the CMI report link — exactly once, early, the market's first mention, correct anchor
-    cmi_links = re.findall(CMI_LINK_PATTERN, full)
-    results.append(CheckResult("CMI report linked exactly once", len(cmi_links) == 1, f"found {len(cmi_links)}"))
-    link_offset, link_is_first_mention, _ = cmi_link_placement(sections, sponsor_text, market_name)
-    results.append(CheckResult(
-        f"CMI link sits within the first {MAX_LINK_WORD_OFFSET} words",
-        link_offset is not None and link_offset <= MAX_LINK_WORD_OFFSET,
-        "no CMI link found" if link_offset is None else f"the link starts at word {link_offset}",
-    ))
-    if link_offset is not None:
+    if getattr(inp, "link_report", True):
+        cmi_links = re.findall(CMI_LINK_PATTERN, full)
+        results.append(CheckResult("CMI report linked exactly once", len(cmi_links) == 1, f"found {len(cmi_links)}"))
+        link_offset, link_is_first_mention, _ = cmi_link_placement(sections, sponsor_text, market_name)
         results.append(CheckResult(
-            "The first mention of the market name is the CMI link",
-            link_is_first_mention,
-            "" if link_is_first_mention else f"{market_name!r} appears in plain text before the link",
+            f"CMI link sits within the first {MAX_LINK_WORD_OFFSET} words",
+            link_offset is not None and link_offset <= MAX_LINK_WORD_OFFSET,
+            "no CMI link found" if link_offset is None else f"the link starts at word {link_offset}",
         ))
-    if report_name:
-        anchor_matches_report = any(link.strip() == report_name.strip() for link in cmi_links)
-        results.append(CheckResult(
-            "CMI link anchor names the confirmed report",
-            anchor_matches_report,
-            "" if anchor_matches_report else f"expected {report_name!r}, found {cmi_links!r}",
-        ))
+        if link_offset is not None:
+            results.append(CheckResult(
+                "The first mention of the market name is the CMI link",
+                link_is_first_mention,
+                "" if link_is_first_mention else f"{market_name!r} appears in plain text before the link",
+            ))
+        if report_name:
+            anchor_matches_report = any(link.strip() == report_name.strip() for link in cmi_links)
+            results.append(CheckResult(
+                "CMI link anchor names the confirmed report",
+                anchor_matches_report,
+                "" if anchor_matches_report else f"expected {report_name!r}, found {cmi_links!r}",
+            ))
 
     # ---- hard (§3.6a): the title passes planning's own hard title checks
     title_hard, title_soft = planning.title_problems(
@@ -1831,10 +1937,30 @@ def run_checks_v2(
     # ---- kept: the market sections carry the SOPs' own requirements
     sub_paragraphs = sum(len(s["paragraphs"]) for s in sections if "subsegment" in s["sop"])
     results.append(CheckResult("Two sub-segment analyses", sub_paragraphs >= 2, f"found {sub_paragraphs} sub-segment paragraph(s)"))
-    trend_paragraphs = sum(count_items_in(s["paragraphs"]) for s in sections if "trends" in s["sop"])
-    results.append(CheckResult("Three trends (at least 3 trend paragraphs)", trend_paragraphs >= 3, f"{trend_paragraphs} paragraph(s)"))
+    trend_problems = v2_trend_shape_problems(raw_sections)
+    results.append(CheckResult("Trends: three sub-headed trends, three paragraphs each", not trend_problems, "; ".join(trend_problems)))
+    figure_problems = v2_report_figure_problems(sections, inp)
+    results.append(CheckResult("CMI report figures stated: market size, forecast, growth rate and every segment figure",
+                               not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
+    import content_rules
+    us_problems = content_rules.us_only_problems(sections)
+    results.append(CheckResult(
+        "U.S. section covers the United States only (no other region or country)",
+        not us_problems, "; ".join(us_problems[:4]) if us_problems else ""))
+    negative = content_rules.negative_wording_problems(sections, faq, market_name)
+    results.append(CheckResult(
+        "Positive only: no restraint, challenge, risk or setback wording",
+        not negative, "; ".join(negative[:4]) + (f" (+{len(negative) - 4} more)" if len(negative) > 4 else "") if negative else ""))
+    whole = content_rules.text_reads_whole_problems(raw_sections, faq or [])
+    results.append(CheckResult(
+        "Text reads whole: no cut-off sentence, fragment, process wording or unresolved opening reference",
+        not whole, "; ".join(whole[:4]) + (f" (+{len(whole) - 4} more)" if len(whole) > 4 else "") if whole else ""))
+    repeated = content_rules.repeated_point_problems(sections, market_name=market_name)
+    results.append(CheckResult(
+        "No point is made twice across sections",
+        not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
 
     # ---- kept: CMI analyst opinion voice, 1-2 labelled statements
     opinions = count_cmi_opinions(paragraphs)
@@ -1881,6 +2007,9 @@ def run_checks_v2(
 
     # ---- kept: the guest brand is never mentioned outside the retained paragraph
     non_sponsor = "\n".join(p for p in paragraphs if p.replace(SPONSOR_TOKEN, " ").strip()).lower()
+    if client_list:
+        # the client is named nowhere (the "Client not named" check reads the whole post, the link's words aside)
+        sponsor_brand_terms = []
     brand_leaks = [t for t in sponsor_brand_terms if t and t.lower() in non_sponsor]
     results.append(CheckResult(
         "Guest brand not mentioned outside the retained paragraph",
@@ -1888,9 +2017,9 @@ def run_checks_v2(
         ", ".join(brand_leaks),
     ))
 
-    # ---- soft (§3.9): body length 1,200-1,500 words
+    # ---- soft (§3.9): body length 1,300-1,700 words (the trends carry three detailed paragraphs each)
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
-    results.append(CheckResult("Length is 1,200-1,500 words (soft)", 1200 <= total <= 1500, f"{total} words"))
+    results.append(CheckResult("Length is 1,300-1,700 words (soft)", 1300 <= total <= 1700, f"{total} words"))
 
     # ---- soft (§3.9): 2-3 long-tail keywords used — counted against the phrases the PLAN assigned when it assigned at
     # least one (the writer is only on the hook for its own sections; the pool holds spares the plan never handed out).
@@ -1946,7 +2075,7 @@ def run_checks_v2(
     for s in sections:
         label = (s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")
         for p in s["paragraphs"]:
-            for sentence in re.split(r"(?<=[.!?])\s+", _sponsor_replacement(p, sponsor_text)):
+            for sentence in sentsplit.split(_sponsor_replacement(p, sponsor_text)):
                 n = _words(sentence)
                 if n > _V2_SENTENCE_MAX_WORDS:
                     long_sentences.append(f"{label}: a sentence runs {n} words")

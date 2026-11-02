@@ -44,7 +44,7 @@ out = demand.normalize_questions(GOOD, MARKET, LOG)
 check("questions: good ones all kept", len(out) == 5, str([x["question"] for x in out]))
 check("questions: ordered by kind (size before growth) with ids Q1..Qn",
       [x["intent"] for x in out] == ["size", "growth", "drivers", "region", "players"] and out[0]["id"] == "Q1" and out[4]["id"] == "Q5")
-check("questions: each carries the section its kind belongs to", out[0]["section"] == "report_context" and out[3]["section"] == "country_us" and out[4]["section"] == "key_players")
+check("questions: each carries the section its kind belongs to", out[0]["section"] == "report_context" and out[3]["section"] == "report_context" and out[4]["section"] == "key_players")
 
 check("questions: an unknown kind is dropped", demand.normalize_questions([q("pricing", "How much does the Zzz Widget Services Market cost?")], MARKET, LOG) == [])
 check("questions: a question that does not name the market is dropped",
@@ -220,14 +220,24 @@ finally:
     llm.chat_json = orig
 
 # ------------------------------------------------------------------ the prompt carries framing, not samples
-formatted = prompts.SEARCH_DEMAND_USER.format(market_name=MARKET, facts="- fs.size: x")
+formatted = prompts.SEARCH_DEMAND_USER.format(market_name=MARKET, facts="- fs.size: x", real_queries="- real phrase")
 check("prompt: formats and names the market", MARKET in formatted)
 check("prompt: lists every kind of need", all(f"- {k}:" in formatted for k in demand.INTENTS))
 sample_like = [l for l in formatted.splitlines() if re.match(r"\s*(How|What|Which|Who|Where|Why)\b[^.]*\?\s*$", l)]
 check("prompt: holds no sample question lines", not sample_like, str(sample_like))
+
+# a lower-case search phrase prints with its place names capitalised (a heading read "in the united states?")
+import logging as _logging
+_q = demand.normalize_questions([{"intent": "us", "question": "cosmeceuticals market in the united states"},
+                                 {"intent": "region", "question": "which region leads the cosmeceuticals market in north america"}],
+                                "Cosmeceuticals Market", _logging.getLogger("t"))
+check("questions: place names are capitalised ('United States', 'North America')",
+      [q["question"] for q in _q] == ["Which region leads the cosmeceuticals market in North America?", "Cosmeceuticals market in the United States?"],
+      str([q["question"] for q in _q]))
 
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
     sys.exit(1)
 print("all demand tests passed")
+
