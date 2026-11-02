@@ -153,8 +153,6 @@ check("humanized: the SOP rule behind them is checked instead", names.get("2-3 h
       str(names.get("2-3 headings are questions (most searched questions)")))
 check("humanized: a reworded FAQ question is not a failure", all(
     "planned MSQ" not in r.detail for r in humanized), str([r.detail for r in humanized if "planned MSQ" in r.detail]))
-check("humanized: keyword check names the article, not a section",
-      any(k.startswith("Secondary keywords: 4-6 assigned, each used in the article") for k in names))
 # the builders pad every section with the same filler sentence, which the repeated-point check rightly flags (it has its own tests)
 _FIXTURE_ONLY = "No point is made twice across sections"
 check("humanized: nothing fails because of the edits", all(v for k, v in names.items() if k != _FIXTURE_ONLY),

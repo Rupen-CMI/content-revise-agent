@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException, TimeoutException
@@ -225,6 +225,11 @@ class SearchHit:
     # "claim" for pages retrieved to back one claim of the original article (claim_id), else "market".
     scope: str = "market"
     claim_id: str = ""
+
+    def __post_init__(self) -> None:
+        # a feed can hand the publisher's name percent-encoded ("Morningstar%2c Inc."); it is written into the article as a name
+        if self.source and "%" in self.source:
+            self.source = unquote(self.source)
 
     @property
     def host(self) -> str:

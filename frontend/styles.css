@@ -852,6 +852,39 @@ button.menu-toggle {
 
 .spinner-block span { animation: text-pulse 1.8s ease-in-out infinite; }
 
+/* The numbered path through Step 2 (find reports, choose reports, read them and gather evidence) and the live list of what is running. */
+.flow-tracker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.flow-tracker li { display: flex; align-items: center; gap: 8px; }
+.flow-tracker .flow-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+.flow-tracker li.active { color: var(--text); font-weight: 600; }
+.flow-tracker li.active .flow-num { background: var(--accent); border-color: var(--accent); color: #fff; }
+.flow-tracker li.done { color: var(--success); }
+.flow-tracker li.done .flow-num { border-color: var(--success); }
+.live-list { list-style: none; margin: 0 0 12px; padding-left: 2px; font-size: 13px; color: var(--text-muted); }
+.live-list li { margin: 0 0 6px; }
+.live-list li::marker { content: ""; }
+.live-list li.done { color: var(--success); }
+.live-list li.active { color: var(--text); }
+
 @keyframes text-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
@@ -1489,6 +1522,9 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .market-option .option-caption { margin-top: 4px; }
 
 #step1-links-section { transition: opacity 0.25s ease, filter 0.25s ease; }
+.market-clear-btn { margin-top: 8px; }
+.links-locked { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 12px; padding: 10px 14px;
+  border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 13px; color: var(--text-muted); }
 #step1-links-section.is-off { opacity: 0.45; filter: grayscale(0.6); pointer-events: none; }
 
 #step1-confirm-block .selection-summary { margin-top: 6px; }

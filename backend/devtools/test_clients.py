@@ -255,6 +255,19 @@ check("offer check: words the guest article's own subject uses are not a leak",
       clients.feature_problems(subj_draft, [SUB], "", "Drafting and editing for graduate students") == [])
 check("offer check: without that subject the same words are flagged", len(clients.feature_problems(subj_draft, [SUB], "", "")) == 1)
 
+# two clients in one opening paragraph: the other client's linked words are not this client's offer
+OTHER = dataclasses.replace(c_one[0], host="other.example",
+                            links=[{"id": "L2", "anchor": "full-service digital agency", "url": "https://other.example/"}],
+                            paragraph=dataclasses.replace(c_one[0].paragraph, text="Hire a full-service digital agency for specialist work."),
+                            brief={"name": "Other", "offer": "Full-service digital agency work.", "category": "digital agency"})
+ME = dataclasses.replace(c_one[0], host="me.example", links=[{"id": "L1", "anchor": "answer engine optimisation", "url": "https://me.example/"}],
+                         brief={"name": "Me", "offer": "A digital agency running answer engine campaigns for brands.", "category": "agency"})
+two_draft = [{"heading": "", "sop": [], "paragraphs": ["Buyers often hire a [[CLIENT_LINK:L2|full-service digital agency]] or pick [[CLIENT_LINK:L1|answer engine optimisation]] help for brands."]}]
+check("offer check: words that only the other client's link brings are not this client's offer",
+      clients.feature_problems(two_draft, [ME, OTHER], "", "") == [], str(clients.feature_problems(two_draft, [ME, OTHER], "", "")))
+check("offer check: the same words are still flagged when no other client explains them",
+      len(clients.feature_problems(two_draft, [ME], "", "")) == 1, str(clients.feature_problems(two_draft, [ME], "", "")))
+
 # figures from the client's own website are a legitimate source: the number trace allows them, and only them
 with_figs = RESTATED.replace("revision.", "revision in more than 250 languages.")
 no_brief = dataclasses.replace(inp_one, clients=clients.build_clients(art, [0])[0])

@@ -66,6 +66,23 @@ def _trim_detail(detail: str) -> str:
 REQUIRED_KINDS = frozenset({"size", "forecast", "cagr", "segment_item"})     # the figures every post must state (checks.v2_report_figure_problems)
 
 
+# With an outside report standing in for CMI's, no report is cited anywhere in the post, so a shape never casts "the report" as the
+# actor or the owner of a list.
+_UNLINKED_SHAPE_WORDS = (
+    ("with the report as its actor, saying how many segment types the report uses", "saying how many segment types the market is divided by"),
+    ("never the report's own list wording", "never the source's own list wording"),
+    ("all of the report's companies", "all of the market's companies"),
+)
+
+
+def _shape_text(key: str, linked: bool) -> str:
+    text = _SHAPES[key]
+    if not linked:
+        for old, new in _UNLINKED_SHAPE_WORDS:
+            text = text.replace(old, new)
+    return text
+
+
 def _fact_text(item: dict) -> str:
     note = " [historical: state its year, never as current]" if item.get("historical") else ""
     if item["kind"] in REQUIRED_KINDS:
@@ -81,30 +98,24 @@ def _fact_text(item: dict) -> str:
                 f"its following sentences give further figures of this source without repeating the name — a new "
                 f"paragraph that uses a figure of this source names it again; never with "
                 f"\u201cthe same source\u201d or \u201cthat source\u201d; never credit the figure to CMI){note}")
+    if item["source"] == "":
+        return f"- [{item['id']}] {item['text']} (stated plainly as the market's own fact: no source is named, and never CMI){note}"
     return f"- [{item['id']}] {item['text']} (CMI report){note}"
 
 
 def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
+    """The keywords assigned to one section, as assignments only. How a keyword is used (one sentence, any order and form, no synonym,
+    its slot in the sentence, one section only) is stated once in the KEYWORDS rules of the prompt; it used to be repeated in full under
+    every section, which is most of why the prompt carried 55 keyword instructions."""
     lines = []
-    core = _market_core(inp.market_name)
     if s["secondary"]:
-        lines.append(f'  - REQUIRED secondary keyword: the section must cover this keyword — every content word of '
-                     f'"{s["secondary"]}", together with the words of "{core}" and the word market, appears in ONE '
-                     'sentence, in whatever order and grammatical form that sentence needs; rephrase the keyword freely, '
-                     'put its words in different parts of the sentence, and never string them together in the listed '
-                     'order unless that reads naturally. No synonyms and no dropped words, and the sentence still names '
-                     'the market. Put that sentence in one paragraph only.')
+        lines.append(f'  - REQUIRED secondary keyword: "{s["secondary"]}".')
         if s["sop"] in _LIST_SHAPED:
-            lines.append('  - This section is a list-shaped one: its bullet lines are reserved for the listed facts '
-                         'alone, so put the keyword\'s words in the LEAD-IN sentence, together with the market\'s own '
-                         'name — the bullets never carry them.')
+            lines.append("  - This section is list-shaped: put the keyword's words in the LEAD-IN sentence with the market's own name; "
+                         "its bullet lines are reserved for the listed facts alone.")
     if s["longtail"]:
         lt = next(x for x in inp.longtails if x["id"] == s["longtail"])
-        lines.append(f'  - REQUIRED long-tail search: the section must cover this keyword — every content word of '
-                     f'"{lt["keyword"]}" appears in ONE sentence, in whatever order and grammatical form that sentence '
-                     'needs; rephrase the phrase freely, put its words in different parts of the sentence, and never '
-                     'string them together in the listed order unless that reads naturally; no synonyms, no dropped '
-                     f'words. (rests on {lt["fact"]}).')
+        lines.append(f'  - REQUIRED long-tail search: "{lt["keyword"]}" (rests on {lt["fact"]}).')
     if s["terms"]:
         lines.append("  - Related terms (optional): " + ", ".join(s["terms"]) + ".")
     return "\n".join(lines) or "  - No keyword is assigned to this section beyond the primary keyword."
@@ -142,7 +153,7 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
     if s["snippet"]:
         rows.append(f'Guest example (optional, at most one sentence, only if it makes the point clearer): "{points[s["snippet"]]}"')
     names_only = s["sop"] == "key_players" and not any(inp.items[f]["kind"] == "evidence" for f in s["facts"])
-    rows.append("SHAPE: " + _SHAPES["key_players_names_only" if names_only else s["sop"]])
+    rows.append("SHAPE: " + _shape_text("key_players_names_only" if names_only else s["sop"], getattr(inp, "link_report", True)))
     return "\n".join(rows)
 
 
@@ -157,19 +168,18 @@ def build_write_prompt(plan: dict, inp: planning.PlanInputs, sponsor: Paragraph,
     # about three quarters of the planned transition budget, and never below 65.
     transition_words = int(plan["transition"]["words"])
     transition_floor = max(65, int(transition_words * 0.75))
-    named = "names the market through the report link" if linked else "names the market in plain words"
-    lead = "the lead-in paragraph with the report link" if linked else "the lead-in paragraph"
+    lead = "the lead-in paragraph with the report link" if linked else "the lead-in paragraph that names the market"
     client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
     if client_list:
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
+            "a lead-in paragraph that sets the scene with the subject; "
             "then one paragraph, of the opening's own explanation, that carries every client link (see THE CLIENT LINKS); then, only "
             "if the budget has room, one short closing paragraph that leads towards the market."
         )
         intro_shape = f'["<{lead}>", "<the paragraph that carries the [[CLIENT_LINK:...]] link(s), without naming any client>", "<an optional short closing paragraph>"]'
     elif mode == "phrase":
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
+            "a lead-in paragraph that sets the scene with the subject; "
             "then a second paragraph of your own in which the placeholder sits INSIDE one of your sentences, with your own words before and after it "
             "(the retained text is a short linked phrase, not a paragraph, so it never stands alone on a line). Nothing else is needed."
         )
@@ -178,7 +188,7 @@ def build_write_prompt(plan: dict, inp: planning.PlanInputs, sponsor: Paragraph,
         intro_shape = f'["<{lead}>", "<a paragraph of your own that embeds {prompts.SPONSOR_TOKEN} inside one of its sentences>"]'
     else:
         opening_shape = (
-            f"a lead-in paragraph that sets the scene with the subject and {named}, inside its first {LINK_WORDS} words; "
+            "a lead-in paragraph that sets the scene with the subject; "
             "then the retained paragraph's slot; then, only if the budget has room, one short closing paragraph."
         )
         intro_shape = f'["<{lead}>", "{prompts.SPONSOR_TOKEN}", "<an optional short closing paragraph>"]'
@@ -204,8 +214,11 @@ def _format_write_user(plan, inp, sponsor, report, today, mode, linked, total, t
         intro_own=plan["intro"]["own_words"], intro_angle=inp.intro_angle or "(the guest article's title)",
         intro_points="\n".join(f"  - {points[p]}" for p in plan["intro"]["points"]) or "  - (none)",
         sponsor_rule=_sponsor_rule(mode, sponsor.text), opening_shape=opening_shape,
-        link_rule=(f"The link is written exactly once, as [[CMI_LINK:{report.name}]], and it is the first time the market's name appears."
-                   if linked else "The opening carries no link: the market's name is plain text. No report is cited anywhere in the post: never write 'the report', 'the research' or 'according to a report' (state each fact plainly, as the market's own fact), and name no research firm."),
+        link_rule=(f'Write it in the lead-in paragraph, inside the first {LINK_WORDS} words of the post (in the first two sentences), exactly once as the link '
+                   f"[[CMI_LINK:{report.name}]]. This is the first time the market's name appears anywhere in the post."
+                   if linked else f'Write it in plain text in the lead-in paragraph, inside the first {LINK_WORDS} words of the post (in the first two sentences). '
+                   "The opening carries no link. No report is cited anywhere in the post: never write 'CMI's report', 'the report', 'the research' "
+                   "or 'according to a report' (state each fact plainly, as the market's own fact), and name no research firm."),
         intro_shape=intro_shape,
         transition_words=transition_words,
         transition_floor=transition_floor,
@@ -229,10 +242,25 @@ _META_RE = re.compile(
     r"|\b(?:says|say)\s+little\s+more\b|\bstays?\s+(?:broad|at\s+the\s+regional\s+level)\b"
     r"|\bno\s+(?:further|more|specific)\s+(?:detail|data|figures?)\s+(?:is|are|was|were)\b"
     r"|\bthe\s+(?:observation|finding|statement|source|figure)\s+(?:is\s+(?:qualitative|descriptive)|does\s+not\s+(?:quantify|state|measure|give))\b"
-    r"|\brather\s+than\s+any\s+measured\b|\bdoes\s+not\s+quantify\b",
+    r"|\brather\s+than\s+any\s+measured\b|\bdoes\s+not\s+quantify\b"
+    # the post announcing itself: "The sections that follow set out...", "this article explains..."
+    r"|\b(?:sections?|parts?)\s+(?:that\s+)?(?:follow|ahead|below)\b|\b(?:the\s+)?following\s+(?:sections?|parts?)\b"
+    r"|\b(?:this|the)\s+(?:article|post|piece)\s+(?:explains|examines|sets\s+out|covers|outlines|looks\s+at|will)\b",
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = sentsplit.SPLIT_RE
+# "..., and the sections below examine how demand is changing." : the clause after the last comma only announces the post
+_TRAILING_ROADMAP_RE = re.compile(
+    r",\s+(?:and\s+|while\s+|so\s+)?(?:the\s+)?(?:(?:sections?|parts?)\s+(?:that\s+)?(?:follow|ahead|below)|following\s+(?:sections?|parts?)"
+    r"|(?:this|the)\s+(?:article|post|piece))\b[^,;]*(?P<end>[.!?])\s*$", re.IGNORECASE)
+
+
+def _trim_roadmap_clause(sentence: str) -> str:
+    """The sentence without a trailing clause that only announces the post, when what is left is a real statement (six words or more)."""
+    m = _TRAILING_ROADMAP_RE.search(sentence)
+    if m and len(sentence[:m.start()].split()) >= 6 and not _holds_link(sentence):
+        return sentence[:m.start()].rstrip() + m.group("end")
+    return sentence
 
 
 def _holds_link(sentence: str) -> bool:
@@ -317,7 +345,7 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
         for p in s["paragraphs"]:
             lines = []
             for line in p.split("\n"):
-                kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
+                kept = [_trim_roadmap_clause(x) for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
                 gone = {i for i, x in enumerate(kept) if not _holds_link(x) and (_META_RE.search(x) or _is_coverage_ad(x))}
                 good = _drop_orphans(kept, gone)
                 if len(good) != len(kept):
@@ -725,7 +753,13 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
         return sections
     import checks
     outside = []
+    own_figs: list[set[str]] = []      # figures of facts that name no outside source (the report's, or a plain statement)
     wording_by_source: dict[str, tuple[str, str]] = {}   # full source -> (fact text, fact detail)
+    for i in inp.items.values():
+        if i.get("source") in ("", "CMI report", None):
+            own = {n for n in checks._fact_numbers(i["text"]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+            if own:
+                own_figs.append(own)
     for i in inp.items.values():
         if i["kind"] in ("size", "forecast", "cagr", "evidence") and i.get("source") not in ("", "CMI report", None):
             # Ownership uses digits only: a spelled small number ("two") is prose, not an identifying figure.
@@ -754,6 +788,10 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
                     # ("9" owned by {9, 150} and {9, 40} alike): the fact with the MOST figures in common
                     # with the sentence is the real owner, the rest are coincidence.
                     best = max((len(nums & figs) for _, _, figs in outside if nums & figs), default=0)
+                    # A number the report itself states (varied or not) can also turn up in a news item; when the report's own fact
+                    # shares at least as many figures with the sentence, the sentence is the report's and no news source is credited.
+                    if best and max((len(nums & figs) for figs in own_figs), default=0) >= best:
+                        best = 0
                     owners = {(name, full) for name, full, figs in outside
                               if nums & figs and len(nums & figs) == best}
                     # A second tie-break, only when candidates from more than one distinct source still

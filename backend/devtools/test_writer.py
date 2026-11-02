@@ -93,6 +93,20 @@ check("source naming: report (CMI) figures are never touched",
       writer.name_outside_sources([{"heading": "", "sop": ["report_context"], "paragraphs": ["Robo advisory opens room to grow, CMI says."]}], inp_src, LOG)[0]["paragraphs"]
       == ["Robo advisory opens room to grow, CMI says."])
 
+# a number the report states and a news item also quotes: the sentence is the report's, no news source is credited
+inp_tie = make_inputs()
+inp_tie.items["W2"]["source"] = "PR.com, 2026-10"
+inp_tie.items["W2"]["text"] = "A firm expanded its services."
+inp_tie.items["W2"]["detail"] = "It cited U.S. retail e-commerce sales of USD 354.1 billion in the quarter."
+inp_tie.items["fs.us.0"] = {"id": "fs.us.0", "kind": "us", "tags": [], "text": "U.S. retail e-commerce sales were estimated at USD 354.1 billion.",
+                            "detail": "", "source": "", "historical": False, "sections": {"country_us"}}
+tie = writer.name_outside_sources([{"heading": "u", "sop": ["country_us"], "paragraphs": ["Retail sales were estimated at USD 354.1 billion in the quarter."]}], inp_tie, LOG)[0]["paragraphs"]
+check("source naming: a number the report states and a news item also quotes is not credited to the news source",
+      tie == ["Retail sales were estimated at USD 354.1 billion in the quarter."], str(tie))
+inp_tie.items.pop("fs.us.0")
+alone = writer.name_outside_sources([{"heading": "u", "sop": ["country_us"], "paragraphs": ["Retail sales were estimated at USD 354.1 billion in the quarter."]}], inp_tie, LOG)[0]["paragraphs"]
+check("source naming: with no report fact owning the number, the news source is still named", "per PR.com" in alone[0], str(alone))
+
 # a second figure of a source named earlier in the same line needs no repeat of the name
 inp_src.items["W2"]["detail"] = "Usage spans 12.5 million users."
 inp_src.items["W4"] = {"id": "W4", "kind": "evidence", "tags": ["context"],
@@ -507,11 +521,12 @@ report = reports.Report(news_id=1, name=MARKET, subject="s", url="https://x", so
 text = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-23")
 check("prompt: carries the final title and every section's exact heading", plan["title"] in text and all(s["heading"] in text for s in plan["sections"]))
 _lt_lines = sum(1 for s in plan["sections"] if s["longtail"])
-check("prompt: the long-tail line carries the REQUIRED framing like the secondary keyword's",
+check("prompt: the long-tail line carries the REQUIRED framing like the secondary keyword's, and how a keyword is used is stated once",
       _lt_lines > 0
-      and text.count("REQUIRED long-tail search: the section must cover this keyword") == _lt_lines
-      and "REQUIRED secondary keyword" in text,
-      str([l for l in text.splitlines() if "long-tail search:" in l]))
+      and text.count("REQUIRED long-tail search:") == _lt_lines
+      and "REQUIRED secondary keyword" in text
+      and text.count("every one of its content words appears in ONE sentence") == 1,
+      str([l for l in text.splitlines() if "REQUIRED long-tail" in l]))
 check("prompt: a question heading is flagged to be answered directly", text.count("Answer it directly in the first one or two sentences") == 3)
 check("prompt: the report link token and the sponsor placeholder are present", f"[[CMI_LINK:{MARKET}]]" in text and prompts.SPONSOR_TOKEN in text)
 check("prompt: an outside-sourced fact is marked NOT CMI", "NOT CMI" not in text or "source: News Site" in text)
@@ -526,6 +541,39 @@ check("shapes: the names-only key_players shape stays plain prose naming compani
       "no bullets" in writer._SHAPES["key_players_names_only"]
       and "complete sentences" in writer._SHAPES["key_players_names_only"], writer._SHAPES["key_players_names_only"])
 check("prompt: no evidence_citations side-job is requested", "evidence_citations" not in text)
+# The market's name has its own rule in the opening, stated once, for a linked and for an unlinked (outside report) post
+_name_line = next(l for l in text.splitlines() if l.startswith("- The market's name:"))
+check("prompt: the opening has one dedicated line for the market's name, with the 100-word limit and the link",
+      MARKET in _name_line and "inside the first 100 words" in _name_line and f"[[CMI_LINK:{MARKET}]]" in _name_line, _name_line)
+check("prompt: the opening's shape no longer repeats the market-name rule", "inside its first 100 words" not in text)
+inp.link_report = False
+text_plain = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-23")
+inp.link_report = True
+_plain_line = next(l for l in text_plain.splitlines() if l.startswith("- The market's name:"))
+check("prompt: with an outside report the name is plain text in the first 100 words, no link and no report cited",
+      "plain text" in _plain_line and "inside the first 100 words" in _plain_line and "CMI_LINK" not in _plain_line
+      and "never write 'CMI's report'" in _plain_line, _plain_line)
+# the post never announces itself: roadmap sentences go, the content around them stays
+_rm = writer.strip_meta_sentences([{"heading": "", "sop": [], "paragraphs": [
+    "Buyers purchase licences to plan and track work. The sections that follow set out how large this market is. Demand rests on coordination.",
+    "The sections ahead examine the market's size. This article explains the market's trends.",
+    "A part of the budget follows revenue growth, and the following quarter showed it."]}], LOG)
+check("roadmap: a sentence announcing the sections that follow is removed and its neighbours stay",
+      _rm[0]["paragraphs"][0] == "Buyers purchase licences to plan and track work. Demand rests on coordination.", str(_rm))
+check("roadmap: a paragraph made only of roadmap sentences disappears", len(_rm[0]["paragraphs"]) == 2, str(_rm))
+check("roadmap: ordinary use of 'part' and 'following' is left alone", _rm[0]["paragraphs"][1].startswith("A part of the budget follows"), str(_rm))
+_rm2 = writer.strip_meta_sentences([{"heading": "", "sop": [], "paragraphs": [
+    "Providers package the work as retainers, projects or outcome-based contracts, and the sections below examine how demand is changing.",
+    "That decision now sits inside a larger market, whose scale and direction the following sections set out."]}], LOG)
+check("roadmap: a clause that only trails a real statement is cut, the statement stays; a pure announcement goes",
+      [p for s_ in _rm2 for p in s_["paragraphs"]] == ["Providers package the work as retainers, projects or outcome-based contracts."], str(_rm2))
+check("roadmap: the prompt states the rule once", writer.prompts.WRITE_USER.count("The post never announces itself") == 1)
+# No section's SHAPE casts a report as the actor or owner when an outside report stood in for CMI's
+import re as _re  # noqa: E402
+_leaks = {k: _re.findall(r"[^.]{0,30}the report[^.]{0,30}", writer._shape_text(k, False)) for k in writer._SHAPES}
+check("shapes: with an outside report no section shape names 'the report' (the post cites no report)",
+      not any(_leaks.values()), str({k: v for k, v in _leaks.items() if v}))
+check("shapes: with a CMI report the shapes keep their wording", "with the report as its actor" in writer._shape_text("segmentation", True))
 # The phrase-mode sponsor must never be shown a template with the placeholder as its own paragraph: that exact
 # template made the model return a bare placeholder paragraph. Build a bare-phrase sponsor and check its template.
 phrase_sponsor = Paragraph(index=0, text="Customer data management systems", links=[Link(anchor="Customer data management systems", url="https://acmecorp.com")])
@@ -542,7 +590,7 @@ check("prompt: the retained paragraph's own words are shown to the writer (no Ke
 check("prompt: the placeholder token is still shown for placement and no unformatted sponsor_text key is left",
       prompts.SPONSOR_TOKEN in text and "{sponsor_text}" not in text)
 check("prompt: the new voice rules are present and the writer persona lives in the system prompt",
-      "Continuity" in text and "Analysis" in text and "Actors" in text
+      "Continuity" in text and "Analysis" in text and "Active voice" in text
       and "senior market-research analyst" in prompts.WRITE_SYSTEM)
 _HUMANIZING = ("everyday", "Contractions are fine", "Flesch", "ordinary people", "general reader", "human editor",
                "experienced human", "Prefer the everyday word", "plain English")
@@ -550,17 +598,49 @@ check("prompt: no humanizing or layman wording is left in the live write prompts
       not [w for w in _HUMANIZING if w in text or w in prompts.WRITE_SYSTEM or w in prompts.FAQ_MSQ_USER or w in prompts.FAQ_MSQ_SYSTEM],
       str([w for w in _HUMANIZING if w in text or w in prompts.WRITE_SYSTEM or w in prompts.FAQ_MSQ_USER]))
 check("prompt: the register is formal market-research language, third person, with a sentence-length band and a continuity rule",
-      "formal market-research and consulting language" in text and "No contractions" in text
+      "Formal market-research and consulting language" in text and "No contractions" in text
       and "average about 18 words" in text and "12 to 24" in text and "previous two sentences" in text, "")
 check("prompt: the keyword rule never lets a REQUIRED keyword be skipped as covered by meaning",
-      "A keyword a section is REQUIRED to carry" in text and "no synonym and no dropped word" in text
+      "REQUIRED secondary keyword or a REQUIRED long-tail phrase" in text and "no synonym and no dropped word" in text
       and "cannot sit naturally" not in text,
-      str([l for l in text.splitlines() if l.startswith("- Keywords:")]))
-check("prompt: a required keyword is written out in one sentence, in the required-keyword line too",
-      "the section must cover this keyword — every content word of " in text)
-check("prompt: a list lead-in with a required keyword still carries the keyword's words and the market name",
-      "that lead-in sentence still carries every content word of the keyword and the market's own name" in text,
-      str([l for l in text.splitlines() if l.startswith("- No filler:")]))
+      str([l for l in text.splitlines() if "How an assigned keyword is used" in l]))
+check("prompt: a required keyword is written out in one sentence (stated once, in the KEYWORDS rules)",
+      text.count("every one of its content words appears in ONE sentence of that section") == 1)
+check("prompt: a list-shaped section's keyword goes in the lead-in sentence, not in the bullets",
+      "bullet lines are reserved for the listed facts alone" in text and "the keyword's words go in the lead-in sentence" in text)
+# the organisation of the prompt: rules first, once, in labelled groups; then the post; then the checklist
+_a, _b, _c = text.index("PART A"), text.index("PART B: THE POST"), text.index("PART C: CHECKLIST")
+_groups = ["RULES: PRECEDENCE", "RULES: FACTS AND SOURCES", "RULES: NO REPEATS", "RULES: ANALYSIS", "RULES: LANGUAGE", "RULES: KEYWORDS", "RULES: LENGTH AND FLOW"]
+check("prompt: the rules come first, as seven labelled groups in a fixed order, before the post and the checklist",
+      _a < _b < _c and all(g in text for g in _groups) and [text.index(g) for g in _groups] == sorted(text.index(g) for g in _groups)
+      and text.index("RULES: LENGTH AND FLOW") < _b and text.index("### 1. report_context") > _b,
+      str([text.find(g) for g in _groups]))
+check("prompt: each rule is stated once (the no-repeats rule, the credit rule, the voice rule)",
+      text.count("One piece of evidence, one place.") == 1 and text.count("Crediting a source.") == 1 and text.count("Voice and register.") == 1)
+check("prompt: no section repeats the keyword rules (the long explanation is not under every section)",
+      text.count("rephrase it freely") == 1 and text.count("never string them together in the listed order") == 0)
+check("prompt: the order of precedence is stated", "Order of precedence." in text and "the earlier one in this list wins" in text)
+def _repeated_runs(prompt: str, n: int = 14) -> list[str]:
+    """Any run of n words that appears twice in the instruction text of a prompt. Fact rows (their text is data, and one fact is shown under
+    its trend or section only) and the per-section lines that are meant to repeat are left out."""
+    lines = [l for l in prompt.splitlines()
+             if l.strip() and not l.lstrip().startswith(("- [", "detail:", "    detail:", "Trend ", "### ", "Purpose (what the reader learns"))]
+    words = " ".join(lines).split()
+    seen, dup = {}, []
+    for k in range(len(words) - n + 1):
+        run = " ".join(words[k:k + n])
+        if run in seen and seen[run] != k - 1:      # an overlap with the previous start is the same repeated stretch
+            dup.append(run)
+        seen.setdefault(run, k)
+    return dup
+
+
+# the question-headed sections share one sentence by design: it is removed before the repeats are looked for
+_Q_HEAD = ("The heading is a question people really search. Answer it directly in the first one or two sentences (about 40 to 60 words), "
+           "in precise terms, then continue with the section.")
+_dups = _repeated_runs(text.replace(_Q_HEAD, "").replace("- No keyword is assigned to this section beyond the primary keyword.", ""))
+check("prompt: no instruction of fourteen words or more appears twice in the assembled write prompt", not _dups, str(_dups[:3]))
+
 check("shapes: the segmentation lead-in must name the market in the same sentence as its segmentation",
       'names the market in that same sentence as the thing the segmentation divides' in writer._SHAPES["segmentation"],
       writer._SHAPES["segmentation"])

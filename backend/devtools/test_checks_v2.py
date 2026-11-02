@@ -251,24 +251,8 @@ check("block shares: the good draft sits in all three bands", by_name(run, "Bloc
 
 # ------------------------------------------------------------------ keywords
 
-d = good_draft()
-d[3]["paragraphs"][0] = pad(30, [f"What is changing the {MARKET} first shows in its trends and its size."])
-run = run_v2(TITLE, d)
-check("keywords: two assigned keywords in one paragraph pass the hard check but are noted (soft)",
-      by_name(run, "Secondary keywords").passed and not by_name(run, "No paragraph carries two").passed,
-      by_name(run, "Secondary keywords").detail)
-
-d = good_draft()
-d[3]["paragraphs"][0] = pad(30, [f"What is changing the {MARKET} first shows in its trends, its size and its segmentation."])
-run = run_v2(TITLE, d)
-check("keywords: three assigned keywords piled into one paragraph fail (stuffing)",
-      not by_name(run, "Secondary keywords").passed, by_name(run, "Secondary keywords").detail)
-
-d = good_draft()
-d[2]["paragraphs"][0] = pad(60, [f"The {MARKET} totals USD 1.2 billion in 2025.", "Its growth rate runs 13.1% CAGR a year."])
-run = run_v2(TITLE, d)
-check("keywords: a section missing its keyword fails",
-      not by_name(run, "Secondary keywords").passed, by_name(run, "Secondary keywords").detail)
+check("keywords: the secondary-keyword checks are no longer part of the SOP checks",
+      not any(r.name.startswith(("Secondary keywords", "No paragraph carries two")) for r in run_v2(TITLE, good_draft())))
 
 # ------------------------------------------------------------------ number trace
 
@@ -865,16 +849,6 @@ check("secondary loose: with the fold off, the sentence's verb form no longer sa
           "Vendors segment zorb widget pricing by tier.",
           MARKET, "zorb widget pricing segmentation", use_stems=False) is False)
 
-# Stuffing counts exact words only: an inflected keyword word ("segments" for "segmentation") counted
-# through the fold would stuff-count a paragraph that merely uses the topic's plural, so a paragraph
-# with two exact keyword uses plus one fold-only use passes the hard check (a soft 2-keyword note is fine).
-d = good_draft()
-d[3]["paragraphs"][0] = pad(30, [f"What is changing the {MARKET} first shows in its trends, its size "
-                                 "and how its segments divide the field."])
-run = run_v2(TITLE, d)
-check("keywords: a fold-only keyword word does not tip a paragraph into stuffing",
-      by_name(run, "Secondary keywords").passed, by_name(run, "Secondary keywords").detail)
-
 # ------------------------------------------------------------------ secondary keyword: loose verdict keeps the anchor rule
 
 check("secondary loose: a spread use inside one sentence passes while the market name anchors the paragraph",
@@ -992,11 +966,7 @@ out = checks.run_checks_v2(TITLE, nolink_draft, PLAN, INP_OUT, faq=GOOD_FAQ, spo
                            sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
 out_names = [r.name for r in out]
 check("outside: no CMI link check runs when no report is linked", not any("CMI link" in n or "CMI report linked" in n for n in out_names), str(out_names))
-warn = next((r for r in out if r.name.startswith("WARNING")), None)
-check("outside: a warning check names the competitor report and fails visibly", warn is not None and not warn.passed)
-check("outside: the warning lists the source value, the shown value and the URL",
-      warn is not None and "USD 500.0 million" in warn.detail and "USD 521.0 million" in warn.detail and "https://rival.example/r" in warn.detail)
-check("outside: a normal CMI run carries no warning", not any(r.name.startswith("WARNING") for r in good))
+check("outside: the SOP checks carry no competitor-report warning (the Step 2 box already shows it)", not any(r.name.startswith("WARNING") for r in out))
 
 # ------------------------------------------------------------------ the report's main figures are all in the article
 fig_inp = test_planning.make_inputs()
@@ -1035,7 +1005,7 @@ year_only = fig_sections("The market is forecast at USD 3.4 billion and was wort
 check("report figures: a year is not a figure (the year of a figure may be left out)",
       checks.v2_report_figure_problems(year_only, fig_inp) == [], str(checks.v2_report_figure_problems(year_only, fig_inp)))
 check("report figures: the check reports as a failed row in the full check list",
-      any(not r.passed and r.name.startswith("CMI report figures stated") for r in run_v2("T", no_forecast + [], faq=[])),
+      any(not r.passed and r.name.startswith("Report figures stated") for r in run_v2("T", no_forecast + [], faq=[])),
       "")
 
 fig_inp.segments = fig_inp.segments + [{"id": "fs.segments.2", "type": "By Application", "items": ["Media", "Others (Banking and Finance, Non-profit and Government Organizations)"]}]
@@ -1043,6 +1013,41 @@ check("report figures: a parenthesis inside a category, and 'Others', are not re
       not any("Others" in p or "Banking" in p for p in checks.v2_report_figure_problems(all_in, fig_inp)),
       str(checks.v2_report_figure_problems(all_in, fig_inp)))
 
+# ------------------------------------------------------------------ the market's name is in the first 100 words (both modes)
+_lead = " ".join(["Professionals who adjust single pages so that engines can read them need background first."] * 8)   # 88 words, no name
+_named = lambda *paras: [{"heading": "", "sop": [], "paragraphs": list(paras)}]
+check("name offset: a name in the first sentence is at word 0..",
+      checks.market_name_offset(_named(f"The {MARKET} grows. " + _lead), "", MARKET) == 1)
+check("name offset: a name after a long lead-in is beyond 100 words (the SEO draft's failure)",
+      (checks.market_name_offset(_named(_lead, _lead, f"The {MARKET} grows."), "", MARKET) or 0) > checks.MARKET_NAME_WORDS)
+check("name offset: a name that never appears gives None", checks.market_name_offset(_named(_lead), "", MARKET) is None)
+check("name offset: a CMI link counts as the name at its own position",
+      checks.market_name_offset(_named(f"Teams study the [[CMI_LINK:{MARKET}]] closely."), "", MARKET) == 3)
+check("name offset: the retained paragraph counts at its real length when it sits before the name",
+      checks.market_name_offset(_named(prompts.SPONSOR_TOKEN, f"The {MARKET} grows."), "one two three four five", MARKET) == 6)
+check("name offset: a heading is not read", checks.market_name_offset(
+    [{"heading": MARKET, "sop": ["trends"], "paragraphs": ["Nothing named here."]}], "", MARKET) is None)
+
+# no report is cited when an outside report stood in (CMI's report is not the source of those figures)
+for phrase, expect in [("CMI's report values the market at USD 80 billion.", True), ("The report states growth is steady.", True),
+                       ("According to the research, demand rises.", True), ("Demand rises as firms adopt new tools.", False),
+                       ("Gartner reports that adoption rose in 2025.", False)]:
+    hit = bool(checks._REPORT_CITED_RE.search(phrase))
+    check(f"report cited: {phrase!r} -> {expect}", hit == expect)
+
+
+# ------------------------------------------------------------------ a source is credited only for its own facts
+_ev = lambda fid, src: {"id": fid, "kind": "evidence", "text": f"fact {fid} 5%", "source": src, "detail": ""}
+_inp_c = types.SimpleNamespace(items={"W1": _ev("W1", "Yahoo Finance, 2026-10"), "W2": _ev("W2", "Forbes, 2026-10"), "fs.size": {"id": "fs.size", "kind": "size", "text": "x", "source": "CMI report"}})
+_plan_c = {"sections": [{"sop": "segmentation", "facts": ["fs.size"]}, {"sop": "trends", "facts": ["W1", "W2"]}]}
+_sec = lambda sop, text: {"heading": sop, "sop": [sop], "paragraphs": [text]}
+check("credit: a name beside one of that section's own facts is fine",
+      checks.v2_stray_credit_problems([_sec("trends", "Forbes reported a shift, and Yahoo Finance carried the launch.")], _plan_c, _inp_c) == [])
+_stray = checks.v2_stray_credit_problems([_sec("segmentation", "Client Type: B2B clients and B2C clients, per Yahoo Finance.")], _plan_c, _inp_c)
+check("credit: a name written in a section that holds none of that source's facts is a false credit",
+      len(_stray) == 1 and "Yahoo Finance" in _stray[0], str(_stray))
+check("credit: an ordinary word that is part of a source's name is not a credit",
+      checks.v2_stray_credit_problems([_sec("segmentation", "Finance and insurance buyers lead this split.")], _plan_c, _inp_c) == [])
 # ------------------------------------------------------------------ summary
 
 print()

@@ -10,9 +10,12 @@ Nothing here is a model's guess about volume: the signal is the rank and the agr
 
 Best-effort: every request that fails is skipped and logged, and a run with no suggestions falls back to the fixed pool.
 """
+import json
 import logging
 import re
+import threading
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from urllib.parse import quote
@@ -27,10 +30,16 @@ _BING = "https://api.bing.com/osjson.aspx?query={q}"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
 _ENDINGS = ("", "size", "share", "growth", "trends", "forecast", "analysis", "report", "key players", "segmentation",
             "opportunities", "drivers", "outlook", "revenue", "by region", "in the us")
-_LETTERS = "abcdefghijklmnopqrstuvwxyz"
 _WORKERS = 4
 _TIMEOUT = 6
 _PAUSE = 0.05
+# Autocomplete is a free public service, so the research is kept small and polite. A market's autocomplete phrases barely change from
+# one day to the next, so one run's answer serves every later run on that market for a week; and when the services start answering
+# slowly or failing (the sign of throttling) the research stops at once and the run uses the fixed keyword pool.
+_CACHE_DIR = Path(__file__).parent / ".keyword_cache"
+_CACHE_TTL_S = 7 * 24 * 3600
+_SLOW_S = 4.0            # one answer slower than this counts as a strike
+_MAX_STRIKES = 5         # strikes (slow answers and failures) before the rest of the research is skipped
 
 # What a phrase after "<market> market" is about, mapped to the section that answers it. First match wins.
 _SECTION_RULES = (
@@ -62,14 +71,37 @@ def _core_words(market_name: str) -> list[str]:
     return [w for w in re.findall(r"[a-z0-9]+", _market_core(market_name).lower()) if w]
 
 
-def _fetch(url: str, logger: logging.Logger) -> list[str]:
+class _Breaker:
+    """Counts slow answers and failures across the research's requests; once there are too many the rest are skipped."""
+
+    def __init__(self) -> None:
+        self.strikes = 0
+        self._lock = threading.Lock()
+
+    def strike(self) -> None:
+        with self._lock:
+            self.strikes += 1
+
+    @property
+    def open(self) -> bool:
+        return self.strikes >= _MAX_STRIKES
+
+
+def _fetch(url: str, logger: logging.Logger, breaker: _Breaker | None = None) -> list[str]:
+    if breaker is not None and breaker.open:
+        return []
+    started = time.monotonic()
     try:
         resp = httpx.get(url, headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=True)
         resp.raise_for_status()
         data = resp.json()
+        if breaker is not None and time.monotonic() - started > _SLOW_S:
+            breaker.strike()
         time.sleep(_PAUSE)
         return [str(x) for x in data[1]] if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list) else []
     except Exception as e:  # network, status, bad JSON: this one request contributes nothing
+        if breaker is not None:
+            breaker.strike()
         logger.info(f"[keywords] {url.split('?')[0].split('/')[2]} request failed: {type(e).__name__}")
         return []
 
@@ -86,15 +118,19 @@ def collect_suggestions(market_name: str, logger: logging.Logger, limit: int = 4
     section(logger, "KEYWORD RESEARCH (real searches)")
     core = _market_core(market_name)
     core_words = _core_words(market_name)
+    cached = _cache_read(core)
+    if cached is not None:
+        logger.info(f"[keywords] {len(cached)} phrase(s) for this market from the keyword cache (no requests sent)")
+        return cached[:limit]
+    breaker = _Breaker()
     # A niche market's full phrase ("... market size") rarely autocompletes, but the shorter head phrases do, so both are asked.
-    seeds = ([(f"{core} market {e}".strip(), 1.0) for e in _ENDINGS] + [(f"{core} market {c}", 0.5) for c in _LETTERS]
-             + [(core, 1.0), (f"{core} industry", 1.0)] + [(f"{core} {c}", 0.5) for c in _LETTERS])
+    seeds = [(f"{core} market {e}".strip(), 1.0) for e in _ENDINGS] + [(core, 1.0), (f"{core} industry", 1.0)]
     jobs = [(engine, tmpl.format(q=quote(seed)), seed, weight)
             for seed, weight in seeds for engine, tmpl in (("google", _GOOGLE), ("bing", _BING))]
 
     def run(job):
         engine, url, seed, weight = job
-        return engine, seed, weight, _fetch(url, logger)
+        return engine, seed, weight, _fetch(url, logger, breaker)
 
     found: dict[str, Suggestion] = {}
     ok = 0
@@ -115,7 +151,35 @@ def collect_suggestions(market_name: str, logger: logging.Logger, limit: int = 4
     ranked = sorted(found.values(), key=lambda s: (-s.score, s.query))[:limit]
     logger.info(f"[keywords] {ok}/{len(jobs)} requests answered; {len(found)} phrase(s) name the market; top: "
                 + "; ".join(f"{s.query} ({s.score:.1f})" for s in ranked[:8]))
+    if breaker.open:
+        logger.warning(f"[keywords] the search services answered slowly or failed {breaker.strikes} times: the research stopped early "
+                       "(possible throttling); nothing is cached and the fixed keyword pool fills any gap")
+    elif ok:
+        _cache_write(core, ranked)
     return ranked
+
+
+def _cache_path(core: str) -> Path:
+    return _CACHE_DIR / (re.sub(r"[^a-z0-9]+", "-", core.lower()).strip("-") + ".json")
+
+
+def _cache_read(core: str) -> list[Suggestion] | None:
+    """The market's ranked phrases from an earlier run, when they are under a week old."""
+    try:
+        data = json.loads(_cache_path(core).read_text(encoding="utf-8"))
+        if time.time() - float(data["saved"]) > _CACHE_TTL_S:
+            return None
+        return [Suggestion(query=r["query"], score=float(r["score"]), engines=set(r["engines"]), hits=int(r["hits"])) for r in data["phrases"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _cache_write(core: str, ranked: list[Suggestion]) -> None:
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        _cache_path(core).write_text(json.dumps({"saved": time.time(), "phrases": [x.as_dict() for x in ranked]}), encoding="utf-8")
+    except OSError:
+        pass            # a cache that cannot be written only costs the next run its requests
 
 
 def tail_of(phrase: str, market_name: str) -> str:
@@ -177,6 +241,10 @@ def serp_terms(market_name: str, logger: logging.Logger) -> dict[str, float]:
     most ranking titles carry is the one the market's search results reward."""
     import feeds
     core = _market_core(market_name)
+    cached = _serp_cache_read(core)
+    if cached is not None:
+        logger.info("[keywords] ranking pages from the keyword cache (no requests sent)")
+        return cached
     try:
         hits = feeds.bing_search([], [f"{core} market", f"{core} market size share forecast"], logger)
     except Exception:
@@ -191,7 +259,27 @@ def serp_terms(market_name: str, logger: logging.Logger) -> dict[str, float]:
             if re.search(r"\b" + re.escape(term) + r"\b", title):
                 scores[term] = scores.get(term, 0.0) + 1.0 / (rank % 10 + 1)
     logger.info("[keywords] ranking pages carry: " + "; ".join(f"{k} ({v:.1f})" for k, v in sorted(scores.items(), key=lambda kv: -kv[1])[:8]))
+    if scores:
+        _serp_cache_write(core, scores)
     return scores
+
+
+def _serp_cache_read(core: str) -> dict[str, float] | None:
+    try:
+        data = json.loads(_cache_path(core).with_suffix(".serp.json").read_text(encoding="utf-8"))
+        if time.time() - float(data["saved"]) > _CACHE_TTL_S:
+            return None
+        return {str(k): float(v) for k, v in data["scores"].items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _serp_cache_write(core: str, scores: dict[str, float]) -> None:
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        _cache_path(core).with_suffix(".serp.json").write_text(json.dumps({"saved": time.time(), "scores": scores}), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def research(market_name: str, logger: logging.Logger) -> dict:

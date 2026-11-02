@@ -36,6 +36,7 @@ _FIGURE_MAX_AGE_YEARS = 2         # an outside figure must be for a year within 
 _FIGURE_MAX_PAGE_AGE = timedelta(days=730)
 _FIGURE_HIT_LIMIT = 8
 _FIGURE_PER_HOST = 2
+_FIGURE_MIN_FULL = 3     # fewer pages than this naming the whole market: pages naming part of it are offered too
 _FIGURE_TEXT_CHARS = 1100         # per page shown to the figure-backing call
 _FIGURE_FOCUS = "market size valued valuation USD billion million CAGR forecast"
 # Sites that must never back a figure: CMI's own pages (its blog posts have been seen contradicting each other and
@@ -152,6 +153,17 @@ def _core_tokens(market_name: str) -> list[str]:
 def _quote_ok(quote: str, source_norm: str) -> bool:
     q = _norm(quote)
     return len(q.split()) >= _MIN_QUOTE_WORDS and q in source_norm
+
+
+def _has_stale_event(text: str, today: date) -> bool:
+    """Does the text date an event by month or quarter ("September 2025", "Q2 2025") further back than the freshness window? The
+    article may cite only events from the last 12 months, so a fact built on such an event is unusable (a bare year is only flagged
+    as historical, see _is_historical)."""
+    for m in freshness.INLINE_EVENT_DATE_RE.finditer(text or ""):
+        d = freshness.event_date(m)
+        if d is not None and freshness.is_stale(d, today):
+            return True
+    return False
 
 
 def _is_historical(text: str, today: date) -> bool:
@@ -291,6 +303,9 @@ def _statement_list(
         negative = polarity.negative_hits(text, ignore)
         if negative:
             logger.info(f"[facts] {key} entry dropped: negative wording {negative}: {text[:90]!r}")
+            continue
+        if _has_stale_event(text, today) or _has_stale_event(quote, today):
+            logger.info(f"[facts] {key} entry dropped: it rests on an event dated more than a year ago: {text[:90]!r}")
             continue
         out.append({"id": f"fs.{key}.{len(out)}", "text": text, "quote": quote, "historical": _is_historical(quote, today)})
         if len(out) >= _MAX_STATEMENTS:
@@ -533,9 +548,11 @@ def filter_figure_hits(
     market's words in the title or snippet, and takes at most two pages per site."""
     core = _core_tokens(market_name)
     need = min(2, len(core)) if core else 0
+    acronym = "".join(t[0] for t in core) if len(core) >= 3 else ""
     seen: set[str] = set()
     per_site: dict[str, int] = {}
     kept: list[search.SearchHit] = []
+    partial: list[search.SearchHit] = []     # name only partly there ("AI Search Engine Market" for "Search Engine Optimization Market")
     for h in hits:
         if not h.title or not h.url or h.url in seen or search._is_adult(h):
             continue
@@ -544,16 +561,28 @@ def filter_figure_hits(
             logger.info(f"[figures] DROP (excluded site {h.host}): {h.title!r}")
             continue
         words = {_stem(w) for w in re.findall(r"[a-z0-9]+", f"{h.title} {h.snippet}".lower())}
-        if sum(1 for t in core if t in words) < need:
+        have = sum(1 for t in core if t in words)
+        if have < need:
             logger.info(f"[figures] DROP (market words not in title/snippet) [{h.host}]: {h.title!r}")
             continue
         site = search._site_of(h.host)
         if per_site.get(site, 0) >= _FIGURE_PER_HOST:
             continue
         per_site[site] = per_site.get(site, 0) + 1
-        kept.append(h)
-        if len(kept) >= limit:
-            break
+        if have == len(core) or (acronym and acronym in words):
+            kept.append(h)
+            if len(kept) >= limit:
+                break
+        else:
+            partial.append(h)
+    # A page that names only part of the market ("AI Search Engine Market" is not "Search Engine Optimization Market") is offered
+    # only when too few pages name all of it, so a neighbouring market never crowds out the right one.
+    if len(kept) < _FIGURE_MIN_FULL:
+        for h in partial[:max(0, limit - len(kept))]:
+            logger.info(f"[figures] only part of the market name [{h.host}]: {h.title!r}")
+            kept.append(h)
+    elif partial:
+        logger.info(f"[figures] DROP (names only part of the market): " + "; ".join(f"[{h.host}] {h.title!r}" for h in partial))
     logger.info(f"[figures] kept {len(kept)} candidate page(s): " + "; ".join(h.host for h in kept))
     return kept
 
@@ -701,6 +730,15 @@ def _statement_key(text: str) -> frozenset[str]:
     return frozenset(w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 3)
 
 
+def _segment_words(seg: dict) -> frozenset[str]:
+    return frozenset(w for name in seg.get("items") or [] for w in re.findall(r"[a-z0-9]+", str(name).lower()) if len(w) > 3)
+
+
+def _same_split(a: frozenset[str], b: frozenset[str]) -> bool:
+    """Two segment splits list the same categories when at least half of the smaller one's content words are in the other."""
+    return bool(a and b) and len(a & b) / min(len(a), len(b)) >= 0.5
+
+
 def merge_fact_sheets(sheets: list[dict], sources: list[dict]) -> dict:
     """One fact sheet from several, in the order given (the first is the primary). The headline figures come from ONE
     sheet, the first with the most of them, so size, forecast and growth rate always agree with each other. Segment
@@ -717,12 +755,18 @@ def merge_fact_sheets(sheets: list[dict], sources: list[dict]) -> dict:
     for key in HEADLINE_KEYS:
         merged[key] = ordered[0].get(key)
     seen_types: set[str] = set()
+    kept_words: list[frozenset[str]] = []
     for sheet in ordered:
         for seg in sheet.get("segments") or []:
             key = re.sub(r"^(?:by|segmentation|segment)\s+", "", _norm(seg["type"]))
-            if key not in seen_types:
-                seen_types.add(key)
-                merged["segments"].append({**seg, "id": f"fs.segments.{len(merged['segments'])}"})
+            words = _segment_words(seg)
+            # The same split under another name ("Organization Size" and "Business Size", "End-User Industry" and "Industry Vertical") is
+            # not a second split: it would only list the same categories twice.
+            if key in seen_types or any(_same_split(words, w) for w in kept_words):
+                continue
+            seen_types.add(key)
+            kept_words.append(words)
+            merged["segments"].append({**seg, "id": f"fs.segments.{len(merged['segments'])}"})
     for which in ("leader", "fastest"):
         merged["regions"][which] = next(((s.get("regions") or {}).get(which) for s in ordered if (s.get("regions") or {}).get(which)), None)
     for key in STATEMENT_KEYS:
@@ -754,14 +798,15 @@ def merge_fact_sheets(sheets: list[dict], sources: list[dict]) -> dict:
 def flatten_fact_sheet(fs: dict) -> list[dict]:
     """Every fact as {id, kind, text, source, historical}: the units a planner assigns to sections and a writer expands."""
     out: list[dict] = []
-    base = fs.get("source_label") or "CMI report"     # an outside report used in place of CMI's names itself here
+    # An outside report's facts are never CMI's: their source is empty, which the writer reads as "state it plainly, name no source".
+    base = "" if fs.get("report_mode") == "external" else (fs.get("source_label") or "CMI report")
     for key in HEADLINE_KEYS:
         e = fs.get(key)
         if e:
             label = {"size": "Market size", "forecast": "Market forecast", "cagr": "Growth rate (CAGR)"}[key]
             # An outside report's figures reach the writer as plain statements: they are shown to the editor with their
             # real source, varied and flagged, but the article names no competitor (see variance.py).
-            out.append({"id": e["id"], "kind": key, "source": "CMI report" if e.get("external") else e["source"],
+            out.append({"id": e["id"], "kind": key, "source": "" if e.get("external") else e["source"],
                         "historical": bool(e.get("stale")),
                         "text": f"{label}: {e['value']} ({e['when']})" if e["when"] else f"{label}: {e['value']}"})
     for seg in fs.get("segments") or []:

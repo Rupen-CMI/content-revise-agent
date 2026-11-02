@@ -213,8 +213,25 @@ check("regression: a CMI sheet is untouched by vary_headline_entries too",
 
 # --------------------------------------------------------------- gap-fill entries flatten as plain facts
 flat = {f["id"]: f for f in facts.flatten_fact_sheet(gapped)}
-check("flatten: a gap figure from the web reaches the writer as a plain statement, source as for CMI reports",
-      flat["fs.size"]["source"] == "CMI report" and "Market size" in flat["fs.size"]["text"] and "500.0" not in flat["fs.size"]["text"])
+check("flatten: a gap figure from the web reaches the writer as a plain statement with no source named (never CMI)",
+      flat["fs.size"]["source"] == "" and "Market size" in flat["fs.size"]["text"] and "500.0" not in flat["fs.size"]["text"])
+
+# --------------------------------------------------------------- two outside reports: one split is listed once
+def _sheet(*splits):
+    sh = facts._empty_fact_sheet()
+    sh["segments"] = [{"id": f"fs.segments.{i}", "type": ty, "items": items, "figures": {}, "dominant": None} for i, (ty, items) in enumerate(splits)]
+    return sh
+
+
+_a = _sheet(("Organization Size", ["Small and Medium Enterprises", "Large Enterprises"]),
+            ("End-User Industry", ["E-commerce and Retail", "IT and Telecom", "Hospitality and Travel", "Real Estate and Construction", "Healthcare and Life-Sciences", "BFSI", "Education"]))
+_b = _sheet(("Business Size", ["Small Enterprises", "Medium-Sized Enterprises", "Large Corporations"]),
+            ("Industry Vertical", ["E-commerce", "Healthcare", "Education", "Travel and Hospitality", "Finance and Insurance", "Real Estate"]),
+            ("Client Type", ["B2B Clients", "B2C Clients", "Government Agencies"]))
+_m = facts.merge_fact_sheets([_a, _b], [{"name": "a", "url": "u", "kind": "external"}, {"name": "b", "url": "v", "kind": "external"}])
+check("merge: a split the second report lists under another name is not added again, a new split is",
+      [s["type"] for s in _m["segments"]] == ["Organization Size", "End-User Industry", "Client Type"], str([s["type"] for s in _m["segments"]]))
+check("merge: the kept splits are numbered without gaps", [s["id"] for s in _m["segments"]] == ["fs.segments.0", "fs.segments.1", "fs.segments.2"])
 
 print()
 if FAILURES:

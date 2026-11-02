@@ -16,7 +16,7 @@ DB_URL = os.getenv("DB_URL", "")
 LLM_BASE_URL = "https://api.deepseek.com"
 LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 LLM_MODEL = "deepseek-chat"
-LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "600"))
+LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
 
 # Evidence search. Bing News RSS + curated publisher RSS (feeds.py) are the primary sources. DDGS is the
 # fallback: "fallback" runs it only when the primary stage keeps fewer than SEARCH_PRIMARY_MIN_HITS articles

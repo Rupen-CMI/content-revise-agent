@@ -17,6 +17,9 @@ import pipeline  # noqa: E402
 import planning  # noqa: E402
 
 FAILURES: list[str] = []
+import tempfile as _tempfile  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+kr._CACHE_DIR = _Path(_tempfile.mkdtemp(prefix="kwcache_test_"))   # never write into the real keyword cache
 LOG = logging.getLogger("test_keyword_research")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
@@ -66,7 +69,7 @@ script = {
 }
 
 
-def fake_fetch(url, logger):
+def fake_fetch(url, logger, breaker=None):
     engine = "google" if "suggestqueries" in url else "bing"
     import urllib.parse
     seed = urllib.parse.unquote(url.split("q=")[-1] if engine == "google" else url.split("query=")[-1])
@@ -79,11 +82,12 @@ by_q = {s.query: s for s in got}
 check("collect: only phrases that name the market are kept", "unrelated phrase about cars" not in by_q, str(list(by_q)))
 check("collect: a phrase both engines list outranks one only one lists",
       got[0].query == f"{CORE} market size" and by_q[f"{CORE} market size"].engines == {"google", "bing"}, str([(s.query, round(s.score, 2)) for s in got]))
-check("collect: a phrase from a letter seed counts half of a phrase from a plain seed",
-      by_q[f"{CORE} market analysis"].score < by_q[f"{CORE} market growth"].score + 0.01 + 1.0, str(by_q[f"{CORE} market analysis"].score))
+check("collect: no letter-by-letter seeds are sent any more (the endings and the base forms only)",
+      not any(seed.endswith(" a") or seed.endswith(" b") for seed in
+              [(f"{CORE} market {e}").strip() for e in kr._ENDINGS]), "")
 check("collect: the seed itself is never offered back", all(s.query != f"{CORE} market" for s in got))
-with patched(kr, "_fetch", lambda url, logger: []):
-    check("collect: every request failing gives an empty list, never an error", kr.collect_suggestions(MARKET, LOG) == [])
+with patched(kr, "_fetch", lambda url, logger, breaker=None: []):
+    check("collect: every request failing gives an empty list, never an error", kr.collect_suggestions("Gizmo Gadget Market", LOG) == [])
 
 # ------------------------------------------------------------------ the pool
 sug = [kr.Suggestion(f"{CORE} market size 2026", 5.0, {"google"}, 1), kr.Suggestion(f"{CORE} market share", 3.0, {"bing", "google"}, 2),
@@ -142,6 +146,60 @@ check("demand prompt: the real searches are listed and the long-tail step is tol
 with patched(llm, "chat_json", fake_chat):
     demand.run_search_demand(MARKET, {}, LOG)
 check("demand prompt: no real searches says so and still builds", "(none found)" in seen["user"])
+
+# ------------------------------------------------------------------ the research stays small, cached and polite
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import httpx  # noqa: E402
+
+_real_get, _real_dir = httpx.get, kr._CACHE_DIR
+kr._CACHE_DIR = Path(tempfile.mkdtemp(prefix="kwcache_"))
+calls: list[str] = []
+
+
+class _Resp:
+    def __init__(self, phrases):
+        self._p = phrases
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return ["q", self._p]
+
+
+def _fake_get(url, **kw):
+    calls.append(url)
+    return _Resp(["wizard widget market size", "wizard widget market share", "wizard widget market trends"])
+
+
+httpx.get = _fake_get
+kr._PAUSE = 0
+first = kr.collect_suggestions("Wizard Widget Market", LOG)
+check("research: a market's autocomplete research sends at most 40 requests (it sent 140 before)", 0 < len(calls) <= 40, str(len(calls)))
+check("research: it still finds the phrases that name the market", any("wizard widget market size" == x.query for x in first), str([x.query for x in first][:4]))
+sent = len(calls)
+second = kr.collect_suggestions("Wizard Widget Market", LOG)
+check("research: the second run on the same market sends no request (cache)", len(calls) == sent and [x.query for x in second] == [x.query for x in first], str(len(calls) - sent))
+
+# a market whose answers come back slowly or failing stops the research and caches nothing
+calls.clear()
+
+
+def _failing_get(url, **kw):
+    calls.append(url)
+    raise httpx.ConnectError("blocked")
+
+
+httpx.get = _failing_get
+out = kr.collect_suggestions("Failing Gadget Market", LOG)
+check("research: after five failures the rest of the requests are skipped", out == [] and len(calls) <= kr._MAX_STRIKES + kr._WORKERS, str(len(calls)))
+check("research: a stopped run is not cached (the next run tries again)", kr._cache_read("Failing Gadget") is None)
+
+httpx.get, kr._CACHE_DIR = _real_get, _real_dir
+shutil.rmtree(tempfile.gettempdir() + "/" + "kwcache_nonexistent", ignore_errors=True)
 
 print()
 if FAILURES:

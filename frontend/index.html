@@ -63,19 +63,19 @@
         <i data-lucide="file-text"></i> <span>Article</span>
       </button>
       <button class="step-item" data-nav="step1" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 1 · Identify Market</span>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 1 · Choose the Market</span>
       </button>
       <button class="step-item" data-nav="step2" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 2 · Fetch Evidence Online</span>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 2 · Reports & Evidence</span>
       </button>
       <button class="step-item" data-nav="step3" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 3 · Fetch Report Facts</span>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 3 · Pick the Facts</span>
       </button>
       <button class="step-item" data-nav="step4" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 4 · Write</span>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 4 · Write the Article</span>
       </button>
       <button class="step-item" data-nav="final" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Final</span>
+        <i data-lucide="lock" class="step-icon"></i> <span>Final · Check &amp; Download</span>
       </button>
     </nav>
 
@@ -192,7 +192,7 @@
     </section>
 
     <section class="panel" data-panel="step1" hidden>
-      <h2 class="panel-title">Market identification</h2>
+      <h2 class="panel-title">Choose the market</h2>
       <div class="spinner-block" id="step1-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
         <span>Step 1: identifying the market…</span>
@@ -222,7 +222,7 @@
               <header class="market-col-head">
                 <span class="market-col-title" id="market-col-agent-title"><i data-lucide="sparkles"></i> Agent-suggested markets</span>
                 <span class="market-col-note">Pick one market. Competitor reports for it are found in the next step, and there you choose which to use.</span>
-                <button type="button" class="link-btn" id="step1-agent-clear" hidden>Clear selection</button>
+                <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-agent-clear" hidden><i data-lucide="x"></i> Clear selection</button>
               </header>
               <div class="market-col-body" id="step1-suggested"></div>
             </section>
@@ -230,12 +230,16 @@
               <header class="market-col-head">
                 <span class="market-col-title" id="market-col-cmi-title"><i data-lucide="library"></i> CMI markets</span>
                 <span class="market-col-note">Pick one. Its CMI report is used on its own and linked in the article. No competitor reports are used.</span>
-                <button type="button" class="link-btn" id="step1-cmi-clear" hidden>Clear selection</button>
+                <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-cmi-clear" hidden><i data-lucide="x"></i> Clear selection</button>
               </header>
               <div class="market-col-body" id="step1-cmi"></div>
             </section>
           </div>
           <hr class="divider">
+          <div class="links-locked" id="step1-links-locked" hidden>
+            <span>Own report links are off while a CMI report is chosen: it is used on its own.</span>
+            <button type="button" class="btn btn-secondary btn-small" id="step1-links-unlock"><i data-lucide="x"></i> Clear the CMI choice to add links</button>
+          </div>
           <div id="step1-links-section">
             <h3 class="subheading">Have your own report links?</h3>
             <p class="field-hint" id="step1-links-hint">Paste any report pages you already have. Checking a link is optional: it only gives early feedback on whether the link looks usable and never blocks anything.</p>
@@ -272,11 +276,13 @@
     </section>
 
     <section class="panel" data-panel="step2" hidden>
-      <h2 class="panel-title">Market evidence</h2>
+      <h2 class="panel-title">Reports and evidence</h2>
+      <ol class="flow-tracker" id="step2-tracker" hidden></ol>
       <div class="spinner-block" id="step2-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
         <span id="step2-spinner-text">Step 2: searching the web for supporting evidence (this can take a little while)…</span>
       </div>
+      <ul class="plain-list live-list" id="step2-live" hidden></ul>
       <div class="skeleton-list" id="step2-skeleton" hidden aria-hidden="true">
         <div class="skeleton-card"></div>
         <div class="skeleton-card"></div>
@@ -295,7 +301,7 @@
           </div>
         </div>
         <div class="content-card" id="step2-early-card">
-          <h3 class="subheading subheading-first">Market evidence found</h3>
+          <h3 class="subheading subheading-first">Market evidence (searching while you choose)</h3>
           <p class="field-hint" id="step2-early-status">Searching the web for supporting evidence while you choose the reports&hellip;</p>
           <div class="skeleton-list" id="step2-early-skeleton" aria-hidden="true">
             <div class="skeleton-card"></div>
@@ -318,8 +324,15 @@
         </div>
         <div class="content-card">
           <div class="kv-block kv-block-last">
-            <span class="kv-label">Confirmed report</span>
+            <span class="kv-label" id="step2-report-label">Confirmed report</span>
             <p class="kv-value"><a id="step2-report-link" href="#" target="_blank" rel="noopener"></a></p>
+          </div>
+        </div>
+        <div class="content-card" id="step2-factsheet-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Fact sheet</span>
+            <p class="field-hint">Every figure the article may state, read off the report. A missing market size, forecast or growth rate is highlighted as a gap; a figure that stays a gap is never stated anywhere in the article.</p>
+            <ul class="plain-list" id="step2-factsheet"></ul>
           </div>
         </div>
         <div class="content-card" id="step2-done-block">
@@ -327,7 +340,7 @@
           <p class="status-note" id="step2-timing" hidden><i data-lucide="timer"></i> <span id="step2-timing-total"></span></p>
           <ul class="plain-list" id="step2-timing-stages" hidden></ul>
           <div class="kv-block kv-block-last">
-            <p class="field-hint">Raw results from the web search, before Step 3 picks which facts to use. News results carry a publish date; Background results are undated reference pages and are never used as trend evidence.</p>
+            <p class="field-hint">Raw results from the web search, before Step 3 picks the facts to use. News results carry a publish date; Background results are undated reference pages and are never used as trend evidence.</p>
             <ul class="plain-list" id="step2-hits"></ul>
           </div>
         </div>
@@ -343,13 +356,6 @@
             <span class="kv-label">Sections rewritten as direct-answer questions</span>
             <p class="field-hint">Common market questions drafted for this market (up to three). Each one replaces its section's ordinary heading — the section still covers everything it normally would, but opens with a direct 1-3 line answer to the question instead of a topic sentence.</p>
             <ul class="plain-list" id="step2-questions"></ul>
-          </div>
-        </div>
-        <div class="content-card" id="step2-factsheet-block" hidden>
-          <div class="kv-block kv-block-last">
-            <span class="kv-label">Fact sheet</span>
-            <p class="field-hint">Every figure the article may state, read off the confirmed report. A missing market size, forecast or growth rate is highlighted as a gap — Step 2 then looks for one outside source to fill it (below, "Figure gap"); a figure that stays a gap is never stated anywhere in the article.</p>
-            <ul class="plain-list" id="step2-factsheet"></ul>
           </div>
         </div>
         <div class="content-card" id="step2-msqs-block" hidden>
@@ -372,14 +378,14 @@
           </div>
         </div>
         <div id="step2-confirm-block" class="btn-row">
-          <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 (report facts)</button>
+          <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 · Pick the Facts</button>
           <button class="btn btn-ghost" id="step2-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
         </div>
       </div>
     </section>
 
     <section class="panel" data-panel="step3" hidden>
-      <h2 class="panel-title">Report facts</h2>
+      <h2 class="panel-title">Facts for the article</h2>
       <div class="spinner-block" id="step3-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
         <span>Step 3: selecting usable facts from the gathered evidence…</span>
@@ -388,9 +394,9 @@
         <p class="status-note" id="step3-counts"></p>
         <div class="content-card">
           <div class="kv-block kv-block-last">
-            <span class="kv-label">CMI report used by the writer</span>
+            <span class="kv-label" id="step3-report-label">CMI report used by the writer</span>
             <p class="kv-value"><a id="step3-report-link" href="#" target="_blank" rel="noopener"></a></p>
-            <p class="field-hint" style="margin-top: 6px;">The writer draws market sizing, segmentation and trend language directly from this report.</p>
+            <p class="field-hint" id="step3-report-hint" style="margin-top: 6px;">The writer draws market sizing, segmentation and trend language directly from this report.</p>
             <details class="preview-box">
               <summary><i data-lucide="chevron-right"></i> Preview the fetched report text</summary>
               <div id="step3-report-text" class="scroll-box article-scroll"></div>
@@ -426,7 +432,7 @@
           </div>
         </div>
         <div id="step3-confirm-block" class="btn-row">
-          <button class="btn btn-primary" id="step3-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 4 (write)</button>
+          <button class="btn btn-primary" id="step3-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 4 · Write the Article</button>
           <button class="btn btn-ghost" id="step3-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
         </div>
         <p class="status-note" id="step3-done-note" hidden><i data-lucide="check"></i> Step 3 complete — continue in the next section.</p>
@@ -434,7 +440,7 @@
     </section>
 
     <section class="panel" data-panel="step4" hidden>
-      <h2 class="panel-title">Draft</h2>
+      <h2 class="panel-title">Draft article</h2>
       <div class="spinner-block" id="step4-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
         <span>Step 4: writing the article (this takes a while)…</span>

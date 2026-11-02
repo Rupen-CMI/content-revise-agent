@@ -651,11 +651,13 @@ document.getElementById("step1-add-url-btn").addEventListener("click", () => {
   renderStep1UrlInputs();
 });
 
-document.getElementById("step1-cmi-clear").addEventListener("click", () => {
+function clearCmiPick() {
   if (!state.run) return;
   state.run.pickedCmi = null;
   renderStep1Panel();
-});
+}
+document.getElementById("step1-cmi-clear").addEventListener("click", clearCmiPick);
+document.getElementById("step1-links-unlock").addEventListener("click", clearCmiPick);
 
 document.getElementById("step1-agent-clear").addEventListener("click", () => {
   if (!state.run) return;
@@ -974,13 +976,13 @@ function renderRunControls() {
 
   if (runActive) {
     const stageLabel = {
-      pending: "Step 1 · Identify Market", orient_done: "Step 1 · Identify Market",
-      finding_pending: "Step 2 · Fetch Evidence Online", reports_found: "Step 2 · Fetch Evidence Online",
-      search_pending: "Step 2 · Fetch Evidence Online", search_done: "Step 2 · Fetch Evidence Online",
-      select_pending: "Step 3 · Fetch Report Facts", select_done: "Step 3 · Fetch Report Facts",
-      write_pending: "Step 4 · Write", write_done: "Step 4 · Write",
-      finalize_pending: "Final",
-    }[state.run.stage] || "Step 1 · Identify Market";
+      pending: "Step 1 · Choose the Market", orient_done: "Step 1 · Choose the Market",
+      finding_pending: "Step 2 · Reports & Evidence", reports_found: "Step 2 · Reports & Evidence",
+      search_pending: "Step 2 · Reports & Evidence", search_done: "Step 2 · Reports & Evidence",
+      select_pending: "Step 3 · Pick the Facts", select_done: "Step 3 · Pick the Facts",
+      write_pending: "Step 4 · Write the Article", write_done: "Step 4 · Write the Article",
+      finalize_pending: "Final · Check & Download",
+    }[state.run.stage] || "Step 1 · Choose the Market";
     document.getElementById("run-active-text").textContent = `Run in progress — see ${stageLabel}`;
   }
 }
@@ -1054,6 +1056,7 @@ function updateStep1ConfirmLabel() {
     : state.run.pickedCmi ? "Continue to Step 2 with this CMI report" : "Continue to Step 2";
   document.getElementById("step1-cmi-clear").hidden = !state.run.pickedCmi;
   document.getElementById("step1-agent-clear").hidden = !(state.run.pickedMarkets || []).length;
+  document.getElementById("step1-links-locked").hidden = !state.run.pickedCmi;
 
   // With a CMI report chosen, the report stands alone: the link boxes are switched off and say why.
   const cmiOnly = !!state.run.pickedCmi;
@@ -1410,12 +1413,12 @@ function renderEarlyEvidence() {
   skeleton.hidden = st !== "running";
   list.innerHTML = st === "done" && hits.length ? hitListHtml(hits) : "";
   status.textContent = st === "running"
-    ? "Searching the web for supporting evidence while you choose the reports\u2026"
+    ? "This search started on its own and keeps going while you choose the reports. You do not need to wait for it\u2026"
     : st === "done"
       ? (hits.length
-          ? `${hits.length} supporting web result(s) found for this market. They are used in the article together with the reports you tick above.`
-          : "No supporting results survived filtering yet. Continue and the agent will search again with the report's own segments and players.")
-      : "The early evidence search did not finish. Continue and the agent will search again.";
+          ? `${hits.length} supporting web result(s) found for this market. They are kept: once you continue, only what the ticked reports add (their segments and players) is searched on top.`
+          : "No supporting results survived filtering yet. Once you continue, the agent searches again using the ticked reports' segments and players.")
+      : "This search did not finish. Once you continue, the agent searches again.";
 }
 
 function pollEarlyEvidence() {
@@ -1435,25 +1438,93 @@ function pollEarlyEvidence() {
   }, 3000);
 }
 
+// Step 2 is one path: find the reports (only for a market the agent suggested), you choose, then the agent reads
+// them and gathers the evidence. The tracker shows where the editor is on that path; the live list below it shows
+// what is running during the last part, read from GET /step2/progress.
+function renderStep2Tracker() {
+  const stage = state.run.stage;
+  const viaPicker = (state.run.pickedMarkets || []).length > 0;
+  const steps = viaPicker
+    ? [["finding_pending", "Find reports"], ["reports_found", "Choose reports"], ["search_pending", "Read the reports and gather evidence"]]
+    : [["search_pending", "Read the report and gather evidence"]];
+  const order = ["finding_pending", "reports_found", "search_pending"];
+  const at = order.indexOf(stage);   // -1 once Step 2 has finished: everything is done
+  document.getElementById("step2-tracker").innerHTML = steps.map(([key, label], i) => {
+    const pos = order.indexOf(key);
+    const cls = at === -1 || pos < at ? "done" : pos === at ? "active" : "";
+    return `<li class="${cls}"><span class="flow-num">${cls === "done" ? "&#10003;" : i + 1}</span>${label}</li>`;
+  }).join("");
+  document.getElementById("step2-tracker").hidden = false;
+}
+
+const STEP2_STAGE_LABELS = {
+  "Fetch CMI reports and fact sheets": "Reading the CMI report",
+  "Outside reports": "Reading the reports you ticked",
+  "Headline figures from web": "Looking up the market's headline figures",
+  "Evidence search begun while you chose the reports": "Collecting the evidence search that started while you chose",
+  "Keyword research": "Finding what people type into search",
+  "Search demand": "Finding the questions people ask most",
+  "Client check": "Reading each client's own site",
+  "Publisher points": "Reading the article's own points",
+  "Plan market search queries": "Planning the evidence searches",
+  "Market web search": "Searching the web for evidence",
+  "Market web search (segments and players)": "Searching the web for the reports' segments and players",
+};
+
+let progressPoll = null;
+function stopProgressPoll() {
+  if (progressPoll) { clearTimeout(progressPoll); progressPoll = null; }
+  const live = document.getElementById("step2-live");
+  if (live) live.hidden = true;
+}
+
+function renderStep2Progress(p) {
+  const row = (name, cls) => `<li class="${cls}">${cls === "done" ? "&#10003; " : "&hellip; "}${escapeHtml(STEP2_STAGE_LABELS[name] || name)}</li>`;
+  const live = document.getElementById("step2-live");
+  live.innerHTML = (p.done || []).map((n) => row(n, "done")).concat((p.active || []).map((n) => row(n, "active"))).join("");
+  live.hidden = !live.innerHTML;
+}
+
+function pollStep2Progress() {
+  if (progressPoll) return;   // already polling: a re-render must not stack timers
+  const run = state.run;
+  const tick = async () => {
+    progressPoll = null;
+    if (!state.run || state.run !== run || run.stage !== "search_pending") return;
+    try {
+      const data = await fetch(`${API_BASE}/step2/progress?run_token=${encodeURIComponent(run.token)}`).then((r) => r.json());
+      if (state.run === run && run.stage === "search_pending") renderStep2Progress(data);
+    } catch { /* keep polling */ }
+    if (state.run === run && run.stage === "search_pending") progressPoll = setTimeout(tick, 2000);
+  };
+  progressPoll = setTimeout(tick, 1000);
+}
+
 function renderStep2Panel() {
   const spinner = document.getElementById("step2-spinner");
   const content = document.getElementById("step2-content");
   const pickBlock = document.getElementById("step2-pick-block");
   if (!state.run || !["finding_pending", "reports_found", "search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done", "finalized"].includes(state.run.stage)) {
     spinner.hidden = true; content.hidden = true; pickBlock.hidden = true;
-    document.getElementById("step2-skeleton").hidden = true; return;
+    document.getElementById("step2-skeleton").hidden = true;
+    document.getElementById("step2-tracker").hidden = true;
+    document.getElementById("step2-live").hidden = true;
+    return;
   }
 
   const finding = state.run.stage === "finding_pending";
   const picking = state.run.stage === "reports_found";
-  const pending = state.run.stage === "search_pending" || finding;
+  const reading = state.run.stage === "search_pending";
+  const pending = reading || finding;
   document.getElementById("step2-spinner-text").textContent = finding
-    ? "Step 2: finding competitor reports for the markets you picked…"
-    : "Step 2: searching the web for supporting evidence (this can take a little while)…";
+    ? "Finding competitor reports for the market you picked…"
+    : "Reading the reports and gathering the evidence (this can take a little while)…";
   spinner.hidden = !pending;
   document.getElementById("step2-skeleton").hidden = !finding;
   pickBlock.hidden = !picking;
+  renderStep2Tracker();
   if (picking) { renderStep2Pick(); renderEarlyEvidence(); pollEarlyEvidence(); } else stopEarlyPoll();
+  if (reading) pollStep2Progress(); else stopProgressPoll();
   content.hidden = pending || picking;
   if (pending || picking) return;
 
@@ -1470,6 +1541,8 @@ function renderStep2Panel() {
   document.getElementById("step2-clients-list").innerHTML = clientCheckHtml(clientList);
 
   const report = state.run.report;
+  document.getElementById("step2-report-label").textContent =
+    state.run.reportMode && state.run.reportMode !== "cmi" ? "Market (no CMI report)" : "Confirmed CMI report";
   const link = document.getElementById("step2-report-link");
   if (report) {
     link.textContent = report.name;
@@ -1566,6 +1639,12 @@ function renderStep3Panel() {
   if (pending) return;
 
   const report = state.run.report;
+  // With no CMI report the figures come from competitor reports (moved a few percent) and the article names none of them.
+  const outside = !!state.run.reportMode && state.run.reportMode !== "cmi";
+  document.getElementById("step3-report-label").textContent = outside ? "Market (no CMI report)" : "CMI report used by the writer";
+  document.getElementById("step3-report-hint").textContent = outside
+    ? "The writer takes market sizing, segmentation and trend language from the competitor reports you chose (their figures are adjusted by a few percent). The article names no report and links none."
+    : "The writer draws market sizing, segmentation and trend language directly from this report.";
   const link = document.getElementById("step3-report-link");
   if (report) {
     link.textContent = report.name;

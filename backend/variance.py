@@ -19,8 +19,16 @@ import re
 
 LOW, HIGH = 0.03, 0.05
 
-_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# A number is digits with proper thousands groups (a comma that merely follows it, "in 2026, the...", is not part of it)
+_NUM_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d\d(?!\d)")
+# Labels that look like numbers but are dates or periods: a quarter ("Q2"), a half ("H1"), a fiscal year ("FY26") and a day of a month
+# ("September 18"). They stay exactly as the source wrote them; only measured amounts move.
+_MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+# an age ("aged 18 to 65+", "40 year-old") is a label of the group surveyed, not a measured amount
+_AGES = (r"\bages?d?\s+(?:between\s+)?\d{1,3}\+?(?:\s*(?:to|and|-|\u2013)\s*\d{1,3}\+?)?"
+         r"|\b\d{1,3}(?:\s*(?:to|-|\u2013)\s*\d{1,3})?\s*(?:years?|yrs?)[- ]old\b")
+_LABEL_RE = re.compile(rf"\b[QH][1-4]\b|\bFY\s?\d{{2,4}}\b|\b(?:{_MONTHS})\.?\s+\d{{1,2}}(?!\d)|{_AGES}", re.I)
 
 
 def _rng(*parts: str) -> random.Random:
@@ -54,8 +62,8 @@ def scale_token(token: str, factor: float) -> str:
 
 
 def scale_text(text: str, factor: float) -> str:
-    """Every number in `text` scaled by `factor` except years."""
-    keep = {m.span() for m in _YEAR_RE.finditer(text)}
+    """Every number in `text` scaled by `factor` except years, quarters, halves, fiscal years, days of a month and ages."""
+    keep = {m.span() for m in _YEAR_RE.finditer(text)} | {m.span() for m in _LABEL_RE.finditer(text)}
 
     def one(m: re.Match) -> str:
         if any(s <= m.start() and m.end() <= e for s, e in keep):

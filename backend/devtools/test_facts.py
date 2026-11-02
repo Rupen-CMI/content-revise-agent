@@ -322,6 +322,40 @@ check("fact_numbers: digits plus spelled cardinals",
       == {"63", "2024"},
       str(facts.fact_numbers("Sixty-three percent of firms are using the tool, double the share in 2024.")))
 
+# ------------------------------------------------------------------ a statement built on an event older than a year is dropped
+PAGE_DATED = PAGE + (" In September 2025, a survey found that 9% of U.S. firms bought widget services. "
+                     "In October 2025, a second survey found that 12% of U.S. firms planned to buy widget services.")
+raw_dated = good_raw()
+raw_dated["us"] = [
+    {"text": "A September 2025 survey found 9% of U.S. firms bought widget services.", "quote":
+     "In September 2025, a survey found that 9% of U.S. firms bought widget services"},
+    {"text": "An October 2025 survey found 12% of U.S. firms planned to buy widget services.", "quote":
+     "In October 2025, a second survey found that 12% of U.S. firms planned to buy widget services"},
+]
+fs_dated = facts.validate_fact_sheet(raw_dated, PAGE_DATED, MARKET, LOG, TODAY)
+check("stale: a U.S. statement resting on a month more than a year back is dropped, a recent month is kept",
+      [e["text"][:12] for e in fs_dated["us"]] == ["An October 2"], str([e["text"] for e in fs_dated["us"]]))
+
+# ------------------------------------------------------------------ picker candidates: the whole market name, or its acronym
+SEO = "Search Engine Optimization Market"
+seo_hits = [
+    hit("Search Engine Optimization Market Size, Share & Forecast 2032", "SEO market report", "https://alpha-reports.com/seo", "A"),
+    hit("SEO Services Market Report", "The search engine optimization (SEO) market grows", "https://beta-research.net/seo", "B"),
+    hit("Global Search Engine Optimization Market Analysis", "optimization services", "https://gamma-insights.org/seo", "C"),
+    hit("AI Search Engine Market Size to Reach USD 87.63 Billion by 2035", "The AI search engine market was valued at USD 18.84 billion", "https://finance.yahoo.com/x", "Yahoo"),
+]
+got = facts.filter_figure_hits(seo_hits, SEO, [], LOG)
+check("filter: a neighbouring market that names only part of the market name does not crowd out the right ones",
+      [h.host for h in got] == ["alpha-reports.com", "beta-research.net", "gamma-insights.org"], str([h.host for h in got]))
+got = facts.filter_figure_hits([seo_hits[0], seo_hits[3]], SEO, [], LOG)
+check("filter: when too few pages name the whole market, the partial match is still offered",
+      [h.host for h in got] == ["alpha-reports.com", "finance.yahoo.com"], str([h.host for h in got]))
+
+# a publisher name that reaches the page percent-encoded is decoded where the hit is made
+_enc = search.SearchHit(title="t", snippet="s", url="https://x.example/a", source="Morningstar%2c Inc.", date=None)
+check("hit: a percent-encoded publisher name is decoded", _enc.source == "Morningstar, Inc." and
+      search.SearchHit(title="t", snippet="s", url="https://x.example/b", source="Search Engine Land", date=None).source == "Search Engine Land")
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

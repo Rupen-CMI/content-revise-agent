@@ -326,6 +326,7 @@ class RunState:
     # found (it needs only the market name), so the editor sees evidence beside the reports and Step 2 reuses it.
     early_future: "Future | None" = None
     early_market: str = ""
+    step2_timer: "StageTimer | None" = None   # the running Step 2's timer: GET /step2/progress reads which stages are live
 
 
 _RUNS: dict[str, RunState] = {}
@@ -346,17 +347,26 @@ class StageTimer:
         self._t0 = time.perf_counter()
         self._lock = threading.Lock()
         self._stages: list[dict] = []
+        self._active: list[str] = []
 
     @contextmanager
     def stage(self, name: str):
         start = time.perf_counter()
+        with self._lock:
+            self._active.append(name)
         try:
             yield
         finally:
             seconds = time.perf_counter() - start
             with self._lock:
+                self._active.remove(name)
                 self._stages.append({"name": name, "start_s": round(start - self._t0, 1), "seconds": round(seconds, 1)})
             self._logger.info(f"[timing] {self._label} / {name}: {seconds:.1f}s (started at +{start - self._t0:.1f}s)")
+
+    def progress(self) -> dict:
+        """Which stages are running right now and which have finished (what the page shows while Step 2 works)."""
+        with self._lock:
+            return {"active": list(self._active), "done": [s["name"] for s in self._stages]}
 
     def summary(self) -> dict:
         total = round(time.perf_counter() - self._t0, 1)
@@ -1117,7 +1127,7 @@ def _step2_v2(
     from one web-searched outside page instead, marked external, varied 3-5% and flagged to the editor
     (facts.fill_headline_from_web)."""
     run.logger.info("STEP 2 (market-first chain)")
-    timer = StageTimer(run.logger, "Step 2")
+    timer = run.step2_timer = StageTimer(run.logger, "Step 2")
     warnings: list[str] = list(run.client_notes)
     hosts = [search.urlparse(l.url).netloc.lower().removeprefix("www.") for l in run.sponsor.links if l.is_external]
     markets = _clean_markets(markets)      # one market at most, trimmed (R1)
@@ -1210,8 +1220,7 @@ def _step2_v2(
         gap_pages: list[search.SearchHit] = []
         players = list(reports.key_players(report)) or list(fs.get("players") or [])
         segment_terms = list(report.segment_terms)
-        # An agent-picked market already had its evidence search running while the editor chose reports.
-        early = None if chosen else _collect_early_evidence(run, market)
+        early = None
         prep = ThreadPoolExecutor(max_workers=4, thread_name_prefix="step2-v2")
         try:
             def timed(name: str, fn, *args):
@@ -1231,6 +1240,11 @@ def _step2_v2(
             demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
             clients_f = (prep.submit(timed, "Client check", clients_mod.run_briefs, run.clients, report.name, run.logger)
                          if run.clients and config.CLIENT_REWRITE else None)
+            # An agent-picked market already had its evidence search running while the editor chose reports. The keyword, demand and
+            # client work above does not depend on it, so it is already running while this waits for the early search to finish.
+            if not chosen and run.early_future is not None and run.early_market == market:
+                with timer.stage("Evidence search begun while you chose the reports"):
+                    early = _collect_early_evidence(run, market)
             publisher_f = None if early else prep.submit(
                 timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
             topup = bool(players or segment_terms)
@@ -1375,6 +1389,17 @@ def early_evidence(run_token: str | None = None) -> dict:
     return {"state": "done", "hits": [_hit_dict(h) for h in fut.result()["hits"]]}
 
 
+@app.get("/step2/progress")
+def step2_progress(run_token: str | None = None) -> dict:
+    """The stages of the running Step 2 (the page lists them while it waits), plus whether the early evidence search
+    that started beside the report picker is still going."""
+    run = _get_run(run_token)
+    out = run.step2_timer.progress() if run.step2_timer else {"active": [], "done": []}
+    fut = run.early_future
+    out["early"] = "none" if fut is None else ("running" if not fut.done() else "done")
+    return out
+
+
 @app.post("/step2")
 @_reports_step("step2")
 def step2(req: Step2Request) -> dict:
@@ -1399,6 +1424,7 @@ def step2(req: Step2Request) -> dict:
             f"STEP 2: a CMI report was chosen ({picked[0].keyword}), so the extra picks were ignored "
             f"and the report is used alone: dropped market(s) {markets}, dropped link(s) {urls}")
         markets, urls = [], []
+    run.step2_timer = None      # a retry must not show the failed attempt's stages
     # record the editor's picks before any work starts, so a page reload mid-Step-2 can restore them
     run.picked_markets = markets
     run.picked_report_ids = [c.news_id for c in picked]
