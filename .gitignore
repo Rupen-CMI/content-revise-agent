@@ -23,6 +23,7 @@ dist/
 backend/logs/
 backend/output/
 backend/.search_cache/
+backend/.keyword_cache/
 backend/catalog.sqlite
 output/
 
