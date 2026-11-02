@@ -4,7 +4,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from openai import APIError, APIStatusError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_TIMEOUT_S
 
@@ -207,11 +207,25 @@ def chat_json(
                 **({"max_tokens": max_tokens} if max_tokens else {}),
             )
         except APITimeoutError as e:
-            logger.error(f"[{call_name}] request to {LLM_BASE_URL} timed out after {LLM_TIMEOUT_S}s: {e}", exc_info=True)
-            raise LLMError(f"'{call_name}' call to the model timed out after {LLM_TIMEOUT_S}s") from e
+            # A stalled connection is a transport problem, not a bad answer: ask again (the same request) before giving up.
+            logger.error(f"[{call_name}] request to {LLM_BASE_URL} timed out after {LLM_TIMEOUT_S}s (attempt {attempt + 1}): {e}")
+            if attempt < retries:
+                continue
+            raise LLMError(f"'{call_name}' call to the model timed out after {LLM_TIMEOUT_S}s, {attempt + 1} times") from e
         except APIStatusError as e:
             logger.error(f"[{call_name}] model server returned HTTP {e.status_code}: {e}", exc_info=True)
             raise LLMError(f"'{call_name}' call failed: model server returned HTTP {e.status_code} ({e})") from e
+        except APIConnectionError as e:
+            # The connection dropped or never completed (seen: large requests to the proxy dropped after ~19 s for a few minutes, then fine
+            # again). The same request is asked again on a fresh connection after a short pause before the step fails.
+            logger.error(f"[{call_name}] could not reach the model server at {LLM_BASE_URL} (attempt {attempt + 1}): {e}")
+            if attempt < retries:
+                time.sleep(min(5 * (attempt + 1), 15))
+                continue
+            raise LLMError(
+                f"'{call_name}' call could not reach the model server at {LLM_BASE_URL}, {attempt + 1} times. "
+                "Check the internet connection and try the step again."
+            ) from e
         except APIError as e:
             logger.error(f"[{call_name}] could not reach the model server at {LLM_BASE_URL}: {e}", exc_info=True)
             raise LLMError(
@@ -239,9 +253,13 @@ def chat_json(
         except json.JSONDecodeError as e:
             last_error = e
             logger.info(f"[{call_name}] JSON parse failed: {e}; retrying")
+            near = (content or "")[max(0, e.pos - 80):e.pos + 40].replace("\n", " ")
             messages = messages[:2] + [
                 {"role": "assistant", "content": content or ""},
-                {"role": "user", "content": "That was not valid JSON. Return only the corrected JSON object."},
+                {"role": "user", "content": (
+                    f"That was not valid JSON ({e.msg}, near: ...{near}...). Return the COMPLETE answer again as one valid JSON object in "
+                    "the exact shape asked for. Every list item that is an object is written as an object, never as text holding JSON; "
+                    "every object and list is closed before the next one starts; and each section stays its own item of its list.")},
             ]
             continue
         logger.info(f"[{call_name}] PARSED JSON:\n{json.dumps(parsed, indent=2, ensure_ascii=False)}")
