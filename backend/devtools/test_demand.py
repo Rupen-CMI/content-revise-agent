@@ -226,6 +226,15 @@ check("prompt: lists every kind of need", all(f"- {k}:" in formatted for k in de
 sample_like = [l for l in formatted.splitlines() if re.match(r"\s*(How|What|Which|Who|Where|Why)\b[^.]*\?\s*$", l)]
 check("prompt: holds no sample question lines", not sample_like, str(sample_like))
 
+# a lower-case search phrase prints with its place names capitalised (a heading read "in the united states?")
+import logging as _logging
+_q = demand.normalize_questions([{"intent": "us", "question": "cosmeceuticals market in the united states"},
+                                 {"intent": "region", "question": "which region leads the cosmeceuticals market in north america"}],
+                                "Cosmeceuticals Market", _logging.getLogger("t"))
+check("questions: place names are capitalised ('United States', 'North America')",
+      [q["question"] for q in _q] == ["Which region leads the cosmeceuticals market in North America?", "Cosmeceuticals market in the United States?"],
+      str([q["question"] for q in _q]))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

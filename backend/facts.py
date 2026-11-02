@@ -781,9 +781,14 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                             "text": f"{name} ({seg['type']}): {figures[name]['figure']}"})
     for which, r in (fs.get("regions") or {}).items():
         if r:
+            basis = r["basis"] or ""
+            # "fastest growth accounting for 34% in 2026": the percentage is the region's share, and a writer that reads it as a
+            # growth rate prints "the fastest-growing region, at 34%". Say what the figure is when the basis does not.
+            if which != "leader" and re.search(r"\d\s*%", basis) and not re.search(r"cagr|growth rate|compound|annual", basis, re.I):
+                basis += "; the percentage is its share of the market, never a growth rate"
             out.append({"id": r["id"], "kind": "regions", "source": base, "historical": r["historical"],
                         "text": f"{'Leading' if which == 'leader' else 'Fastest-growing'} region: {r['name']}"
-                                + (f" ({r['basis']})" if r["basis"] else "")})
+                                + (f" ({basis})" if basis else "")})
     for key in STATEMENT_KEYS:
         for e in fs.get(key) or []:
             out.append({"id": e["id"], "kind": key, "source": base, "historical": e["historical"], "text": e["text"]})

@@ -72,6 +72,10 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
             q = q.rstrip(".!") + "?"
         q = q[0].upper() + q[1:]
         q = re.sub(r"\bai\b", "AI", q)
+        # a search-style phrase arrives in lower case ("in the united states?"); a heading and an FAQ question print it as written
+        q = re.sub(r"\b(?:united states|united kingdom|north america|latin america|asia pacific|middle east|europe|india|china|japan|"
+                   r"germany|france|canada|australia|brazil|mexico|africa|asia)\b", lambda m: m.group(0).title(), q)
+        q = re.sub(r"\b((?:in|across|for|of|to|from) the )(us|usa|uk|eu)\b", lambda m: m.group(1) + m.group(2).upper(), q, flags=re.I)
         words = q.split()
         if not _MSQ_MIN_WORDS <= len(words) <= _MSQ_MAX_WORDS:
             logger.info(f"[demand] dropped question (length {len(words)}): {q!r}")
