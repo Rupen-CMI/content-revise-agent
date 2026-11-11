@@ -248,7 +248,7 @@ try:
         """What facts.run_fact_sheet would return: a CMI sheet that states NO headline figure."""
         return facts._empty_fact_sheet()
 
-    def fake_fetch_cmi_sheets(chosen, logger):
+    def fake_fetch_cmi_sheets(chosen, logger, page_urls=(), market=""):
         flags["fetch"] += 1
         return [cmi_report()], [fake_sheet()]
 

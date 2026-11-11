@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -59,6 +60,14 @@ WRITE_STYLE_ANCHORS = os.getenv("WRITE_STYLE_ANCHORS", "true").strip().lower() n
 
 CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"
+
+
+def is_cmi_url(url: str) -> bool:
+    """True when the link (or a bare host) is on CMI's own site: the host, lower-cased and without its port, is the CMI
+    host or a subdomain of it. A look-alike such as notcoherentmarketinsights.com is not CMI."""
+    url = (url or "").strip()
+    host = (urlparse(url if "//" in url else "//" + url).hostname or "").rstrip(".")
+    return host == CMI_HOST or host.endswith("." + CMI_HOST)
 
 # DEV-ONLY search cache (CMI_SEARCH_CACHE=1): reuse a previous run's engine results (Bing news/web
 # queries, DDGS news/text) for an identical query instead of re-hitting the rate-limited engines.

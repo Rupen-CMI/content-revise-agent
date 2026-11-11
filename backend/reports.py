@@ -8,6 +8,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import trafilatura
@@ -83,6 +84,26 @@ def report_url(news_id: int, slug: str, fmt: int) -> str:
     if fmt == 0:
         return f"{CMI_SITE}/market-insight/{slug}-{news_id}"
     return f"{CMI_SITE}/industry-reports/{slug}"
+
+
+_MARKET_INSIGHT_RE = re.compile(r"^/market-insight/(?P<slug>.+)-(?P<id>\d+)/?$", re.I)
+_INDUSTRY_REPORTS_RE = re.compile(r"^/industry-reports/(?P<slug>[^/]+)/?$", re.I)
+
+
+def match_report_url(url: str) -> CatalogEntry | None:
+    """The catalog report a pasted CMI link points at, or None when it is not a catalog report page. The link forms are
+    the ones report_url writes: /market-insight/<slug>-<id> (the id decides) and /industry-reports/<slug> (the slug
+    decides). Host, scheme, query string and a trailing slash do not matter."""
+    path = urlparse((url or "").strip()).path
+    m = _MARKET_INSIGHT_RE.match(path)
+    if m:
+        news_id = int(m.group("id"))
+        return next((e for e in catalog() if e.news_id == news_id), None)
+    m = _INDUSTRY_REPORTS_RE.match(path)
+    if m:
+        slug = m.group("slug").lower()
+        return next((e for e in catalog() if e.fmt != 0 and e.slug.lower() == slug), None)
+    return None
 
 
 def _sqlite():
@@ -473,6 +494,19 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
         sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
         segment_terms=_merge_terms(_segment_terms(segmentation), taxonomy_segment_terms(live)),
         page_faq=page_faq,
+    )
+
+
+def fetch_report_page(url: str, market: str, logger: logging.Logger = _null_logger) -> Report:
+    """A CMI page that is not in the catalog (an older or unlisted report) read as a CMI report: the live page only, the
+    way fetch_report reads one. `market` names it when the page's own first line does not ('... Market')."""
+    live, page_faq = fetch_live_page_with_faq(url, logger=logger)
+    head = re.match(r"^(.*?\bmarkets?)\b", re.sub(r"^(global|worldwide)\s+", "", live.strip().split("\n", 1)[0], flags=re.I), re.I)
+    name = head.group(1).strip() if head and 2 <= len(head.group(1).split()) <= 8 else market
+    return Report(
+        news_id=0, name=name, subject=name, url=url, source="live",
+        sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
+        segment_terms=taxonomy_segment_terms(live), page_faq=page_faq,
     )
 
 

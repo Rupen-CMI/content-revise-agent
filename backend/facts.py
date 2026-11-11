@@ -23,6 +23,7 @@ import prompts
 import reports
 import search
 import variance
+from config import is_cmi_url
 from pipeline import _market_core, _report_text
 from pipeline_log import section
 
@@ -537,7 +538,7 @@ def figure_gap_queries(market_name: str) -> list[str]:
 
 
 def _excluded(host: str, exclude_hosts) -> bool:
-    return any(host == h or host.endswith("." + h) for h in (*_ALWAYS_EXCLUDED_HOSTS, *exclude_hosts))
+    return is_cmi_url(host) or any(host == h or host.endswith("." + h) for h in (*_ALWAYS_EXCLUDED_HOSTS, *exclude_hosts))
 
 
 def filter_figure_hits(

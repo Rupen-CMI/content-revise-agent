@@ -12,7 +12,7 @@ from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
 
 from checks import split_bullet_lines
-from config import CMI_HOST
+from config import is_cmi_url
 
 log = logging.getLogger(__name__)
 
@@ -26,8 +26,7 @@ class Link:
 
     @property
     def is_external(self) -> bool:
-        host = urlparse(self.url).netloc.lower()
-        return bool(host) and not host.endswith(CMI_HOST)
+        return bool(urlparse(self.url).netloc) and not is_cmi_url(self.url)
 
 
 @dataclass

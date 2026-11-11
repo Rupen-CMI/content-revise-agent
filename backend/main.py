@@ -1048,11 +1048,14 @@ def step1(req: Step1Request) -> dict:
     }
 
 
-def _fetch_cmi_sheets(chosen: list[reports.CatalogEntry], logger: logging.Logger) -> tuple[list[reports.Report], list[dict]]:
-    """Fetch every ticked CMI report and read each into a fact sheet, in parallel (the order of `chosen` is kept: the first
-    is the primary report)."""
-    with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool:
+def _fetch_cmi_sheets(
+    chosen: list[reports.CatalogEntry], logger: logging.Logger, page_urls=(), market: str = "",
+) -> tuple[list[reports.Report], list[dict]]:
+    """Fetch every ticked CMI report (and every pasted CMI page outside the catalog) and read each into a fact sheet, in
+    parallel (the order is kept: the first is the primary report)."""
+    with ThreadPoolExecutor(max_workers=max(1, len(chosen) + len(page_urls))) as pool:
         fetched = list(pool.map(lambda c: pipeline.run_fetch_confirmed_report(c, logger), chosen))
+        fetched += list(pool.map(lambda u: reports.fetch_report_page(u, market, logger), page_urls))
         sheets = list(pool.map(lambda r: facts.run_fact_sheet(r.name, r, logger), fetched))
     return fetched, sheets
 
@@ -1115,7 +1118,7 @@ def _collect_early_evidence(run: RunState, market: str) -> dict | None:
 
 
 def _step2_v2(
-    run: RunState, chosen: list[reports.CatalogEntry], urls: list[str], markets=(), url_markets=None,
+    run: RunState, chosen: list[reports.CatalogEntry], urls: list[str], markets=(), url_markets=None, cmi_pages=(),
 ) -> dict:
     """Step 2 on the market-first chain (plan §3 diagram): read the reports into the fact sheet, then — in parallel —
     search demand, the publisher points and the LLM's search queries feeding the market web search.
@@ -1138,9 +1141,10 @@ def _step2_v2(
         cmi_reports: list[reports.Report] = []
         sheets: list[dict] = []
         sources: list[dict] = []
-        if chosen:
+        if chosen or cmi_pages:
             with timer.stage("Fetch CMI reports and fact sheets"):
-                cmi_reports, sheets = _fetch_cmi_sheets(chosen, run.logger)
+                cmi_reports, sheets = _fetch_cmi_sheets(
+                    chosen, run.logger, cmi_pages, markets[0] if markets else external_reports.own_market(run.orient))
             sources = [{"name": r.name, "url": r.url, "kind": "cmi"} for r in cmi_reports]
         market = cmi_reports[0].name if cmi_reports else (markets[0] if markets else external_reports.own_market(run.orient))
         if not market:
@@ -1148,7 +1152,7 @@ def _step2_v2(
         outside_texts: dict[str, str] = {}
         # R3: with a CMI report chosen, no outside report is read at all — the branch below runs only for a market
         # pick (search finds the market's reports) or pasted links.
-        if not chosen:
+        if not cmi_reports:
             with timer.stage("Outside reports"):
                 titles = {r.get("url"): r.get("title", "") for r in run.found_reports}
                 pages = []
@@ -1160,7 +1164,7 @@ def _step2_v2(
                         warnings.append(
                             f"The link {u} could not be read (the site shows the agent only a short preview, or blocks it) "
                             "and was skipped.")
-                if not chosen and not urls:
+                if not urls:
                     if markets:
                         pages = []
                         for m in markets:
@@ -1244,7 +1248,7 @@ def _step2_v2(
                          if run.clients and config.CLIENT_REWRITE else None)
             # An agent-picked market already had its evidence search running while the editor chose reports. The keyword, demand and
             # client work above does not depend on it, so it is already running while this waits for the early search to finish.
-            if not chosen and run.early_future is not None and run.early_market == market:
+            if not cmi_reports and run.early_future is not None and run.early_market == market:
                 with timer.stage("Evidence search begun while you chose the reports"):
                     early = _collect_early_evidence(run, market)
             publisher_f = None if early else prep.submit(
@@ -1419,20 +1423,36 @@ def step2(req: Step2Request) -> dict:
         if entry is None:
             raise HTTPException(400, f"Report {rid} is not one of the matched reports for this run.")
         picked.append(entry)
+    # A pasted link on CMI's own site is a CMI report, never a competitor's: a catalog report is routed exactly as if the
+    # editor had picked it from the list, a CMI page outside the catalog is read as a CMI page (cmi_pages) — either way
+    # its figures are CMI's own, so no variance and no web gap-fill.
+    cmi_urls = [u for u in urls if config.is_cmi_url(u)]
+    urls = [u for u in urls if not config.is_cmi_url(u)]
+    cmi_pages: list[str] = []
+    for u in cmi_urls:
+        entry = reports.match_report_url(u)
+        if picked or cmi_pages:
+            run.logger.info(f"STEP 2: a CMI report is already chosen, so the pasted CMI link {u} was ignored")
+        elif entry is not None:
+            run.logger.info(f"STEP 2: the pasted CMI link {u} is the catalog report {entry.news_id} {entry.keyword}; used as the picked report")
+            picked.append(entry)
+        else:
+            run.logger.info(f"STEP 2: the pasted CMI link {u} is not a catalog report; it is read as a CMI page")
+            cmi_pages.append(u)
     # R3: a CMI report is used ALONE — no competitor reports, no pasted links. Any market pick and any
     # report link the editor also sent are dropped here, before anything is recorded or passed on.
-    if picked and (markets or urls):
+    if (picked or cmi_pages) and (markets or urls):
         run.logger.info(
-            f"STEP 2: a CMI report was chosen ({picked[0].keyword}), so the extra picks were ignored "
+            f"STEP 2: a CMI report was chosen ({picked[0].keyword if picked else cmi_pages[0]}), so the extra picks were ignored "
             f"and the report is used alone: dropped market(s) {markets}, dropped link(s) {urls}")
         markets, urls = [], []
     run.step2_timer = None      # a retry must not show the failed attempt's stages
     # record the editor's picks before any work starts, so a page reload mid-Step-2 can restore them
     run.picked_markets = markets
     run.picked_report_ids = [c.news_id for c in picked]
-    run.picked_urls = urls
+    run.picked_urls = urls + cmi_pages
     if config.CMI_CHAIN_V2:
-        return _step2_v2(run, picked, urls, markets=markets, url_markets=req.url_markets or {})
+        return _step2_v2(run, picked, urls, markets=markets, url_markets=req.url_markets or {}, cmi_pages=cmi_pages)
     if not picked:
         raise HTTPException(400, "No report selected — confirm a market first.")
     chosen = picked[0]

@@ -164,6 +164,7 @@ directly in the blog.
 the blog topic.
 - Tier 3 - Shared driver or end-use match: the market is a different one, but it is driven by the same underlying \
 demand driver, regulation or end-use industry as the blog topic.
+A report whose market is exactly the one the blog is about is Tier 1. \
 Place every report in tier 1, 2 or 3, except tier 0, used ONLY when the report's market has no real tie to the \
 blog topic — a report that merely shares a word with the topic is 0. Judge by what the report's market IS, not by \
 the words in its name.

@@ -995,6 +995,7 @@ const MAX_REPORT_URLS = 6;
 // Non-empty trimmed own links — exactly what gets sent to /step2 as report_urls.
 function step1PickedUrls() {
   if (state.run.pickedCmi) return [];      // a CMI report is used on its own: pasted links are not used with it
+  // A pasted link on CMI's own site is sent like any other; the backend treats it as the CMI report (figures not adjusted).
   return (state.run.reportUrls || []).map((u) => String(u || "").trim()).filter(Boolean);
 }
 

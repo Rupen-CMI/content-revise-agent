@@ -12,14 +12,13 @@ of passing by accident.
 import difflib
 import re
 from io import BytesIO
-from urllib.parse import urlparse
 
 import docx
 from docx.oxml.ns import qn
 
 import checks
 import subheads
-from config import CMI_HOST
+from config import is_cmi_url
 from prompts import SPONSOR_TOKEN
 
 FAQ_HEADING = "Frequently Asked Questions"
@@ -38,7 +37,7 @@ def _ratio(a: str, b: str) -> float:
 
 
 def _is_cmi(url: str) -> bool:
-    return urlparse(url).netloc.lower().endswith(CMI_HOST)
+    return is_cmi_url(url)
 
 
 def read_blocks(raw: bytes, client_urls: dict[str, str] | None = None) -> list[dict]:

@@ -21,6 +21,7 @@ import prompts
 import reports
 import search
 import variance
+from config import is_cmi_url
 from pipeline import _bare_market_names, _market_core
 from pipeline_log import section
 
@@ -203,12 +204,29 @@ def page_market_name(title: str, text: str = "") -> str:
     return ""
 
 
+def check_cmi_url(url: str, market_name: str, logger: logging.Logger) -> dict:
+    """The early look at a pasted link on CMI's own site: it is the CMI report, used as if the editor had picked it
+    (its figures are CMI's own, so nothing is adjusted and the report is linked). A report in the catalog is named; a
+    CMI page outside the catalog must at least be readable."""
+    entry = reports.match_report_url(url)
+    if entry is not None:
+        return {"ok": True, "cmi": True, "title": entry.keyword,
+                "message": f"This is CMI's own report, {entry.keyword}. It will be used as the CMI report: its figures are not adjusted and it is linked in the article."}
+    text = read_page(url, logger)
+    if not text:
+        return {"ok": False, "cmi": True, "title": "", "message": "This CMI page could not be read. Try another link."}
+    return {"ok": True, "cmi": True, "title": text.strip().split("\n", 1)[0][:120],
+            "message": "This is a CMI page that is not in the report list. It will be read as a CMI report: its figures are not adjusted."}
+
+
 def check_url(url: str, market_name: str, logger: logging.Logger) -> dict:
     """Early feedback for a link the editor pasted: can the page be read, and does it look like a report on this market?
     {ok, message, title}. A deterministic look (no model): the market's words, a 'market' word and a figure."""
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         return {"ok": False, "message": "That does not look like a web link. It should start with http:// or https://.", "title": ""}
+    if is_cmi_url(url):
+        return check_cmi_url(url, market_name, logger)
     text = read_page(url, logger)
     if not text:
         return {"ok": False, "message": "The page could not be read (it may be paywalled, blocked or down). Try another link.", "title": ""}
@@ -285,6 +303,10 @@ def find_candidate_pages(
 def page_fact_sheet(market_name: str, url: str, text: str, logger: logging.Logger, today: date | None = None) -> dict:
     """One page read into a verified fact sheet whose figures are already moved by the variance. Empty headline when the
     page does not state the market's own figures; never raises."""
+    if is_cmi_url(url):
+        # A CMI page is read as the CMI report, never as an outside one: its figures are CMI's own and must not be varied.
+        logger.warning(f"[external] {url} is a CMI page; it is not read as an outside report")
+        return facts._empty_fact_sheet()
     outside = {"name": host_of(url), "url": url}
     try:
         raw = llm.chat_json(
@@ -310,6 +332,10 @@ def build_external_sheet(
     Each page is `(url, text)` scoped to market_name, or `(url, text, market)` scoped to that page's own market (the
     market the editor picked that the page was found for)."""
     section(logger, "CALL: FACT SHEET (OUTSIDE REPORTS)")
+    cmi_pages = [p[0] for p in pages if is_cmi_url(p[0])]
+    if cmi_pages:
+        logger.warning(f"[external] CMI page(s) left out of the outside reports (they are CMI's own, never varied): {cmi_pages}")
+        pages = [p for p in pages if not is_cmi_url(p[0])]
 
     def market_of(page) -> str:
         return page[2] if len(page) > 2 and page[2] else market_name
