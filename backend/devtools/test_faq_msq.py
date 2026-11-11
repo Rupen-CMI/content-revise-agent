@@ -127,7 +127,7 @@ check("trim: a sentence carrying a dated quarter is dropped too",
 long_two = ("The answer starts here and then carries on with " + "filler " * 30
             + ". A second sentence runs on with " + "more " * 30 + "words.")
 first = long_two[:long_two.index(". A second") + 1]
-check("trim: an answer over 70 words is cut at the last full sentence within 70 words", trimmer(long_two) == first,
+check("trim: an answer over the word cap is cut at the last full sentence within it", trimmer(long_two) == first,
       str(trimmer(long_two)[:80]))
 check("trim: an answer within the band is left unchanged", trimmer("One sentence only here.") == "One sentence only here.")
 

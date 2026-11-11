@@ -1548,5 +1548,8 @@ TESTS BEFORE ANSWERING
 Return JSON in exactly this shape (the questions list holds every question above, in the same order; "answer" is empty only when the facts above truly cannot answer the question, so it is better dropped):
 {{"faq": [{{"question": "<the question, word for word as given>", "answer": "<1-2 sentences, 40-60 words>"}}, ...]}}"""
 
+# The FAQ answer's word ceiling: the prompt asks for 40 to 60 words, faqs trims to it and checks flags past it.
+FAQ_ANSWER_MAX_WORDS = 60
+
 FAQ_MSQ_USER = (_FAQ_HEAD + prompt_rules.render(groups=("ANALYSIS",), only=("positive",))
                 + prompt_rules.render(groups=("LANGUAGE",), only=("voice", "grammar", "continuity", "active", "filler", "sentences")) + _FAQ_TAIL)

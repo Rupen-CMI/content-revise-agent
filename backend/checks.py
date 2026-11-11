@@ -5,7 +5,7 @@ from datetime import date
 import sentsplit
 import subheads
 import freshness
-from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
+from prompts import CMI_LINK_PATTERN, FAQ_ANSWER_MAX_WORDS, SPONSOR_TOKEN
 
 # A sentence that gives a view in the voice of a CMI analyst ("A CMI analyst expects...", "An analyst at CMI believes...",
 # "CMI's research team suggests..."). The post carries one or two of them, no more.
@@ -1483,7 +1483,7 @@ def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], plan
         answer = str(qa.get("answer") or "")
         words = len(answer.split())
         sentences = [s for s in sentsplit.split(answer) if s.strip()]
-        if words > 60:
+        if words > FAQ_ANSWER_MAX_WORDS:
             out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} runs {words} words; an MSQ answer is "
                        "40 to 60 words in all")
         if len(sentences) > 2:

@@ -31,7 +31,7 @@ _INTENT_FILTERS = {
     "growth": {"forecast", "cagr"},
     "trends": {"drivers"},
     "drivers": {"drivers"},
-    "technology_impact": set(),
+    "technology_impact": {"drivers", "opportunities"},
     "segments": {"segments"},
     "region": {"regions"},
     "us": {"us"},
@@ -138,7 +138,7 @@ _DATED_RE = re.compile(r"\b(?:january|february|march|april|may|june|july|august|
 
 def _trim_answer(answer: str, logger: logging.Logger) -> str:
     """The length backstop: no sentence carrying a month-and-year date, at most the first two sentences, and when
-    the answer still runs past 70 words, cut at the last full sentence within 70 words."""
+    the answer still runs past prompts.FAQ_ANSWER_MAX_WORDS words, cut at the last full sentence within that many words."""
     sentences = []
     for s in (x.strip() for x in _SENTENCE_SPLIT_RE.split(answer)):
         if not s:
@@ -148,14 +148,14 @@ def _trim_answer(answer: str, logger: logging.Logger) -> str:
             continue
         sentences.append(s)
     kept = sentences[:2]
-    if sum(len(s.split()) for s in kept) > 70:
+    if sum(len(s.split()) for s in kept) > prompts.FAQ_ANSWER_MAX_WORDS:
         n, cut = 0, len(kept)
         for i, s in enumerate(kept):
-            if n + len(s.split()) > 70 and i:
+            if n + len(s.split()) > prompts.FAQ_ANSWER_MAX_WORDS and i:
                 cut = i
                 break
             n += len(s.split())
-        logger.info(f"[faq] the answer was cut to its first {cut} sentence(s) to stay within 70 words")
+        logger.info(f"[faq] the answer was cut to its first {cut} sentence(s) to stay within {prompts.FAQ_ANSWER_MAX_WORDS} words")
         kept = kept[:cut]
     return " ".join(kept)
 
