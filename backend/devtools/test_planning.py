@@ -576,13 +576,67 @@ check("trend groups: a valid grouping passes through untouched", [x["facts"] for
 g, notes = _groups([{"trend": "A", "facts": ["W1", "W2", "W3", "fs.drivers.0"]}, {"trend": "B", "facts": ["fs.drivers.1"]}], kept)
 check("trend groups: at most three facts a trend, a missing third group is added, ungrouped facts are given out",
       len(g) == 3 and all(len(x["facts"]) <= 3 for x in g) and sorted(f for x in g for f in x["facts"]) == sorted(kept), str(g))
-check("trend groups: no trend is left without dated news while another holds two",
-      all(any(f.startswith("W") for f in x["facts"]) for x in g), str(g))
+check("trend groups: a news item is never moved from one trend to another to fill a bare trend (the bare trend stays bare)",
+      g[0]["facts"] == ["W1", "W2", "W3"] and not any(f.startswith("W") for f in g[2]["facts"]), str(g))
 g, _ = _groups([{"trend": "A", "facts": ["W1", "W1", "ghost"]}, {"trend": "B", "facts": ["W1", "W2"]}, {"trend": "C", "facts": []}], ["W1", "W2", "fs.drivers.0"])
 check("trend groups: unknown ids and a fact in two groups are dropped (one fact, one trend)",
       sum(x["facts"].count("W1") for x in g) == 1 and not any("ghost" in x["facts"] for x in g), str(g))
 g, _ = _groups(None, [])
 check("trend groups: no groups and no facts still gives three empty trends", len(g) == 3 and all(x["facts"] == [] for x in g))
+class _TextInp:
+    items = {
+        "W1": {"kind": "evidence", "text": "Acme launched adaptive testing software for online assessment platforms."},
+        "W2": {"kind": "evidence", "text": "Beta Group raised funding to expand cloud proctoring services for universities."},
+        "W3": {"kind": "evidence", "text": "A hospital network adopted adaptive testing for nursing assessment."},
+        "W4": {"kind": "evidence", "text": "Gamma Labs opened a data centre."},
+    }
+
+
+g = planning._trend_groups(
+    [{"trend": "Adaptive testing reshapes online assessment platforms", "facts": ["W1"]},
+     {"trend": "Funding for cloud proctoring services at universities", "facts": ["W2"]}, {"trend": "Something else entirely", "facts": []}],
+    ["W1", "W2", "W3"], _TextInp, lambda m: None)
+check("trend groups: a leftover fact goes to the trend whose name and facts it resembles, not the one with the fewest news items",
+      "W3" in g[0]["facts"] and g[2]["facts"] == [], str(g))
+g = planning._trend_groups(
+    [{"trend": "A", "facts": ["W1", "W2"]}, {"trend": "B", "facts": ["W3"]}, {"trend": "C", "facts": []}], ["W1", "W2", "W3"], _TextInp, lambda m: None)
+check("trend groups: a bare trend stays bare even while another holds two news items",
+      [x["facts"] for x in g] == [["W1", "W2"], ["W3"], []], str(g))
+g = planning._trend_groups(
+    [{"trend": "A", "facts": ["W1"]}, {"trend": "B", "facts": ["W2"]}, {"trend": "C", "facts": []}], ["W1", "W2", "W4"], _TextInp, lambda m: None)
+check("trend groups: a leftover that resembles no trend goes to the one with the fewest facts",
+      g[2]["facts"] == ["W4"], str(g))
+
+# ------------------------------------------------------------------ one event is one fact
+def news(nid, fact, source, detail=""):
+    return {"id": nid, "fact": fact, "detail": detail, "source": source, "tags": ["trends"]}
+
+
+ev_a = news("W1", "Apertera Systems launched a screening tool for hospitals.", "Health Wire, 2026-10", "Short.")
+ev_b = news("W2", "Apertera announced its new screening tool for hospital buyers.", "Trade Daily, 2026-10", "It covers sixty hospitals across three states and was priced at launch.")
+ev_c = news("W3", "Apertera Systems named a new chief executive.", "Health Wire, 2026-09")
+ev_d = news("W4", "Borealis Ltd raised funding for diagnostics.", "Health Wire, 2026-10")
+check("same event: the same organisation in the same month is one event", planning.same_event(
+    {**ev_a, "text": ev_a["fact"]}, {**ev_b, "text": ev_b["fact"]}))
+check("same event: another month, another organisation, or no month is not",
+      not planning.same_event({**ev_a, "text": ev_a["fact"]}, {**ev_c, "text": ev_c["fact"]})
+      and not planning.same_event({**ev_a, "text": ev_a["fact"]}, {**ev_d, "text": ev_d["fact"]})
+      and not planning.same_event({**ev_a, "text": ev_a["fact"], "source": "Health Wire"}, {**ev_b, "text": ev_b["fact"], "source": "Trade Daily"}))
+kept_ev = planning.dedupe_events([ev_a, ev_b, ev_c, ev_d], LOG)
+check("same event: of two items on one event only one is kept, the fuller one, and the rest are untouched, in order",
+      [e["id"] for e in kept_ev] == ["W2", "W3", "W4"], str([e["id"] for e in kept_ev]))
+check("same event: the publisher's own name is not an organisation of the event",
+      len(planning.dedupe_events([news("W5", "Health Wire reported a pilot of cloud billing.", "Health Wire, 2026-10"),
+                                  news("W6", "Health Wire interviewed a clinic owner about staffing.", "Health Wire, 2026-10")], LOG)) == 2)
+inp_ev = planning.build_inputs(MARKET, facts_mod._empty_fact_sheet(), [ev_a, ev_b, ev_c], {}, {}, 80)
+check("same event: build_inputs hands the planner one item per event", sorted(i for i in inp_ev.items if i.startswith("W")) == ["W2", "W3"], str(list(inp_ev.items)))
+cl = planning.topic_clusters({
+    "W1": {"kind": "evidence", "text": ev_a["fact"], "detail": "", "source": ev_a["source"]},
+    "W2": {"kind": "evidence", "text": ev_b["fact"], "detail": "", "source": ev_b["source"]},
+    "W3": {"kind": "evidence", "text": ev_c["fact"], "detail": "", "source": ev_c["source"]}})
+check("same event: topic_clusters puts the two reports of one event in one cluster, so a plan states it once",
+      cl["W1"] == cl["W2"] != cl["W3"], str(cl))
+
 tplan = planning.validate_plan(good_plan(), make_inputs(), LOG)
 tsec = next(s for s in tplan["sections"] if s["sop"] == "trends")
 check("trend groups: validate_plan always returns three groups and the section's facts are their union",

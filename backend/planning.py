@@ -198,11 +198,12 @@ class PlanInputs:
 
 def build_inputs(
     market_name: str, fs: dict, evidence_items: list[dict], demand_result: dict, publisher_result: dict, sponsor_words: int,
-    clients: list | tuple = (),
+    clients: list | tuple = (), logger: logging.Logger | None = None,
 ) -> PlanInputs:
     """Assemble the planner's world: every fact the plan may cite (report facts and selected news evidence) with the
     sections it may sit in, the answerable questions, the keyword pools and the guest points."""
     items: dict[str, dict] = {}
+    evidence_items = dedupe_events([e for e in evidence_items if e.get("group") != "article"], logger)
     for f in facts.flatten_fact_sheet(fs):
         sections = set(_FACT_SECTIONS.get(f["kind"], set()))
         items[f["id"]] = {**f, "tags": [], "detail": "", "sections": sections}
@@ -333,6 +334,68 @@ def _topic_stems(text: str) -> frozenset[str]:
                      if len(w) > 3 and w not in _TOPIC_STOP and not w.isdigit())
 
 
+_MONTH_RE = re.compile(r",\s*(\d{4}-\d{2})\s*$")
+_NAME_RE = re.compile(r"\b[A-Z][A-Za-z0-9&'-]*(?:\s+[A-Z][A-Za-z0-9&'-]*)*")
+_NAME_STOP = frozenset({
+    "the", "a", "an", "in", "on", "at", "by", "for", "with", "its", "this", "that", "these", "those", "it", "they", "their", "as", "of",
+    "and", "to", "from", "after", "new", "u.s.", "us", "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "united", "states", "north", "america", "europe", "asia", "market", "markets", "global", "cmi",
+})
+
+
+def _event_month(item: dict) -> str:
+    """The month (YYYY-MM) of a news item, from its source label ('Site, 2026-10'); '' when it has none."""
+    m = _MONTH_RE.search(item.get("source") or "")
+    return m.group(1) if m else ""
+
+
+def _organisations(item: dict) -> set[tuple[str, ...]]:
+    """The names an item's fact states (runs of capitalised words, light words and the publisher's own name left out), each as a
+    tuple of lower-cased words."""
+    publisher = {w for w in re.findall(r"[a-z0-9]+", re.sub(_MONTH_RE, "", item.get("source") or "").lower())}
+    names: set[tuple[str, ...]] = set()
+    for m in _NAME_RE.finditer(item.get("text") or ""):
+        words = [w.lower() for w in m.group(0).split()]
+        while words and words[0] in _NAME_STOP:
+            words.pop(0)
+        while words and words[-1] in _NAME_STOP:
+            words.pop()
+        if words and len(" ".join(words)) >= 4 and not all(w in publisher for w in words):
+            names.add(tuple(words))
+    return names
+
+
+def same_event(a: dict, b: dict) -> bool:
+    """Two news items report one event: the same named organisation (one name the start of the other: 'Acme' and 'Acme Corp') and
+    the same month. Two items with no month are never the same event."""
+    month = _event_month(a)
+    if not month or month != _event_month(b):
+        return False
+    return any(x[:len(y)] == y or y[:len(x)] == x for x in _organisations(a) for y in _organisations(b))
+
+
+def dedupe_events(items: list[dict], logger: logging.Logger | None = None) -> list[dict]:
+    """The news items with each event kept once: of two items that are the same event, the one with more words (fact and detail)
+    stays, on a tie the earlier. `items` are the selected evidence ({id, fact, detail, source, ...}); the originals are not changed."""
+    log = logger or logging.getLogger(__name__)
+    rows = [{**e, "text": e.get("fact", "")} for e in items]
+    keep: list[int] = []
+    for i, e in enumerate(rows):
+        dup = next((k for k in keep if same_event(rows[k], e)), None)
+        if dup is None:
+            keep.append(i)
+            continue
+        size = lambda r: len(f"{r.get('fact', '')} {r.get('detail', '')}".split())  # noqa: E731
+        if size(e) > size(rows[dup]):
+            keep[keep.index(dup)] = i
+            dropped, kept_id = rows[dup]["id"], e["id"]
+        else:
+            dropped, kept_id = e["id"], rows[dup]["id"]
+        log.info(f"[plan] news item {dropped} reports the same event as {kept_id} (same organisation, same month) and is left out")
+    return [items[i] for i in sorted(keep)]
+
+
 def topic_clusters(items: dict[str, dict]) -> dict[str, int]:
     """Cluster id per fact id for the facts that can make a trend or evidence point (evidence, drivers, opportunities, U.S.
     statements): two facts are one cluster when their content words overlap by at least half of the shorter one's, or
@@ -356,7 +419,7 @@ def topic_clusters(items: dict[str, dict]) -> dict[str, int]:
             small = min(len(stems[a]), len(stems[b]))
             same_text = small >= _TOPIC_MIN_STEMS and len(shared) / small >= _TOPIC_SIMILARITY
             same_figure = bool(figures[a] & figures[b]) and len(shared) >= 2
-            if same_text or same_figure:
+            if same_text or same_figure or (items[a]["kind"] == items[b]["kind"] == "evidence" and same_event(items[a], items[b])):
                 parent[find(a)] = find(b)
     roots: dict[str, int] = {}
     return {i: roots.setdefault(find(i), len(roots)) for i in ids}
@@ -454,9 +517,10 @@ _TREND_COUNT, _TREND_FACTS_MAX = 3, 3
 
 def _trend_groups(raw_groups, kept: list[str], inp: PlanInputs, repair) -> list[dict]:
     """Three trends, each with its own facts. Starts from the planner's groups (only facts the trends section kept, none
-    twice, at most three a trend), hands every kept fact the planner left ungrouped to the trend that needs it most, then
-    makes sure no trend lacks dated news evidence while another holds two. Returns exactly three {trend, facts} groups;
-    a trend with no fact at all is possible when the section has too few (the writer then reasons from the section's point)."""
+    twice, at most three a trend) and hands every kept fact the planner left ungrouped to the trend it resembles most (the
+    words it shares with the trend's name and facts; on a tie, the trend with the fewest facts). A news item is never moved
+    from one trend to another to fill a bare one: a trend with no fact stays bare, and the writer reasons from the
+    section's point. Returns exactly three {trend, facts} groups."""
     for fid in [f for f in kept if _is_us_fact(inp.items[f])]:
         repair(f"trends: fact {fid} is a U.S. fact; it belongs to the U.S. section and to no trend")
     kept = [f for f in kept if not _is_us_fact(inp.items[f])]
@@ -477,24 +541,19 @@ def _trend_groups(raw_groups, kept: list[str], inp: PlanInputs, repair) -> list[
         groups += [{"trend": "", "facts": []} for _ in range(_TREND_COUNT - len(groups))]
     is_news = lambda fid: inp.items[fid]["kind"] == "evidence"  # noqa: E731
     leftover = [f for f in kept if f not in seen]
-    # news evidence first, to the trend with the fewest news items; then everything else to the smallest group
-    for fid in sorted(leftover, key=lambda f: not is_news(f)):
+
+    def likeness(fid: str, g: dict) -> int:
+        stems = _topic_stems(inp.items[fid].get("text", ""))
+        return 2 * len(stems & _topic_stems(g["trend"])) + len(stems & _topic_stems(" ".join(inp.items[f].get("text", "") for f in g["facts"])))
+
+    for fid in sorted(leftover, key=lambda f: not is_news(f)):       # news first: it is the scarcer kind
         pool = [g for g in groups if len(g["facts"]) < _TREND_FACTS_MAX]
         if not pool:
             repair(f"trends: fact {fid} dropped (at most {_TREND_FACTS_MAX} per trend)")
             continue
-        key = (lambda g: (sum(is_news(f) for f in g["facts"]), len(g["facts"]))) if is_news(fid) else (lambda g: len(g["facts"]))
-        min(pool, key=key)["facts"].append(fid)
-        repair(f"trends: fact {fid} was not in any trend group and was given to one")
-    for _ in range(_TREND_COUNT):       # no trend without dated news while another holds two
-        bare = next((g for g in groups if not any(is_news(f) for f in g["facts"])), None)
-        donor = next((g for g in groups if sum(is_news(f) for f in g["facts"]) >= 2), None)
-        if bare is None or donor is None or bare is donor or len(bare["facts"]) >= _TREND_FACTS_MAX:
-            break
-        moved = [f for f in donor["facts"] if is_news(f)][-1]
-        donor["facts"].remove(moved)
-        bare["facts"].append(moved)
-        repair(f"trends: news item {moved} moved to a trend that had none")
+        best = max(pool, key=lambda g: (likeness(fid, g), -len(g["facts"])))
+        best["facts"].append(fid)
+        repair(f"trends: fact {fid} was not in any trend group and was given to the trend it resembles most ({best['trend'] or 'unnamed'!r})")
     return groups
 
 
