@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import facts as facts_mod  # noqa: E402
 import llm  # noqa: E402
 import planning  # noqa: E402
 import prompts  # noqa: E402
@@ -282,15 +283,17 @@ p = plan_of(raw)
 check("facts: a split's category list is stated once, in the segmentation section only (one piece of evidence, one place)",
       "fs.segments.0" in S(p, "segmentation")["facts"] and "fs.segments.0" not in S(p, "subsegment")["facts"],
       str((S(p, "segmentation")["facts"], S(p, "subsegment")["facts"])))
-every = [f for sec in p["sections"] for f in sec["facts"]]
+# (the U.S. section is the one place a report fact may repeat: with thin U.S. evidence it borrows the report's own facts)
+every = [f for sec in p["sections"] if sec["sop"] != "country_us" for f in sec["facts"]]
 check("facts: no fact id appears in two sections of the plan", len(every) == len(set(every)), str([f for f in set(every) if every.count(f) > 1]))
 
 raw = good_plan()
 raw["sections"][5]["facts"] = []
 raw["sections"][4]["facts"] = []
 p = plan_of(raw)
-check("lengths: a section without facts is short; the U.S. section is handed every U.S. fact there is",
-      S(p, "key_players")["length"] == "short" and S(p, "country_us")["facts"] == ["fs.us.0"] and S(p, "country_us")["length"] == "normal")
+check("lengths: a section without facts is short; the U.S. section is handed every U.S. fact there is, then the report's own (one U.S. fact is thin)",
+      S(p, "key_players")["length"] == "short" and S(p, "country_us")["facts"][0] == "fs.us.0" and S(p, "country_us")["length"] == "us_from_report",
+      str((S(p, "country_us")["facts"], S(p, "country_us")["length"])))
 raw = good_plan()
 raw["sections"][4]["facts"] = ["fs.regions.leader"]
 inp = make_inputs()
@@ -303,13 +306,92 @@ raw["sections"][5]["facts"] = ["fs.players", "W1"]
 raw["sections"][1]["facts"] = ["fs.drivers.0", "fs.restraints.0"]
 check("lengths: ... normal once a news detail backs a company", S(plan_of(raw), "key_players")["length"] == "normal")
 inp = make_inputs()
-del inp.items["fs.us.0"]
+for fid in [f for f, it in inp.items.items() if it["kind"] in ("us", "drivers", "opportunities", "segments")]:
+    del inp.items[fid]
 inp.longtails = [lt for lt in inp.longtails if lt["fact"] != "fs.us.0"]
-check("lengths: a U.S. section with no U.S. fact at all is flagged for the editor, never filled with another region",
+check("lengths: a U.S. section with no U.S. fact and no report fact at all is flagged for the editor, never filled with another region",
       S(plan_of(raw, inp), "country_us")["length"] == "us_missing")
 check("facts: a regional fact cannot sit in the U.S. section", "country_us" not in planning._FACT_SECTIONS["regions"])
 check("facts: general trend evidence cannot sit in the U.S. section",
       "country_us" not in planning._EVIDENCE_TAG_SECTIONS["trends"] and "country_us" not in planning._EVIDENCE_TAG_SECTIONS["context"])
+
+# ------------------------------------------------------------------ the U.S. section: enough U.S. facts, thin ones, none
+def us_inputs(n_us: int, with_report_facts: bool = True) -> planning.PlanInputs:
+    """make_inputs() with exactly n_us U.S. facts (fs.us.0 and an evidence item tagged us), and optionally no report facts of the
+    kinds the thin-evidence fallback draws on."""
+    inp = make_inputs()
+    for fid in ("fs.us.0", "fs.regions.leader"):
+        inp.items.pop(fid, None)
+    inp.longtails = [lt for lt in inp.longtails if lt["fact"] in inp.items]
+    us_items = [item("fs.us.0", "us", "A review of widget exports opened in the U.S.", {"country_us"}),
+                item("W3", "evidence", "A U.S. agency funded a widget pilot.", {"country_us"}, tags=["us"], source="US News")]
+    for it in us_items[:n_us]:
+        inp.items[it["id"]] = it
+    if not with_report_facts:
+        for fid in [f for f, it in inp.items.items() if it["kind"] in ("drivers", "opportunities", "segments")]:
+            del inp.items[fid]
+    return inp
+
+
+def us_plan(n_us, with_report_facts=True, trends_facts=("fs.drivers.0", "W1")):
+    raw = good_plan()
+    raw["sections"][1]["facts"] = list(trends_facts)
+    raw["sections"][4]["facts"] = []
+    return plan_of(raw, us_inputs(n_us, with_report_facts))
+
+
+p = us_plan(2)
+check("U.S. enough: with two U.S. facts the section rests on them alone, as written before",
+      S(p, "country_us")["facts"] == ["fs.us.0", "W3"] and S(p, "country_us")["length"] == "normal" and S(p, "country_us")["us_source"] == "news",
+      str((S(p, "country_us")["facts"], S(p, "country_us")["length"])))
+every = [f for sec in p["sections"] for f in sec["facts"]]
+check("U.S. enough: no fact is stated in two sections", len(every) == len(set(every)), str([f for f in set(every) if every.count(f) > 1]))
+
+p = us_plan(1)
+us = S(p, "country_us")
+check("U.S. thin (one fact): the section is written from the report's own facts, its U.S. statement first",
+      us["length"] == "us_from_report" and us["us_source"] == "report" and us["facts"][0] == "fs.us.0" and "fs.drivers.0" in us["facts"],
+      str((us["facts"], us["length"])))
+check("U.S. thin: the report's facts follow in kind order (us, drivers, opportunities, segments) up to the section cap",
+      us["facts"] == ["fs.us.0", "fs.drivers.0", "fs.opportunities.0"] and len(us["facts"]) <= planning._FACTS_MAX["country_us"],
+      str(us["facts"]))
+check("U.S. thin: a fact borrowed by the U.S. section stays where it was (trends keep their driver)",
+      "fs.drivers.0" in S(p, "trends")["facts"], str(S(p, "trends")["facts"]))
+check("U.S. thin: the plan says so in its repairs", any("fewer than 2 U.S. facts exist" in r for r in p["repairs"]), str(p["repairs"]))
+check("U.S. thin: the budget stays the section's own (no editor-note size)", S(p, "country_us")["words"] >= 100, str(S(p, "country_us")["words"]))
+
+p = us_plan(0)
+check("U.S. none: also written from the report's own facts, no editor note",
+      S(p, "country_us")["length"] == "us_from_report" and S(p, "country_us")["facts"][0] == "fs.drivers.0", str(S(p, "country_us")["facts"]))
+
+p = us_plan(0, with_report_facts=False)
+check("U.S. none and no report fact: the editor-note mode, with a note-sized budget",
+      S(p, "country_us")["length"] == "us_missing" and S(p, "country_us")["words"] <= 30, str((S(p, "country_us")["length"], S(p, "country_us")["words"])))
+
+# evidence tagged us always goes to the U.S. section and never to a trend
+inp = us_inputs(2)
+raw = good_plan()
+raw["sections"][1]["facts"] = ["fs.drivers.0", "W1", "W3"]
+raw["sections"][1]["trend_groups"] = [{"trend": "a", "facts": ["fs.drivers.0"]}, {"trend": "b", "facts": ["W1"]}, {"trend": "c", "facts": ["W3"]}]
+raw["sections"][4]["facts"] = ["fs.us.0"]
+p = plan_of(raw, inp)
+check("U.S. tag: evidence tagged us is dropped from the trends (and their groups) and lands in the U.S. section",
+      "W3" not in S(p, "trends")["facts"] and all("W3" not in g["facts"] for g in S(p, "trends")["trend_groups"])
+      and "W3" in S(p, "country_us")["facts"], str((S(p, "trends")["facts"], S(p, "country_us")["facts"])))
+check("U.S. tag: the skip is logged", any("W3" in r and "U.S." in r for r in p["repairs"]), str(p["repairs"]))
+
+built = planning.build_inputs(
+    MARKET, {**facts_mod._empty_fact_sheet(), "us": [{"id": "fs.us.0", "text": "A U.S. statement.", "historical": False}]},
+    [{"id": "W9", "fact": "A U.S. firm expanded.", "tags": ["us", "trends"], "source": "S"},
+     {"id": "W8", "fact": "A firm launched.", "tags": ["trends"], "source": "S"}],
+    {}, {}, 80)
+check("U.S. tag: build_inputs lets evidence tagged us sit in the U.S. section only, however else it was tagged",
+      built.items["W9"]["sections"] == {"country_us"} and "country_us" not in built.items["W8"]["sections"], str(built.items["W9"]["sections"]))
+check("U.S. tag: has_us_facts is set from the U.S. facts", built.has_us_facts)
+
+# the PLAN prompt carries the rule
+check("U.S. tag: the plan prompt says a U.S.-tagged fact belongs to the U.S. section and to no trend",
+      "belongs to the U.S. section and to no trend" in prompts.PLAN_USER)
 
 # ------------------------------------------------------------------ keywords
 raw = good_plan()

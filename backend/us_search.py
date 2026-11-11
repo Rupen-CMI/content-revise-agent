@@ -21,21 +21,23 @@ _MIN_BEFORE_FALLBACK = 3
 
 def us_news_queries(market_name: str) -> list[str]:
     core = _market_core(market_name)
+    # adoption, policy, company investment and news wording: size-style phrasings ("market growth", "statistics", "market share") bring
+    # back research firms' own report pages, which the search filters drop, and leave no U.S. page
     return [
         f'"{core}" United States',
-        f"{core} U.S. market growth",
         f"{core} U.S. adoption demand",
         f"{core} U.S. federal policy",
         f"{core} U.S. companies investment",
+        f"{core} U.S. expansion announced",
     ]
 
 
 def us_web_queries(market_name: str) -> list[str]:
     core = _market_core(market_name)
     return [
-        f"{core} market United States growth",
-        f"{core} industry United States statistics",
-        f"{core} U.S. market share demand",
+        f"{core} United States adoption policy",
+        f"{core} United States companies investment expansion",
+        f"{core} U.S. regulation demand adoption",
     ]
 
 
@@ -56,11 +58,15 @@ def run_us_search(
                 hits, [market_name], sponsor_hosts, limit=_KEEP * 2, logger=logger, key_players=key_players,
                 max_per_host=config.SEARCH_MAX_PER_HOST, topic_terms=list(topic_terms),
             )
-            return [h for h in kept if names_the_us(h) or h.is_news][:_KEEP]
+            # pages that already name the U.S. take the cap first; a news item that does not yet (its excerpt is fetched
+            # below) only fills what is left, so a pool of unrelated news can never crowd the U.S. pages out
+            named = [h for h in kept if names_the_us(h)]
+            return (named + [h for h in kept if h.is_news and not names_the_us(h)])[:_KEEP]
 
         kept = keep(raw)
-        if len(kept) < _MIN_BEFORE_FALLBACK:
-            logger.info(f"[us-search] only {len(kept)} page(s) from Bing; adding the text-search engines")
+        us_named = sum(1 for h in kept if names_the_us(h))
+        if us_named < _MIN_BEFORE_FALLBACK:
+            logger.info(f"[us-search] only {us_named} page(s) from Bing name the U.S.; adding the text-search engines")
             raw += search.run_text_searches(us_web_queries(market_name)[:2], logger)
             kept = keep(raw)
     except Exception:

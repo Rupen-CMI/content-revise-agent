@@ -42,6 +42,7 @@ _SECTION_WEIGHTS = {"report_context": 130, "trends": 450, "segmentation": 110, "
 _FACTS_FOR_FULL_BUDGET = {"report_context": 5, "trends": 7, "segmentation": 5, "subsegment": 4, "country_us": 4, "key_players": 4}
 _MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
 _SECTION_BOUNDS = {"country_us": (110, 165)}  # the U.S. SOP is 100-200 words; the writer overshoots a budget a little
+_EDITOR_NOTE_WORDS = 25           # a section that is only the editor's note (no U.S. fact and no report fact to write from)
 _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sections run short of their SOP shapes
 
 # Which sections a report fact may sit in; headline figures live in report_context only so each is stated once.
@@ -57,6 +58,22 @@ _EVIDENCE_TAG_SECTIONS = {
     "trends": {"trends", "subsegment"}, "us": {"country_us"}, "players": {"key_players", "trends"},
     "context": {"report_context", "segmentation", "subsegment", "trends", "key_players"},
 }
+
+# The U.S. section rests on at least this many U.S. facts (report statements and evidence tagged "us"). With fewer, it is written
+# from the report's own facts of these kinds instead (its U.S. statements first), and when even those do not exist it is flagged
+# for the editor. A fact of these kinds may then sit in the U.S. section AND in the section that normally holds it.
+_US_MIN_FACTS = 2
+_US_REPORT_KINDS = ("us", "drivers", "opportunities", "segments")
+
+
+def _is_us_fact(item: dict) -> bool:
+    """A U.S. fact: a U.S. statement of the report or an evidence item the search tagged "us"."""
+    return item["kind"] == "us" or "us" in (item.get("tags") or [])
+
+
+def us_fact_ids(plan_facts, items: dict[str, dict]) -> list[str]:
+    """The U.S. facts among these fact ids."""
+    return [f for f in plan_facts if f in items and _is_us_fact(items[f])]
 
 _FALLBACK_HEADINGS = {
     "report_context": "{market} Size and Growth",
@@ -126,6 +143,8 @@ def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, f
         notes.append(f"the intro cannot fit the {INTRO_CAP:.0%} cap at {round(total)} words ({intro_total} words)")
     words = {s: market * eff[s] / sum(eff.values()) for s in ORDER}
     bound = _SECTION_BOUNDS.get("country_us")
+    if lengths.get("country_us") == "us_missing":
+        bound = (_EDITOR_NOTE_WORDS, _EDITOR_NOTE_WORDS)      # the section is one editor note line, not prose
     clamp_note = None
     if bound and words["country_us"] < bound[0]:
         words["country_us"] = bound[0]
@@ -193,12 +212,14 @@ def build_inputs(
         for tag in e.get("tags") or []:
             sections |= _EVIDENCE_TAG_SECTIONS.get(tag, set())
         sections = sections or set(_EVIDENCE_TAG_SECTIONS["context"])
+        if "us" in (e.get("tags") or []):
+            sections = {"country_us"}       # a U.S. finding belongs to the U.S. section and to no trend or other section
         items[e["id"]] = {
             "id": e["id"], "kind": "evidence", "tags": list(e.get("tags") or []), "text": e["fact"], "detail": e.get("detail", ""),
             "source": e.get("source", ""), "historical": False, "sections": sections,
         }
     longtails = [{"id": f"L{i}", **lt} for i, lt in enumerate(demand_result.get("long_tail") or [], 1)]
-    us = any(i["kind"] in ("us",) or ("us" in i["tags"]) for i in items.values())
+    us = any(_is_us_fact(i) for i in items.values())
     return PlanInputs(
         market_name=market_name, intro_angle=publisher_result.get("intro_angle", ""), points=list(publisher_result.get("points") or []),
         questions=list(demand_result.get("questions") or []), items=items, segments=list(fs.get("segments") or []),
@@ -427,6 +448,9 @@ def _trend_groups(raw_groups, kept: list[str], inp: PlanInputs, repair) -> list[
     twice, at most three a trend), hands every kept fact the planner left ungrouped to the trend that needs it most, then
     makes sure no trend lacks dated news evidence while another holds two. Returns exactly three {trend, facts} groups;
     a trend with no fact at all is possible when the section has too few (the writer then reasons from the section's point)."""
+    for fid in [f for f in kept if _is_us_fact(inp.items[f])]:
+        repair(f"trends: fact {fid} is a U.S. fact; it belongs to the U.S. section and to no trend")
+    kept = [f for f in kept if not _is_us_fact(inp.items[f])]
     groups: list[dict] = []
     seen: set[str] = set()
     for g in raw_groups if isinstance(raw_groups, list) else []:
@@ -502,6 +526,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             item = inp.items.get(fid)
             if item is None:
                 repair(f"{sop}: unknown fact id {fid!r} dropped")
+            elif sop != "country_us" and _is_us_fact(item):
+                repair(f"{sop}: fact {fid} is a U.S. fact; it belongs to the U.S. section and to no other and was dropped here")
             elif sop not in item["sections"]:
                 repair(f"{sop}: fact {fid} does not belong in this section and was dropped")
             elif fid in used_facts:
@@ -623,16 +649,38 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     # ---- the U.S. section always receives the U.S. facts that exist, whatever the planner chose to leave out
     us_section = by_sop["country_us"]
     for fid, item in inp.items.items():
+        if not ("country_us" in item["sections"] and _is_us_fact(item)) or fid in us_section["facts"]:
+            continue
         if len(us_section["facts"]) >= _FACTS_MAX["country_us"]:
-            break
-        if ("country_us" in item["sections"] and (item["kind"] == "us" or "us" in item["tags"])
-                and fid not in used_facts and fid not in us_section["facts"]
-                and not (fid in clusters and clusters[fid] in used_topics)):
+            repair(f"country_us: U.S. fact {fid} left out (at most {_FACTS_MAX['country_us']} per section)")
+        elif fid in used_facts:
+            repair(f"country_us: U.S. fact {fid} left out (already used in another section)")
+        elif fid in clusters and clusters[fid] in used_topics:
+            repair(f"country_us: U.S. fact {fid} left out (it makes the same point as {used_topics[clusters[fid]]}, already in the plan)")
+        else:
             us_section["facts"].append(fid)
             used_facts.add(fid)
             if fid in clusters:
                 used_topics[clusters[fid]] = fid
             repair(f"country_us: U.S. fact {fid} was added (the section takes every U.S. fact there is)")
+    # With fewer than _US_MIN_FACTS U.S. facts the section is written from the report's own facts: its U.S. statements first, then
+    # its drivers, opportunities and leading segments. They may also sit in the section that normally holds them (the one place a
+    # fact is stated twice), so they are not marked used.
+    us_section["us_source"] = "news"
+    if len(us_fact_ids(us_section["facts"], inp.items)) < _US_MIN_FACTS:
+        rank = {k: n for n, k in enumerate(_US_REPORT_KINDS)}
+        pool = [f for f, it in inp.items.items()
+                if it["kind"] in rank and f not in us_section["facts"] and not it.get("auto")
+                and (it["kind"] != "segments" or f.endswith(".dominant"))]
+        pool.sort(key=lambda f: (rank[inp.items[f]["kind"]], f in used_facts))
+        extra = pool[:max(0, _FACTS_MAX["country_us"] - len(us_section["facts"]))]
+        if extra:
+            us_section["facts"] += extra
+            us_section["us_source"] = "report"
+            repair(f"country_us: fewer than {_US_MIN_FACTS} U.S. facts exist, so the section is written from the report's own facts "
+                   f"({', '.join(extra)}) framed for the U.S.")
+        elif not us_section["facts"]:
+            repair("country_us: no U.S. fact and no report fact exists; the section is flagged for the editor")
 
     # ---- question headings: 2-3, each an answerable question that can head its section
     used_q: set[str] = set()
@@ -808,10 +856,15 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
         else:
             s["length"] = "normal"
         if s["sop"] == "country_us":
-            # The section is about the United States and nothing else, so only U.S. facts count; with none it is
-            # flagged for the editor instead of being filled with another region's picture.
-            has_us = any(inp.items[f]["kind"] == "us" or "us" in inp.items[f]["tags"] for f in s["facts"])
-            s["length"] = "normal" if has_us else "us_missing"
+            # The section is about the United States and nothing else. With enough U.S. facts it rests on them; with fewer it
+            # is written from the report's own facts, framed for the U.S.; with no fact at all it is flagged for the editor
+            # instead of being filled with another region's picture.
+            if s.get("us_source") == "report":
+                s["length"] = "us_from_report"
+            elif us_fact_ids(s["facts"], inp.items):
+                s["length"] = "normal"
+            else:
+                s["length"] = "us_missing"
     budgets = compute_budgets(
         inp.sponsor_words, {s["sop"]: s["length"] for s in sections},
         {s["sop"]: len([f for f in s["facts"] if f != "fs.players"]) + (1 if "fs.players" in s["facts"] else 0) for s in sections})

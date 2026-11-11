@@ -154,9 +154,10 @@ check("humanized: the SOP rule behind them is checked instead", names.get("2-3 h
 check("humanized: a reworded FAQ question is not a failure", all(
     "planned MSQ" not in r.detail for r in humanized), str([r.detail for r in humanized if "planned MSQ" in r.detail]))
 # the builders pad every section with the same filler sentence, which the repeated-point check rightly flags (it has its own tests)
-_FIXTURE_ONLY = "No point is made twice across sections"
-check("humanized: nothing fails because of the edits", all(v for k, v in names.items() if k != _FIXTURE_ONLY),
-      str([k for k, v in names.items() if not v and k != _FIXTURE_ONLY]))
+# ... and the fixture's plan carries one U.S. fact, so its thin-U.S.-evidence warning is expected (tested in test_checks_v2)
+_FIXTURE_ONLY = ("No point is made twice across sections", checks.V2_US_EVIDENCE_CHECK_NAME)
+check("humanized: nothing fails because of the edits", all(v for k, v in names.items() if k not in _FIXTURE_ONLY),
+      str([k for k, v in names.items() if not v and k not in _FIXTURE_ONLY]))
 default_names = {r.name for r in t.run_v2(t.TITLE, original, faq=t.GOOD_FAQ)}
 check("final screen keeps the plan-identity checks", any(k.startswith("Draft structure matches") for k in default_names))
 

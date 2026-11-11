@@ -198,8 +198,8 @@ def run_client(draft, inp=inp_one):
 
 good = run_client(client_draft())
 for r in good:
-    if r.name == "No point is made twice across sections":
-        continue
+    if r.name in ("No point is made twice across sections", checks.V2_US_EVIDENCE_CHECK_NAME):
+        continue        # the fixture's plan carries one U.S. fact, so its thin-evidence warning is expected (tested in test_checks_v2)
     check(f"client mode, good draft: {r.name}", r.passed, r.detail)
 names = [r.name for r in good]
 check("client mode: the word-for-word placeholder checks are not run", not any(n.startswith("Retained") for n in names), str(names[:6]))

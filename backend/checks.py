@@ -1682,6 +1682,7 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
 # ('remove all these SOPs'): the code that produces them is kept untouched above, the results just no
 # longer surface in the draft's checks list. Re-enable by emptying this set. The names are derived
 # from the same constants that build them inside run_checks_v2, so the strings keep matching there.
+V2_US_EVIDENCE_CHECK_NAME = "U.S. section rests on report facts (thin U.S. evidence): verify (soft)"
 V2_VAGUE_CHECK_NAME = "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)"
 
 V2_DISCONNECTED_CHECKS = frozenset({
@@ -1929,6 +1930,16 @@ def run_checks_v2(
                                not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
+    us_plan = next((p for p in (plan.get("sections") or []) if p.get("sop") == "country_us"), None) if isinstance(plan, dict) else None
+    if us_plan is not None:
+        n_us = len(planning.us_fact_ids(us_plan.get("facts") or [], inp.items))
+        thin = n_us < planning._US_MIN_FACTS
+        detail = ""
+        if thin:
+            detail = (f"{n_us} verified U.S. fact(s): the section is written from the report's own facts, framed for the U.S. Check that it "
+                      "stays on the United States and adds no U.S. figure" if us_plan.get("us_source") == "report"
+                      else f"{n_us} verified U.S. fact(s) and no report fact to write from: the section is an editor note to fill in")
+        results.append(CheckResult(V2_US_EVIDENCE_CHECK_NAME, not thin, detail))
     import content_rules
     us_problems = content_rules.us_only_problems(sections)
     results.append(CheckResult(

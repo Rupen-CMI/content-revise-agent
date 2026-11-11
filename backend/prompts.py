@@ -1394,6 +1394,7 @@ HOW TO PLAN
    4c. Required. The report's main figures are not optional: the market size, forecast and growth rate and the leading and fastest-growing regions go to report_context, every segment split goes to segmentation, and so does the leading category of a split with its stated share, except for the two sub-segments, whose figures go to subsegment. Code adds any of these you leave out, so plan each section's point around them.
    4d. Per section.
    - key_players: name the companies together; give a company a detail only where a fact in the list supplies one, and each detail shows how that company moves the market (launches, partnerships, acquisitions, integrations, expansion), never a recognition given to it or a change in its people.
+   - country_us: a fact tagged us (its suits list is country_us) belongs to the U.S. section and to no trend. Give the section every U.S. fact there is. With fewer than two, code builds the section from the report's own facts, so you plan it from the U.S. facts alone.
    - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category), chosen from different splits in the report facts, by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
 5. Keywords.
    - Secondary: choose 4 to 6 keys from the pool, at most one per section, each in the section where one of its facts makes the keyword fit a sentence the writer would write anyway.
@@ -1467,7 +1468,7 @@ THE MARKET SECTIONS (in this order; each heading is given and is final)
 _WRITE_TAIL = """
 PART C: CHECKLIST AND OUTPUT
 OUTPUT CHECKLIST
-All seven market sections are present in the given order with their given headings. The opening names the market within the first 100 words, carries the report link once where the opening asks for one, and has the placeholder once. Every figure is in a listed fact. No section states a fact that is not listed. Every assigned keyword is in its section, and every section's listed long-tail phrase is used in that section. No fact is stated in two places. Every sentence is complete and follows the LANGUAGE rules.
+All seven market sections are present in the given order with their given headings; a section whose block says to write only the editor line holds that single line under its heading and nothing else. The opening names the market within the first 100 words, carries the report link once where the opening asks for one, and has the placeholder once. Every figure is in a listed fact. No section states a fact that is not listed. Every assigned keyword is in its section, and every section's listed long-tail phrase is used in that section. No fact is stated in two places. Every sentence is complete and follows the LANGUAGE rules.
 
 Return JSON in exactly this shape:
 {{"intro": {{"paragraphs": {intro_shape}}},
