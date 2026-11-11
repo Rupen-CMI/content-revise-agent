@@ -3551,7 +3551,7 @@ def run_finalize(
         check_results = checks.run_checks_v2(
             title, sections, plan, plan_inputs, faq=faq, sponsor_brand_terms=_brand_terms(sponsor),
             sponsor_text=sponsor.text, report_text=report_text, report_name=report.name,
-            selection=selection, hits=hits,
+            selection=selection, hits=hits, report_url=report.url,
         )
     else:
         check_results = run_checks(

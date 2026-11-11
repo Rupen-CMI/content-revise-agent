@@ -62,6 +62,16 @@ CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"
 
 
+def same_url(a: str, b: str) -> bool:
+    """True when two links point at the same page: scheme, 'www.', host case, a port-less host, a fragment and a trailing
+    slash do not matter; the path and the query string do."""
+    def key(url: str) -> tuple[str, str, str]:
+        url = (url or "").strip()
+        u = urlparse(url if "//" in url else "//" + url)
+        return ((u.hostname or "").lower().removeprefix("www.").rstrip("."), u.path.rstrip("/"), u.query)
+    return bool(key(a)[0]) and key(a) == key(b)
+
+
 def is_cmi_url(url: str) -> bool:
     """True when the link (or a bare host) is on CMI's own site: the host, lower-cased and without its port, is the CMI
     host or a subdomain of it. A look-alike such as notcoherentmarketinsights.com is not CMI."""

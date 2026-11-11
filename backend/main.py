@@ -1841,7 +1841,8 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
         restated = bool(run.clients) and config.CLIENT_REWRITE
         parsed = recheck_mod.parse(
             raw, run.title, run.sections, run.faq, "" if restated else run.sponsor.text,
-            client_urls={l["url"]: l["id"] for c in run.clients for l in c.links} if restated else None)
+            client_urls={l["url"]: l["id"] for c in run.clients for l in c.links} if restated else None,
+            report_url=(run.report.url or "") if run.plan_inputs.link_report else "")
     except Exception as e:
         run.logger.error(f"recheck could not read {name}: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(400, "This file could not be read as a Word document (.docx). "
@@ -1850,7 +1851,7 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
         parsed["title"], parsed["sections"], run.plan, run.plan_inputs, faq=parsed["faq"],
         sponsor_brand_terms=pipeline._brand_terms(run.sponsor), sponsor_text=run.sponsor.text,
         report_text=pipeline._report_text(run.report), report_name=run.report.name,
-        selection=run.selection, hits=run.hits, humanized=True,
+        selection=run.selection, hits=run.hits, humanized=True, report_url=run.report.url,
     )
     run.logger.info(f"[recheck] humanized draft {name!r}: "
                     f"{sum(1 for c in check_results if c.passed)}/{len(check_results)} checks pass")

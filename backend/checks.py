@@ -1704,14 +1704,42 @@ V2_DISCONNECTED_CHECKS = frozenset({
 # ===================================================================================================
 
 
+def link_domain_problems(sections: list[dict], report_url: str | None, link_report: bool, client_list: list) -> list[str]:
+    """What is wrong with where the link tokens of the sections would render (pipeline.expand_segments resolves them the same
+    way): a [[CMI_LINK]] must resolve to the report's own URL, and there must be none when no report is linked; a
+    [[CLIENT_LINK]] must resolve to a URL on its own client's domain, never CMI's or another client's. `sections` carry the tokens."""
+    import clients as clients_mod
+    import config
+    import pipeline
+    table = clients_mod.link_table(client_list)
+    owner = {l["id"]: c for c in client_list for l in c.links}
+    out: list[str] = []
+    for s in sections:
+        for p in s["paragraphs"]:
+            for m in pipeline._LINK_TOKEN_RE.finditer(p):
+                url = pipeline._cmi_link_segments(m.group(0), report_url, table)[0][1]
+                if m.group(1) is not None:
+                    if not link_report:
+                        out.append(f"the CMI link {m.group(1)!r} is present although no report is linked")
+                    elif report_url is not None and not (url and config.same_url(url, report_url)):
+                        out.append(f"the CMI link {m.group(1)!r} goes to {url!r}, not the report {report_url!r}")
+                    continue
+                client = owner.get(m.group(2))
+                if client is None:
+                    continue    # an unknown link id renders as plain words; link_problems reports it
+                if not url or config.is_cmi_url(url) or clients_mod.registrable_host(url) != client.host:
+                    out.append(f"the link {m.group(3)!r} of {client.host} goes to {url!r}, not to {client.host}")
+    return out
+
+
 def run_checks_v2(
     title: str, sections: list[dict], plan: dict, inp, faq: list[dict] | None = None,
     sponsor_brand_terms: list[str] = (), sponsor_text: str = "",
     report_text: str = "", report_name: str = "",
     selection: dict | None = None, hits: list | None = None,
-    include_disconnected: bool = False, humanized: bool = False,
+    include_disconnected: bool = False, humanized: bool = False, report_url: str | None = None,
 ) -> list[CheckResult]:
-    """`humanized` is for a draft a person has edited after the run: the checks that only prove the generator
+    """`report_url` is the page the CMI link must render to (the link-domain check skips that half when it is None). `humanized` is for a draft a person has edited after the run: the checks that only prove the generator
     followed its own plan (the plan's title, headings and order, planned FAQ questions, a keyword in its assigned
     section) are replaced by the SOP rules they stand for — 2-3 question headings, every keyword used somewhere —
     because an editor may legitimately change any of those. Every content rule runs unchanged."""
@@ -1799,6 +1827,12 @@ def run_checks_v2(
             "No report is cited (an outside report was used, so no report is named or credited to CMI)",
             not cited, "; ".join(dict.fromkeys(c.lower() for c in cited)),
         ))
+
+    # ---- where each link goes once the tokens are resolved: the report link to the report, each client link to its own client
+    domain_issues = link_domain_problems(
+        token_sections, report_url, getattr(inp, "link_report", True), client_list)
+    results.append(CheckResult("Every link goes to its own page: the report link to the report, each client link to its client",
+                               not domain_issues, "; ".join(domain_issues)))
 
     # ---- the SOP's own rule, whether or not a report is linked: the market's full name is in the first 100 words
     name_at = market_name_offset(sections, sponsor_text, market_name)

@@ -179,6 +179,37 @@ absent = [{"heading": "", "sop": [], "paragraphs": ["Lead-in.", "Nothing about i
 fixed = clients.normalize_tokens(absent, c_one, LOG)
 check("tokens: a link the writer left out stays missing, for the check to report", clients.link_problems(fixed, c_one))
 
+# ------------------------------------------------------------------ every link renders to its own page
+import copy  # noqa: E402
+
+DOMAIN_NAME = "Every link goes to its own page"
+RPT = "https://www.coherentmarketinsights.com/market-insight/zzz-1"
+dom_secs = [{"heading": "", "sop": [], "paragraphs": ["The [[CMI_LINK:Zzz Market]] and [[CLIENT_LINK:L1|research paper help]] grow."]}]
+check("link domains: the report link to the report and the client link to its client is clean",
+      checks.link_domain_problems(dom_secs, RPT, True, c_one) == [], str(checks.link_domain_problems(dom_secs, RPT, True, c_one)))
+check("link domains: a CMI link with no report URL given is not judged", checks.link_domain_problems(dom_secs, None, True, c_one) == [])
+off = checks.link_domain_problems(dom_secs, RPT, False, c_one)
+check("link domains: with link_report off a CMI link is a problem", len(off) == 1 and "no report is linked" in off[0], str(off))
+bad_cmi = copy.deepcopy(c_one)
+bad_cmi[0].links[0]["url"] = "https://www.coherentmarketinsights.com/market-insight/other-2"
+res = checks.link_domain_problems(dom_secs, RPT, True, bad_cmi)
+check("link domains: a client link that resolves to the CMI site is a problem", len(res) == 1 and "aldwych.example" in res[0], str(res))
+bad_host = copy.deepcopy(c_one)
+bad_host[0].links[0]["url"] = "https://brexton.example/x"
+res = checks.link_domain_problems(dom_secs, RPT, True, bad_host)
+check("link domains: a client link that resolves to another client's host is a problem", len(res) == 1, str(res))
+sub_ok = copy.deepcopy(c_one)
+sub_ok[0].links[0]["url"] = "https://shop.aldwych.example/x"
+check("link domains: a subdomain of the client's own domain is fine", checks.link_domain_problems(dom_secs, RPT, True, sub_ok) == [])
+check("link domains: an unknown link id is left to the backlink check", checks.link_domain_problems(
+    [{"heading": "", "sop": [], "paragraphs": ["See [[CLIENT_LINK:L9|nobody]]."]}], RPT, True, c_one) == [])
+with_rpt = checks.run_checks_v2(t.TITLE, dom_secs, t.PLAN, inp_one, report_url=RPT)
+check("link domains: the v2 checks carry the new check", any(r.name.startswith(DOMAIN_NAME) for r in with_rpt))
+bad_inp = dataclasses.replace(inp_one, clients=bad_cmi)
+bad_run = checks.run_checks_v2(t.TITLE, dom_secs, t.PLAN, bad_inp, report_url=RPT)
+check("link domains: the v2 check fails for a client link that resolves to CMI",
+      any(r.name.startswith(DOMAIN_NAME) and not r.passed for r in bad_run))
+
 # ------------------------------------------------------------------ the checks in client mode
 RESTATED = ("Readers who must turn research into finished reports can find [[CLIENT_LINK:L1|research paper help]] in many forms today, "
             "from structure guidance to formatting and revision. ")
