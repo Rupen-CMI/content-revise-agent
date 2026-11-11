@@ -1958,6 +1958,12 @@ def run_checks_v2(
         "No point is made twice across sections",
         not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
 
+    news_items = [{"id": i["id"], "fact": i["text"]} for i in getattr(inp, "items", {}).values() if i.get("kind") == "evidence"]
+    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items) if news_items else []
+    results.append(CheckResult(
+        "Each piece of news evidence is cited in one section and in one trend only",
+        not reuse, "; ".join(reuse[:3]) + (f" (+{len(reuse) - 3} more)" if len(reuse) > 3 else "") if reuse else ""))
+
     # ---- kept: CMI analyst opinion voice, 1-2 labelled statements
     opinions = count_cmi_opinions(paragraphs)
     results.append(CheckResult(

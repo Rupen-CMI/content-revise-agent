@@ -17,6 +17,7 @@ import re
 from datetime import date
 
 import config
+import content_rules
 import llm
 import clients
 import sentsplit
@@ -746,6 +747,37 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
 
 
 
+def strip_repeat_evidence(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
+    """A piece of news evidence is cited in one section and in one trend only (the write prompt says so; a prompt rule alone
+    did not hold). A sentence that cites one already cited earlier in another section, or in another trend block, goes, with
+    the sentences that refer to it, exactly like the other strips; the first citation stays. Found with
+    content_rules.evidence_reuse, the same function the check uses."""
+    if inp is None:
+        return sections
+    items = [{"id": i["id"], "fact": i["text"]} for i in inp.items.values() if i["kind"] == "evidence"]
+    rows = [r for r in content_rules.evidence_reuse(sections, items) if not _holds_link(r["sentence"])]
+    if not rows:
+        return sections
+    flagged = {r["at"] for r in rows}
+    for si, s in enumerate(sections):
+        paragraphs = []
+        for pi, p in enumerate(s["paragraphs"]):
+            lines = []
+            for li, line in enumerate(p.split("\n")):
+                kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
+                gone = {ci for ci in range(len(kept)) if (si, pi, li, ci) in flagged}
+                good = _drop_orphans(kept, gone)
+                if len(good) != len(kept):
+                    logger.info(f"[write] removed {len(kept) - len(good)} sentence(s) that cite news evidence already cited elsewhere from "
+                                f"{s['sop'][0] if s.get('sop') else 'the opening'}: " + " | ".join(x[:110] for x in kept if x not in good))
+                if good:
+                    lines.append(" ".join(good))
+            if lines:
+                paragraphs.append("\n".join(lines))
+        s["paragraphs"] = paragraphs
+    return keep_emptied_sections(sections, logger)
+
+
 def enforce_trend_shape(sections: list[dict], logger: logging.Logger) -> list[dict]:
     """The trends section is a lead-in and three trends of three paragraphs each (the SOP's shape). A model sometimes writes a
     fourth trend, a fourth paragraph or a closing summary: the extras are cut here and logged. A section with fewer than
@@ -912,6 +944,7 @@ def run_write_v2(
         allowed_text = sponsor.text
     sections = strip_untraced_figures(sections, inp, allowed_text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
+    sections = strip_repeat_evidence(sections, inp, logger)
     sections = strip_reader_filler(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
     sections = enforce_trend_shape(sections, logger)

@@ -112,6 +112,56 @@ def repeated_point_problems(sections: list[dict], threshold: float = 0.55, min_s
     return out
 
 
+_EVIDENCE_MIN_SHARED_WORDS = 3
+
+
+def evidence_reuse(sections: list[dict], items: list[dict]) -> list[dict]:
+    """The sentences that cite a piece of news evidence already cited earlier in ANOTHER market section, or (in the trends
+    section) in another trend block. `items` are the news evidence ({id, fact}); a sentence cites one when
+    pipeline._evidence_used_ids finds it there and the sentence shares at least _EVIDENCE_MIN_SHARED_WORDS content words with
+    the fact (a sentence that only names the same company is a different point). The trends' lead-in belongs to the section
+    but to no trend block. `sections` carry the trend sub-headings (subheads) so the blocks can be told apart. Each row is
+    {id, first, where, at: (section, paragraph, line, sentence), sentence}; the first citation is never a row."""
+    import pipeline
+    import subheads
+    facts_of = {it["id"]: _content_stems(it["fact"]) for it in items}
+    cited: dict[str, tuple[str, int | None]] = {}
+    rows: list[dict] = []
+    for si, s in enumerate(sections):
+        if not _is_market(s):
+            continue
+        sop, block = s["sop"][0], None
+        for pi, paragraph in enumerate(s["paragraphs"]):
+            if subheads.is_subhead(paragraph):
+                block = 0 if block is None else block + 1
+                continue
+            for li, line in enumerate(paragraph.split("\n")):
+                for ci, sentence in enumerate(x for x in sentsplit.SPLIT_RE.split(line) if x.strip()):
+                    stems = _content_stems(sentence)
+                    for eid in sorted(pipeline._evidence_used_ids(sentence, items)):
+                        if len(stems & facts_of[eid]) < _EVIDENCE_MIN_SHARED_WORDS:
+                            continue
+                        first_sop, first_block = cited.setdefault(eid, (sop, block))
+                        if first_sop == sop == "trends":
+                            if block is None:
+                                continue
+                            if first_block is None:
+                                cited[eid] = (sop, block)
+                                continue
+                            repeated = block != first_block
+                        else:
+                            repeated = first_sop != sop
+                        if repeated:
+                            first = first_sop if first_sop != "trends" else f"trend {first_block + 1}" if first_block is not None else "trends"
+                            where = sop if sop != "trends" else f"trend {block + 1}" if block is not None else "trends"
+                            rows.append({"id": eid, "first": first, "where": where, "at": (si, pi, li, ci), "sentence": sentence})
+    return rows
+
+
+def evidence_reuse_problems(sections: list[dict], items: list[dict]) -> list[str]:
+    return [f"{r['id']} is cited in {r['first']} and again in {r['where']}: {r['sentence'][:80]!r}" for r in evidence_reuse(sections, items)]
+
+
 # ------------------------------------------------------------------------------------------- the text reads whole
 
 # A sentence cut off at an abbreviation, a paragraph that opens on a word pointing at something that is not there, or a
