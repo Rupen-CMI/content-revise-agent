@@ -1,8 +1,8 @@
 """Market-first chain, stage 6: FAQ.
 
 The FAQ is the article's Most Searched Questions: the plan's `faq` list of MSQs, verbatim, each answered by one LLM
-call from the fact sheet and the selected evidence (the same facts the writer had), never from the finished draft. A
-question the sources cannot answer is dropped. Code then runs the deterministic backstops: sentences carrying a
+call from the report's own fact sheet, never from news evidence or the finished draft. A
+question the report's facts cannot answer is dropped. Code then runs the deterministic backstops: sentences carrying a
 figure, year or company detail that no fact assigned to that question supports (and the draft does not state) are
 removed, so no FAQ entry can contradict the article it sits under.
 
@@ -23,22 +23,22 @@ import sentsplit
 from pipeline import _plain
 from pipeline_log import section
 
-# Which fact kinds / evidence tags can answer each MSQ intent (the mirror of demand._answerable_by, at item level,
-# from the same intent table the plan §3.3 fixes).
+# Which fact kinds can answer each MSQ intent (the mirror of demand._answerable_by, at item level,
+# from the same intent table the plan §3.3 fixes). The FAQ answers from the report's own facts only:
+# news evidence (company launches, dated items) never reaches a question, so no answer carries it.
 _INTENT_FILTERS = {
-    "size": ({"size"}, set()),
-    "growth": ({"forecast", "cagr"}, set()),
-    "trends": ({"drivers"}, {"trends"}),
-    "drivers": ({"drivers"}, set()),
-    "technology_impact": (set(), {"trends"}),
-    "segments": ({"segments"}, set()),
-    "region": ({"regions"}, {"us"}),
-    "us": ({"us"}, {"us"}),
-    "players": ({"players"}, {"players"}),
-    "outlook": ({"forecast", "cagr", "opportunities"}, set()),
-    "opportunities": ({"opportunities"}, set()),
+    "size": {"size"},
+    "growth": {"forecast", "cagr"},
+    "trends": {"drivers"},
+    "drivers": {"drivers"},
+    "technology_impact": set(),
+    "segments": {"segments"},
+    "region": {"regions"},
+    "us": {"us"},
+    "players": {"players"},
+    "outlook": {"forecast", "cagr", "opportunities"},
+    "opportunities": {"opportunities"},
 }
-_FACT_LINE_CHARS = 200
 _SENTENCE_SPLIT_RE = sentsplit.SPLIT_RE
 
 _GENERIC_CAPS = frozenset({
@@ -53,16 +53,9 @@ _GENERIC_CAPS = frozenset({
 
 
 def sources_for_question(q: dict, inp: planning.PlanInputs) -> list[dict]:
-    """The fact items (report and evidence) whose kinds/tags can answer this question's intent."""
-    kinds, tags = _INTENT_FILTERS.get(q.get("intent"), (set(), set()))
-    out = []
-    for i in inp.items.values():
-        if i["kind"] == "evidence":
-            if tags & set(i["tags"] or []):
-                out.append(i)
-        elif i["kind"] in kinds:
-            out.append(i)
-    return out
+    """The report fact items whose kind can answer this question's intent; evidence and news never reach a question."""
+    kinds = _INTENT_FILTERS.get(q.get("intent"), set())
+    return [i for i in inp.items.values() if i["kind"] != "evidence" and i["kind"] in kinds]
 
 
 def _question_block(n: int, q: dict, sources: list[dict]) -> str:
@@ -70,14 +63,7 @@ def _question_block(n: int, q: dict, sources: list[dict]) -> str:
     lines = []
     for s in sources:
         note = " [historical: give its year, never present it as current]" if s["historical"] else ""
-        if s["kind"] == "evidence":
-            lines.append(f"- {s['text']} (source: {s['source']}){note}")
-            if s.get("detail"):
-                lines.append(f"    detail: {s['detail'][:_FACT_LINE_CHARS]}")
-        elif s["source"] not in ("CMI report", ""):
-            lines.append(f"- {s['text']} (source: {s['source']}, NOT CMI: name this source in the sentence){note}")
-        else:
-            lines.append(f"- {s['text']}{note}")
+        lines.append(f"- {s['text']}{note}")
     rows.append("\n".join(lines) if lines else "- (none — drop this question)")
     return "\n".join(rows)
 
@@ -144,6 +130,36 @@ def strip_unsupported(q: dict, sources: list[dict], answer: str, draft_text: str
     return " ".join(kept)
 
 
+# A sentence that carries a month-and-year date ("In March 2026, ...") or a dated quarter ("in 2025 Q3") reports a
+# dated outside event — news — never a market-level answer from the report's facts.
+_DATED_RE = re.compile(r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:19|20)\d{2}\b"
+                       r"|\b(?:19|20)\d{2}\s+q[1-4]\b", re.IGNORECASE)
+
+
+def _trim_answer(answer: str, logger: logging.Logger) -> str:
+    """The length backstop: no sentence carrying a month-and-year date, at most the first two sentences, and when
+    the answer still runs past 70 words, cut at the last full sentence within 70 words."""
+    sentences = []
+    for s in (x.strip() for x in _SENTENCE_SPLIT_RE.split(answer)):
+        if not s:
+            continue
+        if _DATED_RE.search(s):
+            logger.info(f"[faq] sentence dropped, it carries a dated example: {s[:110]}")
+            continue
+        sentences.append(s)
+    kept = sentences[:2]
+    if sum(len(s.split()) for s in kept) > 70:
+        n, cut = 0, len(kept)
+        for i, s in enumerate(kept):
+            if n + len(s.split()) > 70 and i:
+                cut = i
+                break
+            n += len(s.split())
+        logger.info(f"[faq] the answer was cut to its first {cut} sentence(s) to stay within 70 words")
+        kept = kept[:cut]
+    return " ".join(kept)
+
+
 def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, logger: logging.Logger) -> list[dict]:
     """The plan's faq questions, verbatim, in plan order. A question that is unanswerable, or whose sources cannot fill
     its answer, is dropped; every kept answer has its unsupported sentences stripped."""
@@ -180,8 +196,9 @@ def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, lo
         # sentence; this runs last so a filler tail is trimmed from a sentence before the sentence is judged
         kept_meta = writer.strip_meta_sentences([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq")) if answer else []
         answer = kept_meta[0]["paragraphs"][0] if kept_meta else ""
+        answer = _trim_answer(answer, logger)
         if not answer:
-            logger.info(f"[faq] {qid}: nothing left after stripping unsupported sentences; question dropped")
+            logger.info(f"[faq] {qid}: nothing left after the stripping and length backstops; question dropped")
             continue
         out.append({"question": q["question"], "answer": answer, "id": qid, "intent": q["intent"]})
     return out

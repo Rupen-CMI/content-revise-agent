@@ -299,15 +299,19 @@ check("offer check: words that only the other client's link brings are not this 
 check("offer check: the same words are still flagged when no other client explains them",
       len(clients.feature_problems(two_draft, [ME], "", "")) == 1, str(clients.feature_problems(two_draft, [ME], "", "")))
 
-# figures from the client's own website are a legitimate source: the number trace allows them, and only them
+# figures from the client's own website brief are not a market source: only the guest paragraph's own figures trace
 with_figs = RESTATED.replace("revision.", "revision in more than 250 languages.")
 no_brief = dataclasses.replace(inp_one, clients=clients.build_clients(art, [0])[0])
 trace_off = t.by_name(run_client(client_draft(with_figs), no_brief), "Every number traces")
 check("client mode: a figure the client's page never gave fails the number trace", not trace_off.passed and "250" in trace_off.detail, trace_off.detail)
 c_site, _ = clients.build_clients(art, [0])
 c_site[0].brief = {"name": "Aldwych Writing Studio", "offer": "Drafting for graduate students in 250+ languages.", "category": "", "anchor_fit": "matches", "anchor_note": "", "market_fit": "close", "bridge": ""}
-trace_on = t.by_name(run_client(client_draft(with_figs), dataclasses.replace(inp_one, clients=c_site)), "Every number traces")
-check("client mode: the same figure, given by the client's page, passes the number trace", trace_on.passed, trace_on.detail)
+trace_offer = t.by_name(run_client(client_draft(with_figs), dataclasses.replace(inp_one, clients=c_site)), "Every number traces")
+check("client mode: a figure that appears only in the client brief offer fails the number trace too",
+      not trace_offer.passed and "250" in trace_offer.detail, trace_offer.detail)
+with_para = RESTATED.replace("revision.", "revision, as in a studio that prepares 120 papers a term.")
+trace_para = t.by_name(run_client(client_draft(with_para), no_brief), "Every number traces")
+check("client mode: a figure from the client paragraph itself traces", trace_para.passed, trace_para.detail)
 
 # ------------------------------------------------------------------ the whole write step with a stub model
 plan = t.PLAN
