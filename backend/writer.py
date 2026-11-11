@@ -864,7 +864,7 @@ def run_write_v2(
     if client_list:
         # the writer restated the client paragraph: every link is one correct token in the opening (the URLs stay in code)
         sections = clients.normalize_tokens(sections, client_list, logger)
-        allowed_text = clients.source_text(client_list)
+        allowed_text = clients.original_text(client_list)
     else:
         # the placement repair runs before the other strips so they all see the token in the shape the checks expect
         sections = repair_sponsor_placement(sections, logger, sponsor.text)

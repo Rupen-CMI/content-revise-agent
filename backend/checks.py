@@ -1462,7 +1462,8 @@ def v2_stray_credit_problems(sections: list[dict], plan: dict, inp) -> list[str]
 
 def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], planned_only: bool = True) -> list[str]:
     """The FAQ is MSQs only (§3.8): every question is the verbatim text of a planned, answerable MSQ from
-    the plan's faq list, and every figure in an answer traces to that question's own facts or the draft."""
+    the plan's faq list, every figure in an answer traces to that question's own facts or the draft, and an
+    answer is one or two sentences of 40 to 60 words."""
     out: list[str] = []
     planned_questions: set[str] = set()
     if inp is not None:
@@ -1479,6 +1480,15 @@ def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], plan
         for p in s["paragraphs"]:
             draft_nums |= _fact_numbers(_sponsor_replacement(p, " "))
     for qa in faq:
+        answer = str(qa.get("answer") or "")
+        words = len(answer.split())
+        sentences = [s for s in sentsplit.split(answer) if s.strip()]
+        if words > 60:
+            out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} runs {words} words; an MSQ answer is "
+                       "40 to 60 words in all")
+        if len(sentences) > 2:
+            out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} holds {len(sentences)} sentences; an MSQ "
+                       "answer is one or two")
         q = next((q for q in inp.questions if q["id"] == qa.get("id")), None)
         if q is None:
             continue
@@ -1729,7 +1739,7 @@ def run_checks_v2(
         # the writer restated the client paragraph and wrote each link as a token: every check below reads the linked words as plain
         # text, and only the client-link checks read the tokens
         sections = clients_mod.plain_sections(sections)
-        sponsor_text = clients_mod.source_text(client_list)         # its figures may appear in the restatement
+        sponsor_text = clients_mod.original_text(client_list)       # the guest paragraph's own figures, never the client website's
         sponsor_brand_terms = []
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)

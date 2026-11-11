@@ -1514,16 +1514,15 @@ Below, every question is followed by the facts that may be used to answer it. No
 
 RULES: ANSWER SHAPE
 1. Answer the question directly in the first words of the answer. If the facts hold no figure, the answer stays qualitative rather than inventing one.
-2. Two to three sentences in all.
+2. One or two sentences, 40 to 60 words in all. No company names, product launches, dated examples or news: state the market-level answer only.
 3. The answer is about the question's own topic. A fact that is only loosely related (another technology, another region, another company's news) is never used to fill an answer: if the facts for a question do not truly answer it, leave its answer empty.
 4. Every answer stands alone. Its first sentence names its subject in full (the market, the segment, the region) and never opens on a pointing word or phrase ("This", "That", "It", "Its", "On that trajectory", "These"); every sentence is complete, with a subject and a finite verb.
 5. A rate or a size is stated by its figure, period and unit. A growth question gets the rate and its period in the first sentence; a question about which region leads names the leading region and its share first, and the fastest-growing region only after it.
 
 RULES: FACTS AND SOURCES
 1. Use only the facts listed for that question. Never write a figure, year, company detail or claim that none of them supports, and never explain what you were not given.
-2. A fact from the CMI report is stated as a plain statement about the market. Never write "according to Coherent Market Insights", "according to CMI", "the report" or the research firm's name in an answer.
-3. A fact whose source is not CMI names that source, and the month when it has one, in the same sentence, and is never credited to CMI. Every sentence that gives one of another source's figures carries the source's name again: "The same source" and "That source" are never written. A fact marked historical carries its year and is never presented as current.
-4. Put each fact in your own words: never reuse a run of eight or more words from a fact, and correct any spelling slip a fact carries.
+2. A fact from the CMI report is stated as a plain statement about the market, and a fact marked historical carries its year and is never presented as current. Never write "according to Coherent Market Insights", "according to CMI", "the report" or the research firm's name in an answer.
+3. Put each fact in your own words: never reuse a run of eight or more words from a fact, and correct any spelling slip a fact carries.
 
 RULES: NO REPEATS
 1. One piece of evidence, one answer. No fact (a figure, a company's announcement, a study, a finding) is used in more than one answer of this FAQ, and two answers never carry the same fact in different words. When two questions could use the same fact, give it to the question it answers best and answer the other from its other facts, or leave it empty.
@@ -1537,7 +1536,7 @@ TESTS BEFORE ANSWERING
 - The answer could stand alone, without the article: someone who reads only the question and this answer learns what they searched for.
 
 Return JSON in exactly this shape (the questions list holds every question above, in the same order; "answer" is empty only when the facts above truly cannot answer the question, so it is better dropped):
-{{"faq": [{{"question": "<the question, word for word as given>", "answer": "<1-3 sentences>"}}, ...]}}"""
+{{"faq": [{{"question": "<the question, word for word as given>", "answer": "<1-2 sentences, 40-60 words>"}}, ...]}}"""
 
 FAQ_MSQ_USER = (_FAQ_HEAD + prompt_rules.render(groups=("ANALYSIS",), only=("positive",))
-                + prompt_rules.render(groups=("LANGUAGE",), only=("voice", "grammar", "continuity", "active", "filler")) + _FAQ_TAIL)
+                + prompt_rules.render(groups=("LANGUAGE",), only=("voice", "grammar", "continuity", "active", "filler", "sentences")) + _FAQ_TAIL)
