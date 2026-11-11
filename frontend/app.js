@@ -618,6 +618,7 @@ async function runStep1() {
     state.run.token = data.token || data.run_token;
     state.run.orient = data.orient;
     state.run.candidates = data.candidates;
+    state.run.warnings = data.warnings || [];
     saveRunPointer();
   } catch (e) {
     showError("Step 1 (identify market)", e);
@@ -1036,7 +1037,7 @@ function suggestedGroups() {
 }
 
 function cmiGroups() {
-  const cands = (state.run.candidates || []).slice(0, 15);
+  const cands = (state.run.candidates || []).slice(0, 25);
   const groups = [1, 2, 3].map((t) => ({ tier: t, items: cands.filter((c) => c.tier === t) }));
   groups.push({ tier: 0, items: cands.filter((c) => ![1, 2, 3].includes(c.tier)) });
   return groups;
@@ -1225,6 +1226,13 @@ function renderStep1Panel() {
       });
       return label;
     }, "No CMI report fits this article closely enough to suggest. Tick an agent-suggested market or add a report link.");
+    // Step 1's own warning (e.g. no CMI report carries the article's own market name), shown above the report list.
+    (state.run.warnings || []).slice().reverse().forEach((w) => {
+      const note = document.createElement("p");
+      note.className = "market-empty";
+      note.textContent = w;
+      document.getElementById("step1-cmi").prepend(note);
+    });
 
     renderStep1UrlInputs();
     updateStep1ConfirmLabel();

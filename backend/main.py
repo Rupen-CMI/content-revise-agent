@@ -1021,6 +1021,7 @@ def step1(req: Step1Request) -> dict:
         claim_future = _start_claim_search(orient, logger)
         candidates = pipeline.run_match_catalog(orient, logger)
         candidates = pipeline.run_tier_catalog(orient, article, candidates, logger)
+        own_note = pipeline.own_market_report_note(orient, candidates, logger)
     except (PipelineError, LLMError) as e:
         # no run token exists yet (it is minted below, after the LLM work), but the calls that did
         # happen were paid for, so report them under their own id
@@ -1033,7 +1034,7 @@ def step1(req: Step1Request) -> dict:
         filename=Path(req.filename).name or "upload.docx",
         article=article, sponsor=sponsor, orient=orient,
         candidates=candidates, logger=logger, log_path=log_path, claim_future=claim_future,
-        clients=client_list, client_notes=list(client_notes),
+        clients=client_list, client_notes=list(client_notes), warnings=[own_note] if own_note else [],
     )
     logger.info(f"STEP 1 DONE — run token {token[:8]}…, {len(candidates)} candidates")
     _emit_progress(logger, token, title, "step1", started)
@@ -1043,6 +1044,7 @@ def step1(req: Step1Request) -> dict:
         "orient": orient,
         "suggested_markets": orient.get("suggested_markets") or {"tier1": [], "tier2": [], "tier3": []},
         "candidates": [_candidate_dict(c) for c in candidates],
+        "warnings": [own_note] if own_note else [],
     }
 
 

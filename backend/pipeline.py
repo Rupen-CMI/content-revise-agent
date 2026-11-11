@@ -193,6 +193,15 @@ def _bare_market_names(names) -> list[str]:
     return out
 
 
+def _own_market_name(orient: dict) -> str:
+    """The market the article itself is about: orient's own_market, else the first candidate guess; '' when neither."""
+    if not isinstance(orient, dict):
+        return ""
+    own = _bare_market_names([orient.get("own_market")]) if orient.get("own_market") else []
+    names = own or _bare_market_names(orient.get("candidate_markets"))
+    return names[0] if names else ""
+
+
 _MAX_SUGGESTED_PER_TIER = 3
 
 
@@ -401,6 +410,12 @@ def run_match_catalog(
         if e.news_id not in seen:
             seen.add(e.news_id)
             candidates.append(e)
+    # The report that names the article's own market exactly always leads, found from the whole catalog so a
+    # per-guess cap or a weak score can never push it out.
+    own = _own_market_name(orient)
+    if own:
+        exact = reports.find_named(own)
+        candidates = exact + [c for c in candidates if c.news_id not in {e.news_id for e in exact}]
     candidates = candidates[:25]
     logger.info("ranked candidates: " + ", ".join(f"{c.news_id}:{c.keyword}" for c in candidates))
 
@@ -412,20 +427,24 @@ def run_match_catalog(
 
 def run_tier_catalog(
     orient: dict, article: SourceArticle, candidates: list[reports.CatalogEntry],
-    logger: logging.Logger, limit: int = 15,
+    logger: logging.Logger, limit: int | None = None,
 ) -> list[reports.CatalogEntry]:
     """CALL: tier the catalog candidates against the blog topic (Tier 1 direct match, Tier 2
     adjacent/structural, Tier 3 shared driver — the definitions in prompts.TIER_CATALOG_USER),
-    with ONE LLM call. Returns the entries that land in tier 1-3 (tier stamped on them via
-    dataclasses.replace), ordered by tier then by their original match rank; tier 0 and any
-    report the model left unanswered are dropped. Best-effort like the long-tail generation:
-    an LLMError or an unusable answer falls back to the first 5 candidates untiered, so the
-    Step 1 UI always has something to show and the run never fails over this step."""
+    with ONE LLM call over the whole candidate list (or its first `limit`). Returns the entries
+    the model put in tier 1-3 (tier stamped on them via dataclasses.replace), ordered by tier then
+    by their original match rank, followed by the reports the model left unanswered with tier=None
+    (they still matched the market by name, so the editor sees them); tier 0 is dropped. The report
+    that names the article's own market exactly is always first and always tier 1, whatever the
+    model answered. Best-effort like the long-tail generation: an LLMError or an unusable answer
+    falls back to the first 5 candidates untiered, so the Step 1 UI always has something to show
+    and the run never fails over this step."""
     section(logger, "CALL: TIER CATALOG")
     if not candidates:
         logger.info("[tier-catalog] no catalog candidates to tier")
         return []
-    cands = list(candidates[:limit])
+    cands = list(candidates[:limit] if limit else candidates)
+    own = _own_market_name(orient)
     numbered = "\n".join(f"{i}. {c.keyword}" for i, c in enumerate(cands, 1))
     try:
         result = llm.chat_json(
@@ -439,7 +458,7 @@ def run_tier_catalog(
         )
     except llm.LLMError:
         logger.warning("[tier-catalog] tiering failed; returning the first 5 candidates untiered", exc_info=True)
-        return [replace(c, tier=None) for c in cands[:5]]
+        return _exact_first([replace(c, tier=None) for c in cands[:5]], cands, own)
 
     # Validate in code, never trust the model's shape: ids outside 1..n and non-integer tiers are
     # dropped, a later duplicate placement for the same report is ignored in favour of the first.
@@ -457,13 +476,38 @@ def run_tier_catalog(
     placed = [(rid, t) for rid, t in placements.items() if t >= 1]
     if not placements:
         logger.warning("[tier-catalog] the model returned no valid placements; returning the first 5 candidates untiered")
-        return [replace(c, tier=None) for c in cands[:5]]
+        return _exact_first([replace(c, tier=None) for c in cands[:5]], cands, own)
+    unanswered = [rid for rid in range(1, len(cands) + 1) if rid not in placements]
     logger.info(f"[tier-catalog] placed {len(placed)}/{len(cands)} report(s) "
-                f"({len(placements) - len(placed)} at tier 0, {len(cands) - len(placements)} unanswered): "
+                f"({len(placements) - len(placed)} at tier 0, {len(unanswered)} unanswered, kept untiered): "
                 + "; ".join(f"tier {t}: {cands[rid - 1].keyword}" for rid, t in placed))
     placed.sort()                 # rank order first…
     placed.sort(key=lambda x: x[1])  # …then a stable sort by tier keeps that rank order within each tier
-    return [replace(cands[rid - 1], tier=t) for rid, t in placed]
+    out = [replace(cands[rid - 1], tier=t) for rid, t in placed] + [replace(cands[rid - 1], tier=None) for rid in unanswered]
+    return _exact_first(out, cands, own)
+
+
+def _exact_first(out: list[reports.CatalogEntry], cands: list[reports.CatalogEntry], own: str) -> list[reports.CatalogEntry]:
+    """Put the report(s) naming the article's own market exactly at the head of `out`, tier 1, taken from `cands` even
+    when the model dropped them (tier 0) or left them out. The rest keeps its order."""
+    if not own:
+        return out
+    exact = [replace(c, tier=1) for c in cands if reports.is_same_market(c.keyword, own)]
+    if not exact:
+        return out
+    ids = {e.news_id for e in exact}
+    return exact + [c for c in out if c.news_id not in ids]
+
+
+def own_market_report_note(orient: dict, candidates: list[reports.CatalogEntry], logger: logging.Logger) -> str:
+    """'' when a catalog report names the article's own market exactly; otherwise a warning (logged, and returned for the
+    Step 1 response) saying so, so the editor does not mistake a broader report for the same market."""
+    own = _own_market_name(orient)
+    if not own or any(reports.is_same_market(c.keyword, own) for c in candidates):
+        return ""
+    note = (f"No CMI report named {own} is in the catalog; broader reports below are related, not the same market.")
+    logger.warning(f"[catalog] {note}")
+    return note
 
 
 def _market_search_queries(market_name: str) -> list[str]:

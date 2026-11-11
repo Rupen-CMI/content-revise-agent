@@ -108,20 +108,21 @@ check("tier catalog: entries ordered by tier then by original rank",
 zero_json = {"tiers": [{"id": 1, "tier": 0}, {"id": 2, "tier": 2}]}
 with fake_chat_json(recorded(zero_json)):
     out = pipeline.run_tier_catalog(ORIENT, ARTICLE, entries(3), LOG)
-check("tier catalog: tier 0 placements are dropped", [(e.keyword, e.tier) for e in out] == [("A2 Market", 2)])
+check("tier catalog: tier 0 placements are dropped, an unanswered report stays untiered after the tiered ones",
+      [(e.keyword, e.tier) for e in out] == [("A2 Market", 2), ("A3 Market", None)], str([(e.keyword, e.tier) for e in out]))
 
 bad_json = {"tiers": [{"id": 0, "tier": 1}, {"id": 4, "tier": 1}, {"id": 3, "tier": 9}, {"id": 2, "tier": "3"},
                       {"id": 1, "tier": 1}, {"tier": 1}, {"id": 3, "tier": "x"}]}
 with fake_chat_json(recorded(bad_json)):
     out = pipeline.run_tier_catalog(ORIENT, ARTICLE, entries(3), LOG)
-check("tier catalog: out-of-range and invalid ids/tiers are ignored",
-      [(e.keyword, e.tier) for e in out] == [("A1 Market", 1), ("A2 Market", 3)], str([(e.keyword, e.tier) for e in out]))
+check("tier catalog: out-of-range and invalid ids/tiers are ignored (the report with no valid answer stays untiered)",
+      [(e.keyword, e.tier) for e in out] == [("A1 Market", 1), ("A2 Market", 3), ("A3 Market", None)], str([(e.keyword, e.tier) for e in out]))
 
 dup_json = {"tiers": [{"id": 2, "tier": 3}, {"id": 2, "tier": 1}]}
 with fake_chat_json(recorded(dup_json)):
     out = pipeline.run_tier_catalog(ORIENT, ARTICLE, entries(3), LOG)
 check("tier catalog: a duplicate id is ignored and only its first placement counts",
-      [(e.keyword, e.tier) for e in out] == [("A2 Market", 3)], str([(e.keyword, e.tier) for e in out]))
+      [(e.keyword, e.tier) for e in out] == [("A2 Market", 3), ("A1 Market", None), ("A3 Market", None)], str([(e.keyword, e.tier) for e in out]))
 
 
 def boom(system_arg, user_arg, **kwargs):
@@ -163,7 +164,12 @@ check("tier catalog: candidates reach the prompt as numbered report-name lines",
 
 with fake_chat_json(capture):
     pipeline.run_tier_catalog(ORIENT, ARTICLE, entries(20), LOG)
-check("tier catalog: only the first `limit` candidates are shown to the model",
+check("tier catalog: the whole candidate list is shown to the model",
+      "15. A15 Market" in capture.user and "20. A20 Market" in capture.user, capture.user[:400])
+
+with fake_chat_json(capture):
+    pipeline.run_tier_catalog(ORIENT, ARTICLE, entries(20), LOG, limit=15)
+check("tier catalog: an explicit `limit` still caps what is shown",
       "15. A15 Market" in capture.user and "16." not in capture.user, capture.user[:400])
 
 
@@ -195,6 +201,40 @@ check("tier catalog: the prompt embeds all three tier definitions verbatim",
           "Tier 2 - Adjacent or structural match: the market is directly upstream, downstream, or a component or input of",
           "Tier 3 - Shared driver or end-use match: the market is a different one, but it is driven by the same underlying",
       )))
+
+# ---------------------------------------------- the report that names the article's own market
+
+OWN = {"topic_summary": "the topic", "bridge_angle": "the angle", "own_market": "Gamma Widget Market"}
+pool = [entry(1, "Widget Market"), entry(2, "Delta Widget Market"), entry(3, "Gamma Widget Market"), entry(4, "Other Market")]
+
+with fake_chat_json(recorded({"tiers": [{"id": 1, "tier": 1}, {"id": 2, "tier": 2}, {"id": 3, "tier": 0}, {"id": 4, "tier": 3}]})):
+    out = pipeline.run_tier_catalog(OWN, ARTICLE, pool, LOG)
+check("own market: the exact-name report is first and tier 1 even when the model gave it tier 0",
+      [(e.keyword, e.tier) for e in out][:2] == [("Gamma Widget Market", 1), ("Widget Market", 1)], str([(e.keyword, e.tier) for e in out]))
+check("own market: the other reports keep tier-then-rank order after it",
+      [e.keyword for e in out] == ["Gamma Widget Market", "Widget Market", "Delta Widget Market", "Other Market"])
+
+with fake_chat_json(recorded({"tiers": [{"id": 3, "tier": 3}]})):
+    out = pipeline.run_tier_catalog(OWN, ARTICLE, pool, LOG)
+check("own market: tier 3 from the model is lifted to tier 1 and leads",
+      (out[0].keyword, out[0].tier) == ("Gamma Widget Market", 1) and len(out) == 4, str([(e.keyword, e.tier) for e in out]))
+
+with fake_chat_json(boom):
+    out = pipeline.run_tier_catalog(OWN, ARTICLE, pool + [entry(5, "Z1 Market"), entry(6, "Z2 Market")], LOG)
+check("own market: the LLM-failure fallback also leads with the exact-name report",
+      out[0].keyword == "Gamma Widget Market" and out[0].tier == 1, str([(e.keyword, e.tier) for e in out]))
+
+GUESS = {"candidate_markets": ["Gamma Widget Market, By Type", "Widget Market"]}
+with fake_chat_json(recorded({"tiers": [{"id": 1, "tier": 1}]})):
+    out = pipeline.run_tier_catalog(GUESS, ARTICLE, pool, LOG)
+check("own market: with no own_market the first candidate guess is the name",
+      out[0].keyword == "Gamma Widget Market" and out[0].tier == 1)
+
+check("own market note: empty when a report names the market",
+      pipeline.own_market_report_note(OWN, [entry(3, "Global Gamma Widgets Market")], LOG) == "")
+note = pipeline.own_market_report_note(OWN, [entry(1, "Widget Market")], LOG)
+check("own market note: says no CMI report is named for the market when only broader ones matched",
+      note == "No CMI report named Gamma Widget Market is in the catalog; broader reports below are related, not the same market.", note)
 
 print()
 if FAILURES:
