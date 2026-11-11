@@ -49,7 +49,8 @@ _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sect
 _FACT_SECTIONS = {
     "size": {"report_context"}, "forecast": {"report_context"}, "cagr": {"report_context"},
     "segments": {"segmentation", "subsegment"}, "regions": {"report_context"}, "us": {"country_us"},
-    "drivers": {"trends", "report_context", "subsegment"},
+    "drivers": {"trends", "report_context", "subsegment", "segmentation"},   # a driver also explains why a category leads
+    "segment_drivers": {"segmentation", "subsegment"},                      # the reason the report gives for one category
     "opportunities": {"conclusion", "trends", "subsegment"},
     "segment_item": {"subsegment", "segmentation"},   # one category's stated share or value; added by code (see validate_plan)
     "players": {"key_players"},
@@ -371,6 +372,14 @@ def _is_region_split(name: str) -> bool:
     return bool(_REGION_SPLIT_RE.search(name or ""))
 
 
+def _segment_reason_ids(inp: "PlanInputs", split: str, name: str | None = None) -> list[str]:
+    """The segment-reason facts (the report's explanation of why a category leads or grows) for one split, or for one of its
+    categories."""
+    return [f for f, it in inp.items.items()
+            if it["kind"] == "segment_drivers" and facts._norm(it.get("split", "")) == facts._norm(split)
+            and (name is None or facts._norm(it.get("name", "")) == facts._norm(name))]
+
+
 def _split_key(name: str) -> str:
     """A segment split's name without the words the fact list wraps around it ("Segmentation type", "By type")."""
     return re.sub(r"^(?:segmentation|segment|split|by)\s+", "", facts._norm(name)).strip()
@@ -603,6 +612,7 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
         if seg.get("dominant"):
             wanted.append(f"{seg['id']}.dominant")
         wanted += [f"{seg['id']}.i{k}" for k, n in enumerate(seg["items"]) if n == v["name"] and n in (seg.get("figures") or {})]
+        wanted += _segment_reason_ids(inp, seg["type"], v["name"])      # why this category leads or grows, as the report says
         for fid in wanted:
             if fid in inp.items and fid not in sub["facts"]:
                 sub["facts"].append(fid)
@@ -627,7 +637,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     for fid in [f for f in sub["facts"] if f in list_ids]:
         sub["facts"].remove(fid)
         repair(f"subsegment: the category list {fid} belongs to the segmentation section and was removed here")
-    for fid in [f for f in seg_sec["facts"] if f in sub["facts"]]:
+    # (the leader line is the exception: each split's leader is named in segmentation whether or not it is also a sub-segment)
+    for fid in [f for f in seg_sec["facts"] if f in sub["facts"] and not f.endswith(".dominant")]:
         seg_sec["facts"].remove(fid)
         repair(f"segmentation: fact {fid} is stated in the sub-segment analysis and was removed here (one piece of evidence, one place)")
     picked_split = {v["split"]: v["name"] for v in valid}
@@ -635,11 +646,12 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     for seg in inp.segments:
         needed.append(seg["id"])
         pick = picked_split.get(seg["type"])
-        if seg.get("dominant") and pick is None:
+        if seg.get("dominant"):
             needed.append(f"{seg['id']}.dominant")
         for k, name in enumerate(seg["items"]):
             if name in (seg.get("figures") or {}) and name != pick:
                 needed.append(f"{seg['id']}.i{k}")
+        needed += [f for f in _segment_reason_ids(inp, seg["type"]) if pick is None or inp.items[f].get("name") != pick]
     for fid in needed:
         if fid in inp.items and "segmentation" in inp.items[fid]["sections"] and fid not in seg_sec["facts"]:
             seg_sec["facts"].append(fid)

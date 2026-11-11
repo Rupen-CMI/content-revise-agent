@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import facts  # noqa: E402
 import llm  # noqa: E402
+import prompts  # noqa: E402
 import search  # noqa: E402
 
 FAILURES: list[str] = []
@@ -189,6 +190,36 @@ flat = facts.flatten_fact_sheet(facts.validate_fact_sheet(good_raw(), PAGE, MARK
 ids = [f["id"] for f in flat]
 check("flatten: every fact has a unique id", len(ids) == len(set(ids)) and "fs.size" in ids and "fs.regions.leader" in ids, str(ids))
 check("flatten: headline text carries the figure and its year", any("561.7" in f["text"] and "2026" in f["text"] for f in flat))
+
+# ------------------------------------------------------------------ the reason a category leads (segment_drivers)
+REASON = "Cloud Based tools lead the type split because remote teams want access to widget services without installing anything"
+PAGE_REASON = PAGE + " " + REASON + "."
+reason_raw = good_raw()
+reason_raw["segment_drivers"] = [
+    {"split": "by type", "name": "cloud based", "text": "Remote teams choose cloud tools because nothing needs installing.", "quote": REASON},
+    {"split": "By Type", "name": "Browser Extension", "text": "Invented reason.", "quote": "A sentence that is not on the page at all"},
+    {"split": "By Colour", "name": "Red", "text": "Remote teams choose cloud tools because nothing needs installing.", "quote": REASON},
+]
+fs_r = facts.validate_fact_sheet(reason_raw, PAGE_REASON, MARKET, LOG, TODAY)
+check("segment reason: segment_drivers is a statement field of the fact sheet", "segment_drivers" in facts.STATEMENT_KEYS and "segment_drivers" in facts._empty_fact_sheet())
+check("segment reason: a quoted reason is kept and an unquoted one is dropped",
+      [e["id"] for e in fs_r["segment_drivers"]] == ["fs.segment_drivers.0", "fs.segment_drivers.1"], str(fs_r["segment_drivers"]))
+check("segment reason: it is tied to the split and category in the report's own names",
+      (fs_r["segment_drivers"][0]["split"], fs_r["segment_drivers"][0]["name"]) == ("By Type", "Cloud Based"), str(fs_r["segment_drivers"][0]))
+check("segment reason: a reason naming no split or category of the report is kept untied",
+      (fs_r["segment_drivers"][1]["split"], fs_r["segment_drivers"][1]["name"]) == ("", ""))
+flat_r = {f["id"]: f for f in facts.flatten_fact_sheet(fs_r)}
+check("segment reason: flatten emits it as its own kind, naming the category it explains",
+      flat_r["fs.segment_drivers.0"]["kind"] == "segment_drivers" and flat_r["fs.segment_drivers.0"]["text"].startswith("Why Cloud Based stands out in By Type:")
+      and flat_r["fs.segment_drivers.0"]["name"] == "Cloud Based" and flat_r["fs.segment_drivers.1"]["text"] == "Remote teams choose cloud tools because nothing needs installing.",
+      str(flat_r["fs.segment_drivers.0"]))
+check("segment reason: the fact-sheet prompt asks for it, quoted like the others",
+      "segment_drivers" in prompts.FACT_SHEET_USER and '"segment_drivers": [{{"split"' in prompts.FACT_SHEET_USER
+      and "never supply a reason yourself" in prompts.FACT_SHEET_USER)
+check("segment reason: a fact sheet from before the field existed still flattens", bool(facts.flatten_fact_sheet({k: v for k, v in fs_r.items() if k != "segment_drivers"})))
+merged = facts.merge_fact_sheets([fs_r, facts.validate_fact_sheet(reason_raw, PAGE_REASON, MARKET, LOG, TODAY)], [{"name": "a", "url": "u", "kind": "cmi"}])
+check("segment reason: merging keeps the tie and does not repeat a reason",
+      len(merged["segment_drivers"]) == 1 and merged["segment_drivers"][0]["name"] == "Cloud Based", str(merged["segment_drivers"]))
 
 # ------------------------------------------------------------------ the figure gap-fill (report first, evidence second)
 def hit(title, snippet, url, source="", date_=None, excerpt=""):

@@ -188,7 +188,7 @@ SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that ma
 — and do not narrow to one product, feature or use case unless that IS the market.
 
 Write search engine queries (plain text, as you'd type into a search engine) to find REAL, RECENT news about this \
-market, covering EVERY one of these 8 categories so the evidence pool ends up varied rather than dominated by one \
+market, covering EVERY one of these 9 categories so the evidence pool ends up varied rather than dominated by one \
 kind of story — more queries means more chances a genuinely good, citable fact turns up in each category, even \
 though most results in any category will get filtered out later and only the best few will ever reach the article:
   HIGHER PRIORITY (write 3 queries for EACH of these 3 categories — 9 queries total):
@@ -208,14 +208,18 @@ though most results in any category will get filtered out later and only the bes
   3. Latest market-related news — general recent news in this space, broad enough to catch whatever a company-named \
   query below would miss, but still anchored to the market itself (same rule as above) rather than a bare generic \
   term that could belong to any industry.
-  LOWER PRIORITY (write 1 query for EACH of these 5 categories — 5 queries total):
+  LOWER PRIORITY (write 1 query for EACH of these 6 categories — 6 queries total):
   4. A new product/service launch.
   5. A new innovation (a novel technology or capability entering the market).
   6. Regulatory or rule changes affecting the market.
   7. Law changes affecting the market (legislative, not regulatory-agency, action).
   8. Key players — built around the specific company names listed above (if any are given) paired with a concrete \
   event word (acquisition, funding, partnership, launch, expansion).
-  That totals 14 queries. Follow these rules exactly, learned from real search failures:
+  9. Segment demand — recent news on a shift in demand or adoption within one of the named segments listed above (why a \
+  category is growing or being chosen): the market's anchor phrase plus ONE segment name from that list, with a plain verb \
+  or noun about demand or adoption. When no segments are listed, ask about demand within the market's main product or \
+  service categories instead.
+  That totals 15 queries. Follow these rules exactly, learned from real search failures:
 - If a query names the market by a multi-word phrase, wrap that phrase in double quotes so the engine requires it \
 as one unit — an unquoted multi-word market name matches anything sharing just one of those words (e.g. unquoted \
 "digital marketing software" also matches a story about a marketing AGENCY that has nothing to do with software). \
@@ -226,7 +230,7 @@ unveils OR service" can return results matching only "service", drifting complet
 - Do not use the word "Market" as part of a quoted phrase (research firms title their own report PR pages "<X> \
 Market ... Trend/Analyst", and including it invites exactly that kind of page back as a "result").
 - Do not use explainer/definition words ("trend", "overview", "adoption drivers", "what is") in the query TEXT \
-itself — they invite glossary and how-to pages, which are not evidence that anything actually happened; the 8 \
+itself — they invite glossary and how-to pages, which are not evidence that anything actually happened; the 9 \
 categories above describe what KIND of real news to look for, not words to put in the query.
 - Do not hardcode a specific year (no "2025", "2026", etc.) into a query — TODAY'S DATE above tells you what "recent" \
 actually means right now, but a search engine treats a literal year in the query as a filter, not a recency hint, so \
@@ -335,7 +339,7 @@ or industry, whoever states it — a research firm, a blog or news page quoting 
 year of the figure, including an earlier one, and for any other firm's own estimate of the same market. CMI's report is \
 the only source of market sizing in the article, and a second figure for the same market would contradict it.
 4. Actually usable in the final draft: ask yourself "would this specific fact, cited by name, strengthen the Market \
-Trends, U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
+Trends, a segment's demand (why a category is growing or being adopted), U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
 would not actually improve a single sentence of that article, do not select it just because it is on-topic. The article carries only favourable developments: reject a result whose finding is a restraint, challenge, risk, loss, decline, penalty, shutdown, dispute or any other setback for the market or its companies, however concrete it is.
 Reject listicles, product promotions, how-to guides, and anything about a different market. It is fine to select fewer \
 than {max_selected}, or none, if few results pass all four tests — do not pad with weak, generic, or off-topic results to reach a \
@@ -349,7 +353,9 @@ infer, or round any number: a figure that does not appear in the result's own te
 Each result above is tagged DATED (with its publish date, already checked to be recent) or UNDATED (an ordinary web \
 page with no verifiable publish date, so nothing about it is known to be current). A fact used for "trends" is a claim \
 about what is CURRENTLY happening in this market, so its source must be DATED — an UNDATED result must never include \
-"trends" in its use_for, no matter how relevant it reads; any DATED result is eligible for "trends" on date alone. An \
+"trends" in its use_for, no matter how relevant it reads; a DATED result is eligible for "trends" only when it shows a direction the market is moving in (a shift in technology, \
+demand, adoption, investment or competition), never on its date alone: an isolated dated event that points to no direction is \
+tagged "players" or "context" instead. An \
 UNDATED result is selected only if it states a concrete, citable fact about THIS market that passes all four tests \
 above (never a definition or explanation), and then only with use_for ["context"], or ["us"] when its finding is \
 specifically about the U.S. market. When in doubt about an UNDATED result, leave it out. The article's U.S. paragraph \
@@ -1203,12 +1209,13 @@ FIELDS
 - segments: how the report splits the market. Each entry names the segment type as the page names it and lists its categories as the page lists them. Leave out a split the page only mentions in passing. Each category is an object with its "name" and, ONLY when the page states a market share or a value for that category, its "figure" as written (for example a percentage or an amount with its unit) and the "quote" that states it. A category with no stated figure has no "figure" and no "quote".
 - dominant: for each split, the category the page says leads it (dominates, holds the largest share, is the biggest or leading one). Give the split's "split" name as in segments, the category "name", and the "quote" that says it. Leave a split out when the page does not say which category leads; never choose one yourself, and never name the fastest-growing category here unless the page also says it is the largest.
 - regions: "leader" is the region the page says holds the largest share or dominates; "fastest" is the region the page says grows fastest. Each gives the region "name", the "basis" the page gives for it (a year, a share, a reason) and the "quote". Either is null when the page does not say.
+- segment_drivers: for a category of a split that the page says leads it, grows or is adopted most, the reason the page gives (the driver, the shift in demand or the adoption behind it), one entry per category. Give the split's "split" name as in segments and the category's "name". Leave a category out when the page gives no reason for it; never supply a reason yourself.
 - us: statements the page makes about the United States specifically (not about North America or the world).
 - drivers: what the page says pushes the market's growth, one entry per distinct driver.
 - opportunities: what the page presents as openings for the market, one entry per distinct opportunity.
 Record only favourable facts. Skip anything the page presents as a restraint, challenge, risk, decline or setback, and word every entry by what helps the market.
 - players: the companies the page names as key or leading players in the market, each written as the page writes the name but without a legal suffix such as Inc., Ltd or LLC.
-For us, drivers and opportunities each entry has "text" (one declarative sentence in your own words, carrying only what the quote says, with whoever acts as its subject and an active verb) and "quote".
+For us, drivers, opportunities and segment_drivers each entry has "text" (one declarative sentence in your own words, carrying only what the quote says, with whoever acts as its subject and an active verb) and "quote".
 
 TESTS BEFORE ANSWERING
 - Every "quote" appears word for word in the page text above.
@@ -1227,6 +1234,7 @@ Return JSON in exactly this shape:
  "us": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "drivers": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "opportunities": [{{"text": "<statement>", "quote": "<sentence>"}}],
+ "segment_drivers": [{{"split": "<segment type>", "name": "<category>", "text": "<the reason, one sentence>", "quote": "<sentence>"}}],
  "players": ["<company>", "..."]}}"""
 
 
@@ -1378,7 +1386,7 @@ THE ARTICLE'S SHAPE (fixed, you do not change it)
 An opening from the guest article's subject, a short transition into the market, then seven market sections in this order, then an FAQ that code builds from the questions you do not use as headings:
 1. report_context: the market's size and where it is heading.
 2. trends: what is changing the market, as three distinct trends, each examined in depth: what is happening, how it changes demand in this market and what it means commercially.
-3. segmentation: how the market is divided.
+3. segmentation: how the market divides and why the leading category in each split leads.
 4. subsegment: two sub-segments from different splits, each looked at in detail.
 5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context.
 6. key_players: who leads the market.
@@ -1387,7 +1395,7 @@ An opening from the guest article's subject, a short transition into the market,
 HOW TO PLAN
 1. Storyline. Give every section a "point": one line stating what a reader learns there. A point states only what that section's assigned facts support; it never adds a claim, a company type or a detail of its own. Read the seven in order. Each must follow from the one before, so the article reads as one explanation with no jump. If a point does not follow, change the point.
 2. Question headings. Pick exactly 2 or 3 questions to be section headings. Choose the ones whose answers your facts make strongest and most specific, each for a different section (the one its entry says it can head). A question heading is answered directly in the first sentences of its section. When a question about the market's size or growth is among them and your facts answer it, that question is the first heading chosen: it heads the section that opens the article with the market's figures.
-3. Other headings. A section that is not headed by a question gets a short topic phrase (about three to eight words) naming what the section covers, phrased for this market: how big the market is and how fast it is growing (the first section); what trend is changing it (the second); how the market divides, one segment split at a time (the third); one sub-segment within a split, looked at closely (the fourth); the leading region, or the United States (the fifth); the companies that lead the market (the sixth); and what it all means and the outlook (the last). The heading names the market in its full form or its short form as well. It names the topic, never the findings: it is not a sentence, not a question, not a label naming the stage of the report it sits in, and it holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
+3. Other headings. A section that is not headed by a question gets a short topic phrase (about three to eight words) naming what the section covers, phrased for this market: how big the market is and how fast it is growing (the first section); what trend is changing it (the second); how the market divides and why the leading category of each split leads, one segment split at a time (the third); one sub-segment within a split, looked at closely (the fourth); the leading region, or the United States (the fifth); the companies that lead the market (the sixth); and what it all means and the outlook (the last). The heading names the market in its full form or its short form as well. It names the topic, never the findings: it is not a sentence, not a question, not a label naming the stage of the report it sits in, and it holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
 4. Facts. Four parts: what to assign, what never repeats, what is required, and what is specific to a section.
    4a. Assigning. Give each section its strongest facts, about three to five, using only the ids listed above. A trends section carries up to nine: name three distinct trends and give each its own entry in "trend_groups", two or three facts each: a report driver or opportunity where one fits, plus at least one dated, named piece of news evidence where the evidence list has one. A news item serves the one trend it illustrates best, and the three trends differ from one another. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. A section with no good fact gets none and stays short: do not stretch a fact to fill it. Report facts are CMI's; news evidence is credited to its source by the writer. A fact marked as historical is presented with its year, never as current.
    4b. No repeats. A fact appears in one section only, so a figure is stated once. This is about each piece of evidence, not about each source: one source article or one report can supply several separate facts, and each of those facts is assigned to exactly one section; the same fact is never assigned to two sections, and two facts that make the same point count as one (assign only the stronger).

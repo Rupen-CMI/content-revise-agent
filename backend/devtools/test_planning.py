@@ -393,6 +393,53 @@ check("U.S. tag: has_us_facts is set from the U.S. facts", built.has_us_facts)
 check("U.S. tag: the plan prompt says a U.S.-tagged fact belongs to the U.S. section and to no trend",
       "belongs to the U.S. section and to no trend" in prompts.PLAN_USER)
 
+# ------------------------------------------------------------------ segmentation and sub-segments explain why a category leads
+def seg_inputs() -> planning.PlanInputs:
+    """Three splits, each with a stated leader; a reason (segment_drivers) for the leader of By Type and of By End User."""
+    inp = make_inputs()
+    inp.segments = [
+        {"id": "fs.segments.0", "type": "By Type", "items": ["Browser Extension", "Cloud Based"], "figures": {}, "dominant": {"name": "Cloud Based", "basis": "stated"}},
+        {"id": "fs.segments.1", "type": "By Application", "items": ["Data Aggregation", "Market Research"], "figures": {}, "dominant": {"name": "Data Aggregation", "basis": "stated"}},
+        {"id": "fs.segments.2", "type": "By End User", "items": ["Retail", "Banking"], "figures": {}, "dominant": {"name": "Retail", "basis": "stated"}},
+    ]
+    for n, (split, leader) in enumerate([("By Type", "Cloud Based"), ("By Application", "Data Aggregation"), ("By End User", "Retail")]):
+        inp.items[f"fs.segments.{n}"] = item(f"fs.segments.{n}", "segments", f"Segmentation {split}: x, y", {"segmentation", "subsegment"})
+        inp.items[f"fs.segments.{n}.dominant"] = item(f"fs.segments.{n}.dominant", "segments", f"Dominant category in {split}: {leader}", {"segmentation", "subsegment"})
+    for fid, split, name in [("fs.segment_drivers.0", "By Type", "Cloud Based"), ("fs.segment_drivers.1", "By End User", "Retail")]:
+        it = item(fid, "segment_drivers", f"Why {name} stands out in {split}: remote teams want it.", planning._FACT_SECTIONS["segment_drivers"])
+        it.update({"split": split, "name": name})
+        inp.items[fid] = it
+    return inp
+
+
+seg_raw = good_plan()
+seg_raw["sections"][2]["facts"] = ["fs.segments.0", "fs.segments.1", "fs.segments.2"]
+seg_raw["sections"][3]["facts"] = []
+seg_raw["sections"][3]["sub_segments"] = [{"split": "By Type", "name": "Cloud Based"}, {"split": "By Application", "name": "Data Aggregation"}]
+p = plan_of(seg_raw, seg_inputs())
+seg_facts, sub_facts = S(p, "segmentation")["facts"], S(p, "subsegment")["facts"]
+check("segment reasons: the reason for a picked sub-segment goes to the sub-segment section", "fs.segment_drivers.0" in sub_facts, str(sub_facts))
+check("segment reasons: ... and is not repeated in segmentation", "fs.segment_drivers.0" not in seg_facts, str(seg_facts))
+check("segment reasons: the reason for the leader of a split no sub-segment covers goes to segmentation",
+      "fs.segment_drivers.1" in seg_facts and "fs.segment_drivers.1" not in sub_facts, str((seg_facts, sub_facts)))
+check("segment reasons: a split's leader line stays in segmentation even when its leader is a picked sub-segment",
+      {"fs.segments.0.dominant", "fs.segments.1.dominant", "fs.segments.2.dominant"} <= set(seg_facts)
+      and {"fs.segments.0.dominant", "fs.segments.1.dominant"} <= set(sub_facts), str((seg_facts, sub_facts)))
+check("segment reasons: a split's category list is still stated in segmentation only",
+      all(f in seg_facts for f in ("fs.segments.0", "fs.segments.1", "fs.segments.2")) and not [f for f in sub_facts if f in ("fs.segments.0", "fs.segments.1", "fs.segments.2")])
+check("segment reasons: drivers may now sit in segmentation and sub-segment as well as trends",
+      {"segmentation", "subsegment", "trends"} <= planning._FACT_SECTIONS["drivers"]
+      and planning._FACT_SECTIONS["segment_drivers"] == {"segmentation", "subsegment"})
+seg_raw["sections"][2]["facts"] += ["fs.drivers.0"]
+seg_raw["sections"][1]["facts"] = ["W1"]
+seg_in = seg_inputs()
+seg_in.items["fs.drivers.0"]["sections"] = set(planning._FACT_SECTIONS["drivers"])      # as build_inputs sets it from the kind
+p = plan_of(seg_raw, seg_in)
+check("segment reasons: a general driver the planner gives the segmentation section is accepted there", "fs.drivers.0" in S(p, "segmentation")["facts"],
+      str(S(p, "segmentation")["facts"]))
+check("segment reasons: the plan prompt names the segmentation topic with why the leader leads",
+      "why the leading category in each split leads" in prompts.PLAN_USER)
+
 # ------------------------------------------------------------------ keywords
 raw = good_plan()
 for s, key in zip(raw["sections"], ["size", "forecast", "CAGR", "drivers", "trends", "growth", "share"]):

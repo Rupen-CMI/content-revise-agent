@@ -30,7 +30,7 @@ from pipeline_log import section
 HEADLINE_KEYS = ("size", "forecast", "cagr")
 # Only upside is recorded: the articles carry positive trends and evidence, so restraints are not read at all and a
 # statement whose wording is negative is dropped (see polarity.py).
-STATEMENT_KEYS = ("us", "drivers", "opportunities")
+STATEMENT_KEYS = ("us", "drivers", "opportunities", "segment_drivers")
 _MAX_STATEMENTS = 6               # per statement field: a few strong entries, not everything the page mentions
 _MIN_QUOTE_WORDS = 5
 _FIGURE_MAX_AGE_YEARS = 2         # an outside figure must be for a year within this many years of today
@@ -179,7 +179,7 @@ def _empty_fact_sheet() -> dict:
     return {
         "size": None, "forecast": None, "cagr": None, "segments": [],
         "regions": {"leader": None, "fastest": None},
-        "us": [], "drivers": [], "opportunities": [],
+        "us": [], "drivers": [], "opportunities": [], "segment_drivers": [],
         "players": [], "gaps": list(HEADLINE_KEYS), "figure_source": None,
     }
 
@@ -285,7 +285,7 @@ def _headline_entry(
 
 
 def _statement_list(
-    raw, key: str, source_norm: str, today: date, logger: logging.Logger, ignore=frozenset(),
+    raw, key: str, source_norm: str, today: date, logger: logging.Logger, ignore=frozenset(), extra=(),
 ) -> list[dict]:
     out: list[dict] = []
     for item in raw if isinstance(raw, list) else []:
@@ -308,7 +308,8 @@ def _statement_list(
         if _has_stale_event(text, today) or _has_stale_event(quote, today):
             logger.info(f"[facts] {key} entry dropped: it rests on an event dated more than a year ago: {text[:90]!r}")
             continue
-        out.append({"id": f"fs.{key}.{len(out)}", "text": text, "quote": quote, "historical": _is_historical(quote, today)})
+        out.append({"id": f"fs.{key}.{len(out)}", "text": text, "quote": quote, "historical": _is_historical(quote, today),
+                    **{k: " ".join(str(item.get(k) or "").split()) for k in extra}})
         if len(out) >= _MAX_STATEMENTS:
             break
     return out
@@ -361,7 +362,9 @@ def validate_fact_sheet(
     regions = raw.get("regions") if isinstance(raw.get("regions"), dict) else {}
     fs["regions"] = {which: _region_entry(regions.get(which), which, source_norm, today, logger) for which in ("leader", "fastest")}
     for key in STATEMENT_KEYS:
-        fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger, polarity.market_words(market_name))
+        fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger, polarity.market_words(market_name),
+                                  extra=("split", "name") if key == "segment_drivers" else ())
+    _match_segment_drivers(fs, logger)
     fs["players"] = _players(raw.get("players"), source_norm, logger)
     fs["gaps"] = headline_gaps(fs)
     return fs
@@ -477,6 +480,19 @@ def _segments(raw_segments, raw_dominant, source_norm: str, logger: logging.Logg
     return segments
 
 
+def _match_segment_drivers(fs: dict, logger: logging.Logger) -> None:
+    """Each segment reason is tied to the split and category it explains, in the names the fact sheet's own segments use. A
+    reason whose split or category is not one of them keeps its text but loses the tie (the planner can still place it)."""
+    for e in fs.get("segment_drivers") or []:
+        seg = next((g for g in fs.get("segments") or [] if _norm(g["type"]) == _norm(e.get("split", ""))), None)
+        name = next((n for n in seg["items"] if _norm(n) == _norm(e.get("name", ""))), None) if seg else None
+        if name:
+            e["split"], e["name"] = seg["type"], name
+        else:
+            logger.info(f"[facts] segment reason {e['id']} names no split or category of the report's segments; it is kept untied")
+            e["split"] = e["name"] = ""
+
+
 def _players(raw, source_norm: str, logger: logging.Logger) -> list[str]:
     """Company names the model read off the page: each must appear in the page text (legal suffixes dropped), unique."""
     out: list[str] = []
@@ -523,7 +539,7 @@ def run_fact_sheet(market_name: str, report: reports.Report, logger: logging.Log
         + ", ".join(f"{k}={'yes' if fs.get(k) else 'GAP'}" for k in HEADLINE_KEYS)
         + f"; {len(fs['segments'])} segment split(s); regions leader={'yes' if fs['regions']['leader'] else 'no'}"
         f" fastest={'yes' if fs['regions']['fastest'] else 'no'}; "
-        + ", ".join(f"{k}={len(fs[k])}" for k in STATEMENT_KEYS) + f"; {len(fs['players'])} player(s)"
+        + ", ".join(f"{k}={len(fs.get(k) or [])}" for k in STATEMENT_KEYS) + f"; {len(fs['players'])} player(s)"
     )
     return fs
 
@@ -837,7 +853,13 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                                 + (f" ({basis})" if basis else "")})
     for key in STATEMENT_KEYS:
         for e in fs.get(key) or []:
-            out.append({"id": e["id"], "kind": key, "source": base, "historical": e["historical"], "text": e["text"]})
+            row = {"id": e["id"], "kind": key, "source": base, "historical": e["historical"], "text": e["text"]}
+            if key == "segment_drivers":
+                # the reason names the category it explains, so the writer reads it as that category's reason
+                row["split"], row["name"] = e.get("split", ""), e.get("name", "")
+                if row["name"]:
+                    row["text"] = f"Why {row['name']} stands out in {row['split']}: {e['text']}"
+            out.append(row)
     if fs.get("players"):
         out.append({"id": "fs.players", "kind": "players", "source": base, "historical": False,
                     "text": "Key players the report names: " + ", ".join(fs["players"])})

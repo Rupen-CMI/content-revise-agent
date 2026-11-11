@@ -196,7 +196,7 @@ def vary_fact_sheet(fs: dict, market_name: str) -> list[dict]:
             f["amount"] = f["amount"] * f_size
             _record(audit, f"{seg['type']}: {n}", f["original_figure"], new, source)
 
-    for key in ("us", "drivers", "opportunities"):
+    for key in ("us", "drivers", "opportunities", "segment_drivers"):
         for e in fs.get(key) or []:
             if _first_number(e["text"]):
                 original = e["text"]

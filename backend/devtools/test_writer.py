@@ -909,6 +909,29 @@ untraced = writer.strip_untraced_figures(
     [{"heading": "Seg", "sop": ["segmentation"], "paragraphs": ["The market reached 99999 units."]}], inp, "", LOG)
 check("emptied: the same holds when the figure stripper removes every sentence", untraced[0]["paragraphs"][0].startswith("[EDITOR"), str(untraced))
 
+# ------------------------------------------------------------------ segmentation and sub-segments explain why, not only what
+seg_shape, sub_shape = writer._SHAPES["segmentation"], writer._SHAPES["subsegment"]
+check("shapes: segmentation no longer bans explaining: each leading category gets one clause on why it leads, where a fact supports it",
+      "why it leads" in seg_shape and "the driver, the shift in demand or the adoption" in seg_shape
+      and "where no listed fact does, the line adds no reason" in seg_shape and "No line, and not the lead-in either, says what the segmentation lets" not in seg_shape,
+      seg_shape)
+check("shapes: segmentation still names the leader with its figure and keeps the earlier rules",
+      "states that leading category with its figure" in seg_shape and "names the market in that same sentence" in seg_shape and "split" not in seg_shape)
+check("shapes: each sub-segment paragraph explains the growth drivers, demand pattern, adoption trend and why it dominates or grows",
+      all(w in sub_shape for w in ("growth drivers", "demand pattern", "adoption trend", "dominates or grows")), sub_shape)
+check("shapes: the sub-segment shape no longer says it stays short and adds no fact; it reasons from the market's own drivers",
+      "stays short" not in sub_shape and "own drivers that apply to it" in sub_shape, sub_shape)
+
+# ------------------------------------------------------------------ the web search asks about segment demand, and SELECT counts it
+_sq = " ".join(prompts.SEARCH_QUERIES_USER.split())
+check("search prompt: a ninth category asks for demand and adoption shifts within the named segments",
+      "these 9 categories" in _sq and "9. Segment demand" in _sq and "ONE segment name from that list" in _sq
+      and "That totals 15 queries" in _sq and "EACH of these 6 categories" in _sq and "6 queries total" in _sq and "the 9 categories above describe" in _sq, _sq[:300])
+_sel = " ".join(prompts.SELECT_USER.split())
+check("SELECT: test 4 counts a segment's demand as usable evidence", "a segment's demand (why a category is growing or being adopted)" in _sel)
+check("SELECT: a dated item is eligible for trends only when it shows a direction, not on date alone",
+      "only when it shows a direction the market is moving in" in _sel and "never on its date alone" in _sel and "on date alone." not in _sel)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
