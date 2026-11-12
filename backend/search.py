@@ -251,6 +251,9 @@ class SearchHit:
     keep_rules: list[str] | None = None
     # The evidence sections whose queries found this hit (sections.SECTIONS); a hit found by two sections' queries keeps both.
     sections: list[str] = field(default_factory=list)
+    # The Bing query string that found this hit (set in feeds._Bing.search; empty for RSS-feed and DDGS hits, which no
+    # query owns). The query-yield measurement reads it; on a duplicate the first query wins.
+    query: str = ""
 
     def __post_init__(self) -> None:
         # a feed can hand the publisher's name percent-encoded ("Morningstar%2c Inc."); it is written into the article as a name
