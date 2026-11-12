@@ -1709,6 +1709,7 @@ def get_run(run_token: str) -> dict:
         "questions": run.questions,
         "demand": run.demand,
         "fact_sheet": run.fact_sheet,
+        "evidence_done": run.hits is not None,      # the Evidence step has run (hits may still be empty)
         "fact_sheet_confirmed": run.fact_sheet_confirmed,
         "report_kind": run.report_kind,
         "report_tabs": {k: {"report": {"news_id": t["report"].news_id, "name": t["report"].name, "url": t["report"].url},

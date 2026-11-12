@@ -49,3 +49,5 @@ Thumbs.db
 # --- JSON is ignored by default (large generated fixtures); allow the few real manifests/configs
 *.json
 !backend/source_registry.json
+
+backend/devtools/_ui_shots/

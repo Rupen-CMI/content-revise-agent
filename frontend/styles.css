@@ -172,9 +172,8 @@ svg { width: 18px; height: 18px; stroke-width: 2; flex-shrink: 0; }
   transition: max-width 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
-/* The two choosing screens (market columns, competitor-report picker) get more room to breathe. */
-.panel[data-panel="step1"]:has(#step1-confirm-block:not([hidden])),
-.panel[data-panel="step2"]:has(#step2-pick-block:not([hidden])) {
+/* The Reports step (tabs and wide fact sheet tables) gets more room to breathe. */
+.panel[data-panel="reports"] {
   max-width: 1080px;
 }
 
@@ -1500,7 +1499,6 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
   to { background-position: -100% 0; }
 }
 
-#step2-pick-block .content-card { animation: card-in 0.35s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
 
 @media (prefers-reduced-motion: reduce) {
   .tier-group, .market-option, .market-option.selected::after, .selection-summary, .sel-chip,
@@ -1549,3 +1547,117 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .client-card p { margin: 3px 0; }
 .client-card details { margin-top: 6px; }
 .client-card details summary { cursor: pointer; color: var(--text-muted); font-size: 0.9em; }
+
+
+/* ---------- Tabs (shadcn-style: a muted rounded list, the active tab raised with a background and a subtle shadow) ---------- */
+.tabs { margin-top: 16px; }
+.tabs-list {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 38px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+}
+.tabs-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 3px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.tabs-trigger:hover { color: var(--text); }
+.tabs-trigger[aria-selected="true"] {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.tabs-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tabs-trigger.has-sheet::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.tabs-content { margin-top: 14px; }
+.tabs-content[hidden] { display: none; }
+.tabs-content:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--radius-sm); }
+.reports-fetch-row { align-items: center; margin-top: 14px; }
+
+/* ---------- Fact sheet panel (shared by both Reports tabs and the Evidence step) ---------- */
+.factsheet-panel { margin-top: 16px; }
+.factsheet-panel[hidden] { display: none; }
+.fs-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.fs-title { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.fs-tools { display: flex; gap: 8px; }
+.fs-report { margin: 0 0 10px; font-size: 13px; color: var(--text-muted); }
+.fs-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13.5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+.fs-table th, .fs-table td { padding: 8px 12px; text-align: left; vertical-align: top; border-top: 1px solid var(--border); }
+.fs-table thead th { border-top: 0; background: var(--bg-sunken); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.fs-table tbody th[scope="row"] { width: 22%; font-weight: 600; color: var(--text); }
+.fs-table .fs-section th { background: var(--accent-soft); color: var(--accent); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.fs-table .fs-subsection th { background: var(--bg-sunken); font-weight: 600; }
+.fs-table .fs-orig { color: var(--text-muted); width: 24%; }
+.fs-table .fs-source { width: 16%; color: var(--text-muted); font-size: 12.5px; }
+.fs-gap { color: var(--danger); font-weight: 600; }
+.fs-gap-row th { color: var(--text-muted); }
+.fs-note { color: var(--text-muted); font-size: 12.5px; }
+.fs-agent { margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+.fs-quote { margin-top: 3px; font-size: 12px; font-style: italic; color: var(--text-muted); }
+.fs-hint { margin: 2px 0 6px 168px; font-size: 12px; color: var(--text-muted); }
+.fs-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+  color: var(--warning);
+  font-size: 11.5px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.fs-badge-lead { background: var(--info-soft); border-color: var(--info); color: var(--info); }
+.fs-badge-ok { background: var(--success-soft); border-color: var(--success); color: var(--success); }
+.fs-removed { margin-top: 10px; font-size: 13px; color: var(--text-muted); }
+
+.fs-edit-group { margin-top: 14px; }
+.fs-edit-group h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
+.fs-edit-card { padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+.fs-edit-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fs-edit-row .fs-input { flex: 1; min-width: 0; font-size: 13.5px; }
+.fs-edit-label { flex: 0 0 160px; font-size: 13px; font-weight: 600; }
+.fs-lead { flex: 0 0 auto; accent-color: var(--accent); }
+.fs-remove { flex: 0 0 auto; }
+
+@media (max-width: 720px) {
+  .fs-table, .fs-table thead, .fs-table tbody, .fs-table tr, .fs-table th, .fs-table td { display: block; }
+  .fs-table thead { display: none; }
+  .fs-table tbody th[scope="row"], .fs-table .fs-orig, .fs-table .fs-source { width: auto; }
+  .fs-edit-row { flex-wrap: wrap; }
+  .fs-edit-label { flex-basis: 100%; }
+  .fs-hint { margin-left: 0; }
+}
