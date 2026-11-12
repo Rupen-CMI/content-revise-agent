@@ -140,7 +140,7 @@ async function resumeRunIfAny() {
 
     const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
       factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null,
-      pickedCmi: null, pickedMarkets: [], reportUrls: [""], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [] };
+      pickedCmi: null, cmiUrl: "", pickedMarkets: [], reportUrls: [""], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [] };
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.report = data.report;
@@ -166,6 +166,8 @@ async function resumeRunIfAny() {
       run.stage = "orient_done";
       run.pickedMarkets = data.picked_markets || [];
     }
+    // A pasted CMI report link survives a reload too: after Step 2 the run records it among the picked urls.
+    run.cmiUrl = (data.picked_urls || []).find((u) => isCmiLink(u)) || "";
     state.run = run;
     state.nav = pointer.nav || "step1";
 
@@ -584,11 +586,18 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// True when the link is a page on CMI's own site (the host itself or a subdomain, dot boundary):
+// the dedicated CMI report link box takes only these; the competitor rows refuse them.
+function isCmiLink(url) {
+  const host = String(url || "").trim().replace(/^https?:\/\//i, "").split(/[/?#]/)[0].replace(/:\d+$/, "").toLowerCase().replace(/^www\./, "");
+  return host === "coherentmarketinsights.com" || host.endsWith(".coherentmarketinsights.com");
+}
+
 // ---------------------------------------------------------------- run controls
 document.getElementById("start-btn").addEventListener("click", async () => {
   const sponsor = currentSponsor();
   if (!sponsor) return;
-  state.run = { stage: "pending", sponsor, pickedCmi: null, pickedMarkets: [], reportUrls: [""] };
+  state.run = { stage: "pending", sponsor, pickedCmi: null, cmiUrl: "", pickedMarkets: [], reportUrls: [""] };
   setNav("step1");
   render();
   await runStep1();
@@ -655,10 +664,37 @@ document.getElementById("step1-add-url-btn").addEventListener("click", () => {
 function clearCmiPick() {
   if (!state.run) return;
   state.run.pickedCmi = null;
+  state.run.cmiUrl = "";
+  clearStep1CmiUrlInput();
   renderStep1Panel();
+}
+
+// The CMI report link box's input and its last check message, without a re-render (typing must not lose focus).
+function clearStep1CmiUrlInput() {
+  const input = document.getElementById("step1-cmi-url");
+  const status = document.getElementById("step1-cmi-url-status");
+  if (input) input.value = "";
+  if (status) { status.hidden = true; status.textContent = ""; status.className = "url-check-result"; }
 }
 document.getElementById("step1-cmi-clear").addEventListener("click", clearCmiPick);
 document.getElementById("step1-links-unlock").addEventListener("click", clearCmiPick);
+
+// The CMI report link box: typing there is a CMI pick of its own, so it clears the picked CMI report
+// and the market pick the same way a CMI radio does; picking either clears the link again.
+document.getElementById("step1-cmi-url").addEventListener("input", (e) => {
+  if (!state.run) return;
+  state.run.cmiUrl = e.target.value;
+  if (e.target.value.trim()) {
+    state.run.pickedCmi = null;
+    state.run.pickedMarkets = [];
+    document.querySelectorAll("#step1-cmi .market-option, #step1-suggested .market-option").forEach((el) => {
+      el.classList.remove("selected");
+      el.querySelector("input").checked = false;
+    });
+  }
+  updateStep1ConfirmLabel();
+});
+document.getElementById("step1-cmi-url-check").addEventListener("click", () => checkReportUrl(document.getElementById("step1-cmi-url-block"), true));
 
 document.getElementById("step1-agent-clear").addEventListener("click", () => {
   if (!state.run) return;
@@ -667,7 +703,7 @@ document.getElementById("step1-agent-clear").addEventListener("click", () => {
 });
 
 function step1HasSelection() {
-  return !!state.run && (!!state.run.pickedCmi || (state.run.pickedMarkets || []).length > 0 || step1PickedUrls().length > 0);
+  return !!state.run && (!!state.run.pickedCmi || !!state.run.cmiUrl || (state.run.pickedMarkets || []).length > 0 || step1PickedUrls().length > 0);
 }
 
 document.getElementById("step1-confirm-btn").addEventListener("click", async () => {
@@ -707,6 +743,7 @@ async function runStep2() {
     report_ids: cmi ? [cmi.news_id] : [],
     markets: state.run.pickedMarkets || [],
     report_urls: [...found, ...step1PickedUrls()],
+    cmi_report_url: state.run.cmiUrl || "",
     url_markets: urlMarkets,
   };
   if (cmi) body.report_id = cmi.news_id;
@@ -992,11 +1029,20 @@ function renderRunControls() {
 // At most this many "own link" inputs exist; the Add button disappears once reached.
 const MAX_REPORT_URLS = 6;
 
-// Non-empty trimmed own links — exactly what gets sent to /step2 as report_urls.
+// Non-empty trimmed competitor links — exactly what gets sent to /step2 as report_urls.
 function step1PickedUrls() {
-  if (state.run.pickedCmi) return [];      // a CMI report is used on its own: pasted links are not used with it
-  // A pasted link on CMI's own site is sent like any other; the backend treats it as the CMI report (figures not adjusted).
-  return (state.run.reportUrls || []).map((u) => String(u || "").trim()).filter(Boolean);
+  if (state.run.pickedCmi || state.run.cmiUrl) return [];   // a CMI report or link is used on its own: pasted links are not used with it
+  // Competitor links only: a pasted CMI link belongs in the CMI report link box, so it is left out here.
+  return (state.run.reportUrls || []).map((u) => String(u || "").trim()).filter(Boolean).filter((u) => !isCmiLink(u));
+}
+
+// Competitor rows refuse a CMI link inline: its figures would be treated as a competitor's and adjusted.
+function showCompetitorRowError(entry, url) {
+  const el = entry.querySelector(".url-check-result");
+  if (!isCmiLink(url)) { el.hidden = true; el.textContent = ""; el.className = "url-check-result"; return; }
+  el.hidden = false;
+  el.className = "url-check-result fail";
+  el.textContent = "This is a CMI report link; paste it in the CMI report link box above.";
 }
 
 // What each tier means, shown with its group so the editor sees why a market is offered.
@@ -1055,19 +1101,19 @@ function updateStep1ConfirmLabel() {
   hint.hidden = has;
   label.textContent = (state.run.pickedMarkets || []).length
     ? "Find competitor reports and continue to Step 2"
-    : state.run.pickedCmi ? "Continue to Step 2 with this CMI report" : "Continue to Step 2";
-  document.getElementById("step1-cmi-clear").hidden = !state.run.pickedCmi;
+    : (state.run.pickedCmi || state.run.cmiUrl) ? "Continue to Step 2 with this CMI report" : "Continue to Step 2";
+  document.getElementById("step1-cmi-clear").hidden = !(state.run.pickedCmi || state.run.cmiUrl);
   document.getElementById("step1-agent-clear").hidden = !(state.run.pickedMarkets || []).length;
-  document.getElementById("step1-links-locked").hidden = !state.run.pickedCmi;
+  document.getElementById("step1-links-locked").hidden = !(state.run.pickedCmi || state.run.cmiUrl);
 
-  // With a CMI report chosen, the report stands alone: the link boxes are switched off and say why.
-  const cmiOnly = !!state.run.pickedCmi;
+  // With a CMI report (or link) chosen, the report stands alone: the link boxes are switched off and say why.
+  const cmiOnly = !!(state.run.pickedCmi || state.run.cmiUrl);
   const links = document.getElementById("step1-links-section");
   links.classList.toggle("is-off", cmiOnly);
   links.querySelectorAll("input, button").forEach((el) => { el.disabled = cmiOnly; });
   document.getElementById("step1-links-hint").textContent = cmiOnly
-    ? "Not used: a CMI report is chosen and is used on its own. Clear the CMI choice to add report links."
-    : "Paste any report pages you already have. Checking a link is optional: it only gives early feedback on whether the link looks usable and never blocks anything.";
+    ? "Not used: a CMI report or link is chosen and is used on its own. Clear the CMI choice above to add competitor links."
+    : "Paste competitor report pages for this market. Their figures are moved by 3-5% and no competitor is named in the article. A CMI report link goes in the CMI report link box above, never here. Checking a link is optional.";
   renderSelectionSummary();
 }
 
@@ -1078,6 +1124,7 @@ function renderSelectionSummary() {
   const chips = [];
   (state.run.pickedMarkets || []).forEach((m) => chips.push({ kind: "Market", text: m }));
   if (state.run.pickedCmi) chips.push({ kind: "CMI report", text: state.run.pickedCmi.keyword });
+  else if (state.run.cmiUrl) chips.push({ kind: "CMI report link", text: state.run.cmiUrl.trim() });
   step1PickedUrls().forEach((u) => chips.push({ kind: "Link", text: u.replace(/^https?:\/\/(www\.)?/, "") }));
   el.hidden = !chips.length;
   el.innerHTML = chips.length
@@ -1114,6 +1161,7 @@ function renderStep1UrlInputs() {
     `;
     entry.querySelector("input").addEventListener("input", (e) => {
       state.run.reportUrls[i] = e.target.value;
+      showCompetitorRowError(entry, e.target.value);
       updateStep1ConfirmLabel();
     });
     entry.querySelector(".report-url-check").addEventListener("click", () => checkReportUrl(entry));
@@ -1124,13 +1172,15 @@ function renderStep1UrlInputs() {
       updateStep1ConfirmLabel();
     });
     wrap.appendChild(entry);
+    showCompetitorRowError(entry, url);
   });
   addBtn.hidden = state.run.reportUrls.length >= MAX_REPORT_URLS;
 }
 
 // Optional early feedback on one own link — asks the backend to look at it. Whatever the check
 // says, it never gates anything: Confirm stays enabled and the decision stays with the editor.
-async function checkReportUrl(entry) {
+// cmi=True checks a link from the CMI report link box (only coherentmarketinsights.com pages pass).
+async function checkReportUrl(entry, cmi = false) {
   if (!state.run || state.run.stage !== "orient_done") return;
   const resultEl = entry.querySelector(".url-check-result");
   const url = String(entry.querySelector("input").value || "").trim();
@@ -1144,7 +1194,7 @@ async function checkReportUrl(entry) {
   resultEl.innerHTML = `<i data-lucide="loader-circle" class="spin"></i> Checking this link...`;
   iconify();
   try {
-    const data = await apiPost("/check_report_url", { run_token: state.run.token, url, market: (state.run.pickedMarkets || [])[0] || "" });
+    const data = await apiPost("/check_report_url", { run_token: state.run.token, url, market: (state.run.pickedMarkets || [])[0] || "", cmi });
     resultEl.className = `url-check-result ${data.ok ? "ok" : "fail"}`;
     resultEl.textContent = data.message || (data.ok ? "This link looks usable." : "This link could not be checked.");
   } catch (e) {
@@ -1200,6 +1250,10 @@ function renderStep1Panel() {
             el.querySelector("input").checked = false;
           });
         }
+        if (state.run.cmiUrl) {       // a market pick clears the pasted CMI report link again
+          state.run.cmiUrl = "";
+          clearStep1CmiUrlInput();
+        }
         document.querySelectorAll("#step1-suggested .market-option").forEach((el) => el.classList.remove("selected"));
         label.classList.add("selected");
         updateStep1ConfirmLabel();
@@ -1217,6 +1271,8 @@ function renderStep1Panel() {
       label.querySelector("input").addEventListener("change", () => {
         state.run.pickedCmi = c;
         state.run.pickedMarkets = [];          // a CMI report is used on its own
+        state.run.cmiUrl = "";                 // picking from the list clears the pasted CMI report link
+        clearStep1CmiUrlInput();
         document.querySelectorAll("#step1-suggested .market-option").forEach((el) => {
           el.classList.remove("selected");
           el.querySelector("input").checked = false;

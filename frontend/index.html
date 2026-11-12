@@ -233,6 +233,15 @@
                 <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-cmi-clear" hidden><i data-lucide="x"></i> Clear selection</button>
               </header>
               <div class="market-col-body" id="step1-cmi"></div>
+              <div class="report-url-entry" id="step1-cmi-url-block">
+                <span class="kv-label">Or paste a CMI report link</span>
+                <div class="report-url-row">
+                  <input type="text" class="text-input report-url-input" id="step1-cmi-url" placeholder="https://www.coherentmarketinsights.com/...">
+                  <button type="button" class="btn btn-secondary btn-small" id="step1-cmi-url-check">Check</button>
+                </div>
+                <p class="url-check-result" id="step1-cmi-url-status" hidden></p>
+                <p class="field-hint">For a CMI report that is not in the list. It is used exactly like a picked CMI report: its figures are CMI's own and are never adjusted.</p>
+              </div>
             </section>
           </div>
           <hr class="divider">
@@ -241,8 +250,8 @@
             <button type="button" class="btn btn-secondary btn-small" id="step1-links-unlock"><i data-lucide="x"></i> Clear the CMI choice to add links</button>
           </div>
           <div id="step1-links-section">
-            <h3 class="subheading">Have your own report links?</h3>
-            <p class="field-hint" id="step1-links-hint">Paste any report pages you already have. A link to a CMI report page is used as that CMI report: its figures are CMI's own and are not adjusted. Checking a link is optional: it only gives early feedback on whether the link looks usable and never blocks anything.</p>
+            <h3 class="subheading">Competitor report links</h3>
+            <p class="field-hint" id="step1-links-hint">Paste competitor report pages for this market. Their figures are moved by 3-5% and no competitor is named in the article. A CMI report link goes in the CMI report link box above, never here. Checking a link is optional.</p>
             <div class="report-url-list" id="step1-report-urls"></div>
             <div class="btn-row">
               <button type="button" class="btn btn-secondary btn-small" id="step1-add-url-btn"><i data-lucide="plus"></i> Add another report</button>

@@ -219,14 +219,21 @@ def check_cmi_url(url: str, market_name: str, logger: logging.Logger) -> dict:
             "message": "This is a CMI page that is not in the report list. It will be read as a CMI report: its figures are not adjusted."}
 
 
-def check_url(url: str, market_name: str, logger: logging.Logger) -> dict:
+def check_url(url: str, market_name: str, logger: logging.Logger, cmi: bool = False) -> dict:
     """Early feedback for a link the editor pasted: can the page be read, and does it look like a report on this market?
-    {ok, message, title}. A deterministic look (no model): the market's words, a 'market' word and a figure."""
+    {ok, message, title}. A deterministic look (no model): the market's words, a 'market' word and a figure. cmi=True
+    comes from the dedicated CMI report link box, which takes only pages on CMI's own site."""
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         return {"ok": False, "message": "That does not look like a web link. It should start with http:// or https://.", "title": ""}
     if is_cmi_url(url):
+        if not cmi:
+            return {"ok": False, "title": "",
+                    "message": "This is a CMI report link. Paste it in the CMI report link box above, not among the competitor links."}
         return check_cmi_url(url, market_name, logger)
+    if cmi:
+        return {"ok": False, "title": "",
+                "message": "This is not a CMI page. The CMI report link box takes only coherentmarketinsights.com report pages."}
     text = read_page(url, logger)
     if not text:
         return {"ok": False, "message": "The page could not be read (it may be paywalled, blocked or down). Try another link.", "title": ""}

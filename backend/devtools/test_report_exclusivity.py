@@ -433,6 +433,93 @@ check("early evidence: a picked report that names players gets ONE top-up search
       flags["evidence"] == 1 and flags["us"] == 0 and flags["publisher"] == 0
       and urls_ == ["https://early.example/one", "https://late.example/two"], f"{flags} {urls_}")
 
+# ------------------------------------------- step2: the dedicated CMI report link (its own box, never a competitor's)
+
+CMI_LINK = "https://www.coherentmarketinsights.com/market-insight/rose-oil-market-7211"
+
+
+def stub_step2_v2(r, picked, urls, **kw):
+    seen.update(picked=[c.news_id for c in picked], urls=list(urls),
+                markets=list(kw.get("markets", [])), cmi_pages=list(kw.get("cmi_pages", [])))
+    return {}
+
+
+try:
+    make_run(TOKEN, candidates=[entry(7211, MARKET)])
+    raised = None
+    try:
+        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[CMI_LINK], markets=[]))
+    except main.HTTPException as e:
+        raised = e
+    check("step2: a CMI link pasted among the competitor links is refused (400) and pointed at the CMI report link box",
+          raised is not None and raised.status_code == 400
+          and "CMI report link box" in str(raised.detail) and CMI_LINK in str(raised.detail), str(raised))
+finally:
+    drop_run()
+
+try:
+    make_run(TOKEN, candidates=[entry(7211, MARKET)])
+    raised = None
+    try:
+        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[],
+                                     cmi_report_url="https://reports.example/rose-oil"))
+    except main.HTTPException as e:
+        raised = e
+    check("step2: a non-CMI link in the CMI report link box is refused (400) naming CMI's own site",
+          raised is not None and raised.status_code == 400
+          and "coherentmarketinsights.com" in str(raised.detail), str(raised))
+finally:
+    drop_run()
+
+try:
+    run = make_run(TOKEN, candidates=[entry(7211, MARKET)])
+    seen = {}
+    with patched(main, "_step2_v2", stub_step2_v2), patched(config, "CMI_CHAIN_V2", True), \
+            patched(reports, "match_report_url", lambda u: entry(7211, MARKET)):
+        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[], cmi_report_url=CMI_LINK))
+    check("step2: a CMI report link on a catalog page becomes the picked CMI report itself (R3: nothing else)",
+          seen["picked"] == [7211] and seen["urls"] == [] and seen["cmi_pages"] == [], str(seen))
+    check("step2: the run records that catalog report id",
+          run.picked_report_ids == [7211] and run.picked_markets == [] and run.picked_urls == [],
+          f"{run.picked_report_ids} / {run.picked_markets} / {run.picked_urls}")
+finally:
+    drop_run()
+
+try:
+    make_run(TOKEN, candidates=[entry(7211, MARKET)])
+    seen = {}
+    with patched(main, "_step2_v2", stub_step2_v2), patched(config, "CMI_CHAIN_V2", True), \
+            patched(reports, "match_report_url", lambda u: None):
+        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[], cmi_report_url=CMI_LINK))
+    check("step2: a CMI report link outside the catalog is read as a CMI page (cmi_pages, figures never adjusted)",
+          seen["picked"] == [] and seen["cmi_pages"] == [CMI_LINK], str(seen))
+finally:
+    drop_run()
+
+try:
+    run = make_run(TOKEN, candidates=[entry(7211, MARKET), entry(7212, "B2 Market")])
+    seen = {}
+    with patched(main, "_step2_v2", stub_step2_v2), patched(config, "CMI_CHAIN_V2", True), \
+            patched(reports, "match_report_url", lambda u: entry(7212, "B2 Market")):
+        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[7211], report_urls=[], cmi_report_url=CMI_LINK))
+    check("step2: a ticked CMI report wins over a pasted CMI report link (the link is ignored, not an error)",
+          seen["picked"] == [7211] and seen["cmi_pages"] == [] and run.picked_report_ids == [7211], str(seen))
+finally:
+    drop_run()
+
+# ------------------------------------------------------------------ check_url: CMI box vs competitor rows
+
+check("check_url cmi=False: a CMI link is refused and pointed at the CMI report link box",
+      (lambda r: not r["ok"] and "CMI report link box" in r["message"] and r["title"] == "")(
+          external_reports.check_url(CMI_LINK, MARKET, LOG)))
+with patched(reports, "match_report_url", lambda u: entry(7211, MARKET)):
+    check("check_url cmi=True: a CMI link still goes through the CMI check (the catalog report is named)",
+          (lambda r: r["ok"] and r.get("cmi") is True and MARKET in r["title"])(
+              external_reports.check_url(CMI_LINK, MARKET, LOG, cmi=True)))
+check("check_url cmi=True: a non-CMI link is refused (the CMI box takes only pages on CMI's own site)",
+      (lambda r: not r["ok"] and "coherentmarketinsights.com" in r["message"] and r["title"] == "")(
+          external_reports.check_url("https://reports.example/rose-oil", MARKET, LOG, cmi=True)))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

@@ -858,6 +858,9 @@ class Step2Request(BaseModel):
     # market's report on the internet.
     report_ids: list[int] = Field(default_factory=list)
     report_urls: list[str] = Field(default_factory=list)
+    # The editor's dedicated CMI report link (Step 1): a CMI pick of its own, never mixed with the
+    # competitor links, which now refuse CMI links outright.
+    cmi_report_url: str = ""
     # The ONE market the editor picked in Step 1 (R1: never plural) — kept as a list for compatibility
     # with the old multi-market frontend; only the first entry is used. url_markets maps each pasted
     # report url to the market it was found for (from /step2/find_reports).
@@ -870,6 +873,8 @@ class CheckReportUrlRequest(BaseModel):
     url: str = ""
     # The market the editor picked for this link, when it was one of the found candidates; empty for a link they pasted.
     market: str = ""
+    # True when the link came from the CMI report link box: only coherentmarketinsights.com pages are accepted there.
+    cmi: bool = False
 
 
 class Step3Request(BaseModel):
@@ -1321,7 +1326,7 @@ def check_report_url(req: CheckReportUrlRequest) -> dict:
     """Early feedback on a report link the editor pasted (Step 1): readable, and about this article's market?"""
     run = _get_run(req.run_token)
     market = (req.market or "").strip() or external_reports.own_market(run.orient) or (run.candidates[0].keyword if run.candidates else "")
-    return external_reports.check_url(req.url, market, run.logger)
+    return external_reports.check_url(req.url, market, run.logger, cmi=req.cmi)
 
 
 class FindReportsRequest(BaseModel):
@@ -1423,22 +1428,26 @@ def step2(req: Step2Request) -> dict:
         if entry is None:
             raise HTTPException(400, f"Report {rid} is not one of the matched reports for this run.")
         picked.append(entry)
-    # A pasted link on CMI's own site is a CMI report, never a competitor's: a catalog report is routed exactly as if the
-    # editor had picked it from the list, a CMI page outside the catalog is read as a CMI page (cmi_pages) — either way
-    # its figures are CMI's own, so no variance and no web gap-fill.
-    cmi_urls = [u for u in urls if config.is_cmi_url(u)]
-    urls = [u for u in urls if not config.is_cmi_url(u)]
+    # The CMI report link is its own box in Step 1 and a CMI pick of its own: it is routed exactly as the pasted CMI
+    # links once were — a catalog report becomes the picked report, any other CMI page is read as a CMI page. The
+    # competitor links refuse a CMI link outright: pasted there, a CMI figure was treated as a competitor's and adjusted.
+    cmi_url = (req.cmi_report_url or "").strip()
+    if cmi_url and not config.is_cmi_url(cmi_url):
+        raise HTTPException(400, "The CMI report link must be a page on coherentmarketinsights.com.")
+    for u in urls:
+        if config.is_cmi_url(u):
+            raise HTTPException(400, f"The link {u} is a CMI report link. Paste it in the CMI report link box, not among the competitor links.")
     cmi_pages: list[str] = []
-    for u in cmi_urls:
-        entry = reports.match_report_url(u)
-        if picked or cmi_pages:
-            run.logger.info(f"STEP 2: a CMI report is already chosen, so the pasted CMI link {u} was ignored")
+    if cmi_url:
+        entry = reports.match_report_url(cmi_url)
+        if picked:
+            run.logger.info(f"STEP 2: a CMI report is already chosen, so the pasted CMI link {cmi_url} was ignored")
         elif entry is not None:
-            run.logger.info(f"STEP 2: the pasted CMI link {u} is the catalog report {entry.news_id} {entry.keyword}; used as the picked report")
+            run.logger.info(f"STEP 2: the pasted CMI link {cmi_url} is the catalog report {entry.news_id} {entry.keyword}; used as the picked report")
             picked.append(entry)
         else:
-            run.logger.info(f"STEP 2: the pasted CMI link {u} is not a catalog report; it is read as a CMI page")
-            cmi_pages.append(u)
+            run.logger.info(f"STEP 2: the pasted CMI link {cmi_url} is not a catalog report; it is read as a CMI page")
+            cmi_pages.append(cmi_url)
     # R3: a CMI report is used ALONE — no competitor reports, no pasted links. Any market pick and any
     # report link the editor also sent are dropped here, before anything is recorded or passed on.
     if (picked or cmi_pages) and (markets or urls):
