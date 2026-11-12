@@ -200,6 +200,63 @@ try:
 finally:
     drop_run()
 
+# ------------------------------------------------------------- the report's own covered market and host
+
+try:
+    # a stand-in read: the page states no figure for the picked market, but does for the market its title names
+    calls = []
+
+    def fake_build(market, pages, logger):
+        calls.append([m for _, _, m in pages])
+        if len(calls) == 1:
+            return {}, [], {}
+        return {"gaps": []}, [{"url": pages[0][0], "name": "p", "kind": "external"}], {pages[0][0]: "text"}
+
+    warns: list[str] = []
+    covered: list[str] = []
+    page = ("https://finance.yahoo.com/r", "page text", "Human Translation Services Market")
+    with patched(external_reports, "build_external_sheet", fake_build), \
+            patched(external_reports, "page_market_name", lambda title, text: "Machine Translation Market"):
+        main._use_outside_pages("Human Translation Services Market", [page], {}, warns, LOG, covered)
+    check("outside pages: the related market that stands in is reported to the caller",
+          covered == ["Machine Translation Market"] and "related" in warns[0], str(covered) + str(warns))
+
+    make_run(TOKEN)
+
+    def stub_build_standin(r, picked, urls, **kw):
+        return {"report": reports.Report(news_id=0, name="Human Translation Services Market", subject="x", url="", source="", sections={}),
+                "fact_sheet": {"gaps": [], "sources": []}, "report_mode": "external", "warnings": [],
+                "covers_market": "Machine Translation Market", "host": "finance.yahoo.com"}
+
+    with patched(main, "_build_reports", stub_build_standin):
+        out = main.reports_fetch(main.ReportsFetchRequest(run_token=TOKEN, kind="competitor", markets=["Human Translation Services Market"]))
+    check("fetch: the response names the market the report covers and its host",
+          out["report"]["covers_market"] == "Machine Translation Market" and out["report"]["host"] == "finance.yahoo.com"
+          and out["report"]["name"] == "Human Translation Services Market", str(out["report"])[:200])
+    tab = main.get_run(TOKEN)["report_tabs"]["competitor"]["report"]
+    check("fetch: get_run keeps them per tab for a reload",
+          tab["covers_market"] == "Machine Translation Market" and tab["host"] == "finance.yahoo.com", str(tab))
+finally:
+    drop_run()
+
+# ------------------------------------------------------------------- the CMI screen's pick (before any fetch)
+
+try:
+    make_run(TOKEN)
+    check("cmi_choice: a fresh run has none", main.get_run(TOKEN)["cmi_choice"] == {}, str(main.get_run(TOKEN)["cmi_choice"]))
+    main.reports_cmi_choice(main.CmiChoiceRequest(run_token=TOKEN, report_id=7))
+    check("cmi_choice: a picked report comes back from get_run",
+          main.get_run(TOKEN)["cmi_choice"] == {"report_id": 7, "cmi_report_url": ""}, str(main.get_run(TOKEN)["cmi_choice"]))
+    main.reports_cmi_choice(main.CmiChoiceRequest(run_token=TOKEN, report_id=7, cmi_report_url="  https://www.coherentmi.com/x  "))
+    check("cmi_choice: a pasted link clears the pick (and is trimmed)",
+          main.get_run(TOKEN)["cmi_choice"] == {"report_id": None, "cmi_report_url": "https://www.coherentmi.com/x"},
+          str(main.get_run(TOKEN)["cmi_choice"]))
+    main.reports_cmi_choice(main.CmiChoiceRequest(run_token=TOKEN, report_id=3))
+    check("cmi_choice: a pick clears the link",
+          main.get_run(TOKEN)["cmi_choice"] == {"report_id": 3, "cmi_report_url": ""}, str(main.get_run(TOKEN)["cmi_choice"]))
+finally:
+    drop_run()
+
 # ------------------------------------------------------------------- fact_sheet sources
 
 try:
