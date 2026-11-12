@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import facts  # noqa: E402
 import llm  # noqa: E402
+import prompts  # noqa: E402
 import search  # noqa: E402
 
 FAILURES: list[str] = []
@@ -190,6 +191,36 @@ ids = [f["id"] for f in flat]
 check("flatten: every fact has a unique id", len(ids) == len(set(ids)) and "fs.size" in ids and "fs.regions.leader" in ids, str(ids))
 check("flatten: headline text carries the figure and its year", any("561.7" in f["text"] and "2026" in f["text"] for f in flat))
 
+# ------------------------------------------------------------------ the reason a category leads (segment_drivers)
+REASON = "Cloud Based tools lead the type split because remote teams want access to widget services without installing anything"
+PAGE_REASON = PAGE + " " + REASON + "."
+reason_raw = good_raw()
+reason_raw["segment_drivers"] = [
+    {"split": "by type", "name": "cloud based", "text": "Remote teams choose cloud tools because nothing needs installing.", "quote": REASON},
+    {"split": "By Type", "name": "Browser Extension", "text": "Invented reason.", "quote": "A sentence that is not on the page at all"},
+    {"split": "By Colour", "name": "Red", "text": "Remote teams choose cloud tools because nothing needs installing.", "quote": REASON},
+]
+fs_r = facts.validate_fact_sheet(reason_raw, PAGE_REASON, MARKET, LOG, TODAY)
+check("segment reason: segment_drivers is a statement field of the fact sheet", "segment_drivers" in facts.STATEMENT_KEYS and "segment_drivers" in facts._empty_fact_sheet())
+check("segment reason: a quoted reason is kept and an unquoted one is dropped",
+      [e["id"] for e in fs_r["segment_drivers"]] == ["fs.segment_drivers.0", "fs.segment_drivers.1"], str(fs_r["segment_drivers"]))
+check("segment reason: it is tied to the split and category in the report's own names",
+      (fs_r["segment_drivers"][0]["split"], fs_r["segment_drivers"][0]["name"]) == ("By Type", "Cloud Based"), str(fs_r["segment_drivers"][0]))
+check("segment reason: a reason naming no split or category of the report is kept untied",
+      (fs_r["segment_drivers"][1]["split"], fs_r["segment_drivers"][1]["name"]) == ("", ""))
+flat_r = {f["id"]: f for f in facts.flatten_fact_sheet(fs_r)}
+check("segment reason: flatten emits it as its own kind, naming the category it explains",
+      flat_r["fs.segment_drivers.0"]["kind"] == "segment_drivers" and flat_r["fs.segment_drivers.0"]["text"].startswith("Why Cloud Based stands out in By Type:")
+      and flat_r["fs.segment_drivers.0"]["name"] == "Cloud Based" and flat_r["fs.segment_drivers.1"]["text"] == "Remote teams choose cloud tools because nothing needs installing.",
+      str(flat_r["fs.segment_drivers.0"]))
+check("segment reason: the fact-sheet prompt asks for it, quoted like the others",
+      "segment_drivers" in prompts.FACT_SHEET_USER and '"segment_drivers": [{{"split"' in prompts.FACT_SHEET_USER
+      and "never supply a reason yourself" in prompts.FACT_SHEET_USER)
+check("segment reason: a fact sheet from before the field existed still flattens", bool(facts.flatten_fact_sheet({k: v for k, v in fs_r.items() if k != "segment_drivers"})))
+merged = facts.merge_fact_sheets([fs_r, facts.validate_fact_sheet(reason_raw, PAGE_REASON, MARKET, LOG, TODAY)], [{"name": "a", "url": "u", "kind": "cmi"}])
+check("segment reason: merging keeps the tie and does not repeat a reason",
+      len(merged["segment_drivers"]) == 1 and merged["segment_drivers"][0]["name"] == "Cloud Based", str(merged["segment_drivers"]))
+
 # ------------------------------------------------------------------ the figure gap-fill (report first, evidence second)
 def hit(title, snippet, url, source="", date_=None, excerpt=""):
     return search.SearchHit(title=title, snippet=snippet, url=url, source=source, date=date_, excerpt=excerpt)
@@ -355,6 +386,72 @@ check("filter: when too few pages name the whole market, the partial match is st
 _enc = search.SearchHit(title="t", snippet="s", url="https://x.example/a", source="Morningstar%2c Inc.", date=None)
 check("hit: a percent-encoded publisher name is decoded", _enc.source == "Morningstar, Inc." and
       search.SearchHit(title="t", snippet="s", url="https://x.example/b", source="Search Engine Land", date=None).source == "Search Engine Land")
+
+# ------------------------------------------------------------------ the dominant claim's quote may name its category in any spelling
+EV_PAGE = (
+    "The Global EV Charger Market is estimated to be valued at USD 14.0 billion in 2026. "
+    "On the basis of vehicle type, the market is segmented into: Battery Electric Vehicles (BEV), Plug-in Hybrid Electric Vehicles (PHEV). "
+    "The battery electric vehicle (BEV) segment is likely to dominate the market with approximately 57.0% in 2026. "
+    "The plug-in hybrid electric vehicle (PHEV) segment is likely to lead the hybrid vehicle part with approximately 30.0% in 2026. "
+    "On the basis of charging type, the market is segmented into: On-board Chargers, Off-board Chargers. "
+    "The on-board charger segment is set to lead with approximately 89.0% in 2026. "
+    "The off board charger segment held approximately 11.0% in 2026. "
+    "Key players operating in the market include Acme Corp."
+)
+
+
+def ev_raw() -> dict:
+    return {
+        "segments": [
+            {"type": "By Vehicle Type", "items": ["Battery Electric Vehicles (BEV)", "Plug-in Hybrid Electric Vehicles (PHEV)"]},
+            {"type": "By Charging Type", "items": ["On-board Chargers", "Off-board Chargers"]},
+        ],
+        "dominant": [
+            {"split": "By Vehicle Type", "name": "Battery Electric Vehicles (BEV)",
+             "quote": "The battery electric vehicle (BEV) segment is likely to dominate the market with approximately 57.0% in 2026"},
+            {"split": "By Charging Type", "name": "On-board Chargers",
+             "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+        ],
+    }
+
+
+def ev_segment(sheet: dict, kind: str) -> dict:
+    return next(s for s in sheet["segments"] if s["type"] == kind)
+
+
+ev = facts.validate_fact_sheet(ev_raw(), EV_PAGE, "EV Charger Market", LOG, TODAY)
+by_vehicle, by_charging = ev_segment(ev, "By Vehicle Type"), ev_segment(ev, "By Charging Type")
+check("dominant: a quote naming the category in another spelling is kept (singular, bracketed abbreviation)",
+      by_vehicle["dominant"] and by_vehicle["dominant"]["name"] == "Battery Electric Vehicles (BEV)", str(by_vehicle["dominant"]))
+check("dominant: a hyphenated category's quote is kept (hyphen, space and plural variants)",
+      by_charging["dominant"] and by_charging["dominant"]["name"] == "On-board Chargers", str(by_charging["dominant"]))
+check("dominant: the share the dominant quote states becomes the category's figure when it has none",
+      by_vehicle["figures"].get("Battery Electric Vehicles (BEV)", {}).get("amount") == 57.0, str(by_vehicle["figures"]))
+check("dominant: the same for the other split's stated leader (89.0%)",
+      by_charging["figures"].get("On-board Chargers", {}).get("figure") == "89.0%", str(by_charging["figures"]))
+
+raw = ev_raw()
+raw["dominant"][0]["quote"] = "The plug-in hybrid electric vehicle (PHEV) segment is likely to lead the hybrid vehicle part with approximately 30.0% in 2026"
+check("dominant: a quote that names another category is still refused",
+      ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Vehicle Type")["dominant"] is None)
+
+raw = ev_raw()
+raw["segments"][1]["items"] = [
+    {"name": "On-board Chargers", "figure": "89.0%", "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+    {"name": "Off-board Chargers", "figure": "11.0%", "quote": "The off board charger segment held approximately 11.0% in 2026"},
+]
+check("figures: a figure quote naming its category in another spelling is kept",
+      set(ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Charging Type")["figures"])
+      == {"On-board Chargers", "Off-board Chargers"})
+
+raw = ev_raw()
+raw["segments"][1]["items"] = [
+    {"name": "On-board Chargers", "figure": "89.0%", "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+    {"name": "Off-board Chargers", "figure": "89.0%", "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+]
+check("figures: a quote naming another category is still refused",
+      set(ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Charging Type")["figures"])
+      == {"On-board Chargers"})
 
 print()
 if FAILURES:

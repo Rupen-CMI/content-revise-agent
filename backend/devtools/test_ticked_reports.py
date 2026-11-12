@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import demand  # noqa: E402
+import evidence_call  # noqa: E402
 import external_reports  # noqa: E402
 import facts  # noqa: E402
 import keyword_research  # noqa: E402
@@ -20,7 +21,6 @@ import main  # noqa: E402
 import pipeline  # noqa: E402
 import publisher  # noqa: E402
 import search  # noqa: E402
-import us_search  # noqa: E402
 from docx_io import Paragraph, SourceArticle  # noqa: E402
 
 FAILURES: list[str] = []
@@ -109,7 +109,7 @@ check("nothing usable: empty result and the page is named in a warning",
       sources == [] and any(TICKED in w for w in warnings), str(warnings))
 check("no pages at all: empty result, no model call", main._use_outside_pages(PICKED, [], {}, [], LOG) == ({}, [], {}))
 
-# ----------------------------------------------------------------------------------- _step2_v2 end to end
+# ----------------------------------------------------------------------------------- _build_reports end to end
 
 
 def make_run(found):
@@ -139,12 +139,13 @@ def step2(found, page_text, usable_urls):
         (keyword_research, "research", lambda m, l: {"suggestions": [], "pool": [], "ranking_terms": [], "method": ""}),
         (publisher, "run_publisher_points", lambda *a, **k: {"points": []}),
         (pipeline, "prepare_search_queries", lambda *a, **k: (["n"], ["w"], ["u"])),
+        (evidence_call, "run_evidence_prep", lambda *a, **k: {"publisher": {"points": []}, "demand": {"questions": []},
+                                                              "queries": (["n"], ["w"], ["u"])}),
         (pipeline, "run_search_evidence", lambda *a, **k: []),
-        (us_search, "run_us_search", lambda *a, **k: []),
     ]
     try:
         with patched_all(*stubs):
-            return main._step2_v2(run, [], [TICKED], markets=[PICKED], url_markets={TICKED: PICKED})
+            return main._build_reports(run, [], [TICKED], markets=[PICKED], url_markets={TICKED: PICKED})
     finally:
         main._RUNS.pop(TOKEN, None)
 
@@ -166,10 +167,10 @@ check("step2: ticked report unreadable -> the other report of the list is used a
 raised = None
 try:
     step2(found, {TICKED: "", SPARE: ""}, usable_urls=set())
-except main.HTTPException as e:
+except main.PipelineError as e:
     raised = e
 check("step2: nothing works anywhere -> the error says WHY (which link, what happened)",
-      raised is not None and TICKED in str(raised.detail) and "could not be read" in str(raised.detail), str(raised and raised.detail))
+      raised is not None and TICKED in str(raised) and "could not be read" in str(raised), str(raised))
 
 print()
 if FAILURES:

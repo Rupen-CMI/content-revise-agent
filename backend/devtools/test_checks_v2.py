@@ -146,8 +146,49 @@ good = run_v2(TITLE, good_draft())
 for r in good:
     if r.name == "No point is made twice across sections":
         continue    # the builders pad every section with the same filler sentence; the check has its own tests
+    if r.name == checks.V2_US_EVIDENCE_CHECK_NAME:
+        continue    # this plan carries one U.S. fact, so the thin-evidence warning is expected; tested below
     check(f"good: {r.name}", r.passed, r.detail)
 check("good: length lands in the band", by_name(good, "Length").passed, by_name(good, "Length").detail)
+
+# ------------------------------------------------------------------ the U.S. evidence warning
+thin = by_name(good, "thin U.S. evidence")
+check("us evidence: one U.S. fact is thin: the check warns and says the section is written from the report's own facts",
+      not thin.passed and "report's own facts" in thin.detail, thin.detail)
+enough_inp = test_planning.us_inputs(2)
+enough_raw = test_planning.good_plan()
+enough_raw["sections"][1]["facts"] = ["fs.drivers.0", "W1"]
+enough_raw["sections"][4]["facts"] = []
+enough_plan = planning.validate_plan(enough_raw, enough_inp, test_planning.LOG)
+enough = run_v2(TITLE, good_draft(), plan=enough_plan, inp=enough_inp)
+check("us evidence: with two U.S. facts the check passes", by_name(enough, "thin U.S. evidence").passed)
+none_inp = test_planning.us_inputs(0, with_report_facts=False)
+none_plan = planning.validate_plan(enough_raw, none_inp, test_planning.LOG)
+none = run_v2(TITLE, good_draft(), plan=none_plan, inp=none_inp)
+check("us evidence: with no U.S. fact and no report fact it warns that the section is an editor note",
+      not by_name(none, "thin U.S. evidence").passed and "editor note" in by_name(none, "thin U.S. evidence").detail,
+      by_name(none, "thin U.S. evidence").detail)
+
+# ------------------------------------------------------------------ one piece of news evidence is cited once
+EVIDENCE_CHECK = "Each piece of news evidence is cited in one section and in one trend only"
+check("evidence reuse: a draft that cites each news item once passes", by_name(good, "cited in one section").passed)
+d = good_draft()
+trends_sec = next(s for s in d if s["sop"] == ["trends"])
+trends_sec["paragraphs"][2] = "Acme launched a new product. " + trends_sec["paragraphs"][2]
+players_sec = next(s for s in d if s["sop"] == ["key_players"])
+players_sec["paragraphs"][1] = "Acme launched a new product. " + players_sec["paragraphs"][1]
+res = run_v2(TITLE, d)
+check("evidence reuse: the same news item cited in a trend and in the key-players section fails the check and names it",
+      not by_name(res, "cited in one section").passed and "W1 is cited in trend 1 and again in key_players" in by_name(res, "cited in one section").detail,
+      by_name(res, "cited in one section").detail)
+d = good_draft()
+trends_sec = next(s for s in d if s["sop"] == ["trends"])
+trends_sec["paragraphs"][2] = "Acme launched a new product. " + trends_sec["paragraphs"][2]
+trends_sec["paragraphs"][6] = "Acme launched a new product. " + trends_sec["paragraphs"][6]
+res = run_v2(TITLE, d)
+check("evidence reuse: the same news item cited in two trend blocks fails the check",
+      not by_name(res, "cited in one section").passed and "trend 1 and again in trend 2" in by_name(res, "cited in one section").detail,
+      by_name(res, "cited in one section").detail)
 
 # ------------------------------------------------------------------ sponsor paragraph
 

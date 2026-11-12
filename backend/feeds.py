@@ -22,7 +22,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -35,6 +35,7 @@ import httpx
 import trafilatura
 
 import search
+import sections
 import sources
 
 _null_logger = logging.getLogger("revamp.null")
@@ -51,8 +52,8 @@ _BING_JITTER_S = 1.0
 _BING_RETRY_WAIT_S = 6.0         # wait after a throttled/failed Bing call, multiplied by the attempt number
 _BING_RETRIES = 2
 _BING_TRIP_AFTER = 3             # consecutive failed queries before Bing is abandoned for this run
-_BING_MAX_KEYWORD_QUERIES = 10   # of the LLM's open-web queries
-_BING_MAX_SITE_QUERIES = 9
+_BING_MAX_KEYWORD_QUERIES = 10   # of the LLM's open-web queries (the old chain; the section search spends sections.keyword_query_budget)
+_BING_MAX_SITE_QUERIES = sections.BING_SITE_QUERIES   # the three broadest news hosts (see site_queries)
 _BING_EARLY_QUERIES = 4          # keyword queries after which the caller may already judge the market 'thin' (see gather)
 _BING_MARKET = {"setmkt": "en-US", "cc": "US"}  # the articles have a U.S.-market section
 _FEED_WORKERS = 6
@@ -162,10 +163,13 @@ def _bing_turn():
 class _Bing:
     """Sequential Bing News RSS client with retry/backoff and a circuit breaker."""
 
-    def __init__(self, client: httpx.Client, logger: logging.Logger):
+    def __init__(self, client: httpx.Client, logger: logging.Logger, unquoted_retries: int = sections.UNQUOTED_RETRIES):
         self._client, self._logger = client, logger
         self._failed_in_a_row = 0
         self.disabled = False
+        self.unquoted_retries = unquoted_retries   # what is left of this run's allowance (run)
+        self.sections_with_hits: set[str] = set()  # sections (or "" for a query with none) that have a raw hit already (run)
+        self.queries = 0                           # queries sent, retries included (search)
 
     def _get(self, query: str, web: bool = False) -> list[search.SearchHit] | None:
         url = "https://www.bing.com/search" if web else "https://www.bing.com/news/search"
@@ -197,6 +201,7 @@ class _Bing:
         if self.disabled:
             return []
         hits = self._get(query, web)
+        self.queries += 1
         if hits is None:
             self._failed_in_a_row += 1
             if self._failed_in_a_row >= _BING_TRIP_AFTER:
@@ -207,12 +212,37 @@ class _Bing:
         self._logger.info(f"[bing{' web' if web else ''}] {query!r} -> {len(hits)} result(s)")
         return hits
 
-    def run(self, queries: list[str]) -> list[search.SearchHit]:
+    def run(
+        self, queries: list[str], sections_for: dict[str, list[str]] | None = None, default: tuple[str, ...] = (),
+        on_batch: Callable[[list[search.SearchHit]], None] | None = None,
+    ) -> list[search.SearchHit]:
+        """Each query in turn. With sections_for ({lower-cased query: [section, ...]}) every hit carries the sections of the
+        query that found it (default for a query not in the map). on_batch, if given, is called with this call's hits so far
+        after every query, so the caller can start work on them while the remaining queries run."""
         out: list[search.SearchHit] = []
         for i, q in enumerate(queries):
             if self.disabled:
                 break
-            out += self.search(q)
+            tag = (sections_for or {}).get(q.lower()) or list(default)
+            keys = set(tag) or {""}
+            batch = self.search(q)
+            if not batch and '"' in q and "site:" not in q and self.unquoted_retries > 0 and not keys & self.sections_with_hits:
+                # A quoted phrase plus extra words is the most over-constrained shape there is
+                # (15 of 24 Bing keyword queries in one run returned nothing): retry once unquoted,
+                # where a multi-word term is an implicit AND rather than a hard requirement.
+                # filter_hits re-checks relevance, so widening the query is safe. Each retry costs a query, so it is spent
+                # only on a section that has no hit at all yet, and at most sections.UNQUOTED_RETRIES times a run.
+                self.unquoted_retries -= 1
+                unquoted = " ".join(q.replace('"', "").split())
+                self._logger.info(f"[bing] {q!r} gave 0 result(s) and its section has no hit yet; retrying without the quotes: {unquoted!r}")
+                batch = self.search(unquoted)
+            for h in batch:
+                h.add_sections(tag)
+            if batch:
+                self.sections_with_hits |= keys
+            out += batch
+            if on_batch is not None:
+                on_batch(list(out))
             if i < len(queries) - 1:
                 time.sleep(_BING_QUERY_DELAY_S + random.uniform(0, _BING_JITTER_S))
         return out
@@ -235,12 +265,16 @@ class ClaimWebSearch:
         self._client.close()
 
 
-def bing_search(news_queries: list[str], web_queries: list[str], logger: logging.Logger = _null_logger) -> list[search.SearchHit]:
+def bing_search(
+    news_queries: list[str], web_queries: list[str], logger: logging.Logger = _null_logger,
+    sections_for: dict[str, list[str]] | None = None,
+) -> list[search.SearchHit]:
     """Bing News queries then Bing web queries on one polite client (same gate and breaker as the market search). Used by
-    the U.S. data search, which wants news AND statistics pages. Returns raw, unfiltered hits."""
+    the U.S. data search, which wants news AND statistics pages, and by the section top-up (sections_for tags each hit
+    with the sections of the query that found it). Returns raw, unfiltered hits."""
     with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
         bing = _Bing(client, logger)
-        out = bing.run(news_queries)
+        out = bing.run(news_queries, sections_for)
         for q in web_queries:
             out += bing.search(q, web=True)
     return out
@@ -349,26 +383,41 @@ def gather(
     market_name: str, core: str, queries: list[str], group_ids: list[str], key_players: list[str],
     logger: logging.Logger = _null_logger, topic_terms: list[str] = (),
     after_keywords: "Callable[[list[search.SearchHit]], None] | None" = None,
+    query_sections: dict[str, list[str]] | None = None, max_keyword_queries: int = _BING_MAX_KEYWORD_QUERIES,
+    on_hits: "Callable[[list[search.SearchHit]], None] | None" = None,
 ) -> list[search.SearchHit]:
     """Bing keyword queries + Bing site: queries + the relevant publisher feeds. Returns raw (unfiltered)
     hits, possibly empty; the caller filters them and decides whether the DDGS fallback is needed.
     after_keywords, if given, is called with the Bing hits after the first few keyword queries, before the rest of
-    them and the site: queries run, so the caller can start slow work (the DDGS fallback) that overlaps with the rest."""
+    them and the site: queries run, so the caller can start slow work (the DDGS fallback) that overlaps with the rest.
+    query_sections ({lower-cased query: [section, ...]}, the Evidence step's section search): each keyword hit carries the
+    sections of the query that found it; the site: queries and the publisher feeds are not about one section, so their
+    hits carry "market".
+    on_hits, if given, is called after EVERY Bing query with all the Bing hits so far, so the caller can start reading the
+    pages of the hits that look usable while the remaining (strictly sequential) queries run."""
     feed_defs = feeds_for(group_ids)
-    keyword_queries = queries[:_BING_MAX_KEYWORD_QUERIES]
+    keyword_queries = queries[:max_keyword_queries]
+    general = ("market",) if query_sections is not None else ()
     site_qs = site_queries(core, group_ids)
     logger.info(f"[gather] {len(feed_defs)} feed(s), {len(keyword_queries) + len(site_qs)} Bing query(ies) for groups {group_ids or '(none)'}")
     keep = _topical_filter([market_name], key_players, topic_terms)
     gate = _HostGate(_HOST_GAP_S)
     with ThreadPoolExecutor(1) as ex:
         rss_future = ex.submit(_fetch_feeds, feed_defs, keep, gate, logger)
+        bing_started = time.monotonic()
         with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
             bing = _Bing(client, logger)
-            bing_hits = bing.run(keyword_queries[:_BING_EARLY_QUERIES])
+            bing_hits = bing.run(keyword_queries[:_BING_EARLY_QUERIES], query_sections, general,
+                                 on_batch=(lambda batch: on_hits(batch)) if on_hits else None)
             if after_keywords is not None:
                 after_keywords(list(bing_hits))
-            bing_hits += bing.run(keyword_queries[_BING_EARLY_QUERIES:] + site_qs)
+            earlier = list(bing_hits)
+            bing_hits += bing.run(keyword_queries[_BING_EARLY_QUERIES:] + site_qs, query_sections, general,
+                                  on_batch=(lambda batch: on_hits(earlier + batch)) if on_hits else None)
+        logger.info(f"[timing] Bing queries: {bing.queries} in {time.monotonic() - bing_started:.1f}s")
         rss_hits = rss_future.result()
+        for h in rss_hits:
+            h.add_sections(general)
     logger.info(f"[gather] Bing {len(bing_hits)} + RSS {len(rss_hits)} raw hit(s){' (Bing was abandoned)' if bing.disabled else ''}")
     return bing_hits + rss_hits
 
@@ -398,6 +447,93 @@ def _best_excerpt(text: str, stems: set[str]) -> str:
     return out[:_EXCERPT_CHARS].rsplit(" ", 1)[0] if len(out) > _EXCERPT_CHARS else out
 
 
+class ExcerptReader:
+    """Reads the article pages of hits (politely) and stores an excerpt on hit.excerpt. Pages can be read as the hits arrive
+    (start), while the sequential Bing queries are still running, and `finish` then reads whatever was not started and waits
+    for the stragglers. Every host keeps its one-request-at-a-time gap (_HostGate) whichever way a page is started. A hit whose
+    page can't be read keeps only its headline and snippet. Never raises."""
+
+    def __init__(self, market_name: str, logger: logging.Logger = _null_logger, focus: str = ""):
+        self._logger = logger
+        self._blocked = set(_registry()["fulltext_blocked"])
+        g = search._gate_for_phrase(market_name, search._catalog_token_freq())
+        self._stems = set(g[1] or [g[0]]) if g else set()
+        if focus:  # claim backing: pick the paragraphs that talk about the claim itself, not about a market
+            self._stems = search._content_tokens(focus)
+        self._gate = _HostGate(_HOST_GAP_S)
+        self._runtime_blocked: set[str] = set()
+        self._stats = defaultdict(int)
+        self._client = httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
+        self._pool = ThreadPoolExecutor(_ARTICLE_WORKERS)
+        self._futures: dict[str, Future] = {}
+        self._started_per_host: dict[str, int] = defaultdict(int)
+
+    def _one(self, h: search.SearchHit) -> None:
+        host = h.host
+        if host in self._blocked or host in self._runtime_blocked or h.url.lower().split("?")[0].endswith((".pdf", ".xlsx", ".zip")):
+            self._stats["skipped"] += 1
+            return
+        try:
+            with self._gate.slot(host):
+                if host in self._runtime_blocked:
+                    self._stats["skipped"] += 1
+                    return
+                r = self._client.get(h.url)
+            if r.status_code in _BLOCKING_STATUSES:
+                self._runtime_blocked.add(host)
+                self._stats["blocked"] += 1
+                return
+            if r.status_code != 200 or "html" not in r.headers.get("content-type", "html"):
+                self._stats["failed"] += 1
+                return
+            text = trafilatura.extract(r.text[:_MAX_PAGE_BYTES], include_comments=False, include_tables=False) or ""
+            if len(text.split()) < _EXCERPT_MIN_WORDS:
+                self._stats["thin"] += 1
+                return
+            h.excerpt = _best_excerpt(text, self._stems)
+            self._stats["ok"] += 1
+        except Exception:
+            self._stats["failed"] += 1
+
+    def _start(self, h: search.SearchHit) -> Future:
+        if h.url not in self._futures:
+            self._started_per_host[h.host] += 1
+            self._futures[h.url] = self._pool.submit(self._one, h)
+        return self._futures[h.url]
+
+    def start(self, hits: list[search.SearchHit]) -> None:
+        """Start reading these hits' pages in the background (a page already started is not read twice). At most
+        _MAX_FETCHES_PER_HOST pages of one site are started this way; hits arrive best-first."""
+        for h in hits:
+            if h.url not in self._futures and self._started_per_host[h.host] < _MAX_FETCHES_PER_HOST:
+                self._start(h)
+
+    def finish(self, hits: list[search.SearchHit]) -> None:
+        """Read what is left of the final hits (at most _MAX_FETCHES_PER_HOST per site, the best-first ones), wait up to
+        _ARTICLE_STAGE_TIMEOUT_S for the readers, then stop them. Pages started early for a hit that did not make the final
+        list are simply not used."""
+        per_host: dict[str, int] = defaultdict(int)
+        to_fetch = []
+        for h in hits:  # hits arrive best-first, so a site's strongest articles are the ones that get read
+            per_host[h.host] += 1
+            if per_host[h.host] <= _MAX_FETCHES_PER_HOST:
+                to_fetch.append(h)
+        try:
+            futures = [self._start(h) for h in to_fetch]
+            _, pending = wait(futures, timeout=_ARTICLE_STAGE_TIMEOUT_S)
+            if pending:
+                self._logger.warning(f"[fulltext] {len(pending)} fetch(es) still running after {_ARTICLE_STAGE_TIMEOUT_S}s — dropped")
+        finally:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            self._client.close()
+        self._logger.info(f"[fulltext] {len(to_fetch)} of {len(hits)} hit(s) fetched: {dict(self._stats)}")
+
+    def close(self) -> None:
+        """Stop the readers without waiting (the search failed before finish)."""
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._client.close()
+
+
 def attach_excerpts(
     hits: list[search.SearchHit], market_name: str, logger: logging.Logger = _null_logger, focus: str = "",
 ) -> None:
@@ -405,57 +541,4 @@ def attach_excerpts(
     be read keeps only its headline and snippet. Never raises."""
     if not hits:
         return
-    blocked = set(_registry()["fulltext_blocked"])
-    freq = search._catalog_token_freq()
-    g = search._gate_for_phrase(market_name, freq)
-    stems = set(g[1] or [g[0]]) if g else set()
-    if focus:  # claim backing: pick the paragraphs that talk about the claim itself, not about a market
-        stems = search._content_tokens(focus)
-    gate = _HostGate(_HOST_GAP_S)
-    runtime_blocked: set[str] = set()
-    stats = defaultdict(int)
-
-    def one(h: search.SearchHit) -> None:
-        host = h.host
-        if host in blocked or host in runtime_blocked or h.url.lower().split("?")[0].endswith((".pdf", ".xlsx", ".zip")):
-            stats["skipped"] += 1
-            return
-        try:
-            with gate.slot(host):
-                if host in runtime_blocked:
-                    stats["skipped"] += 1
-                    return
-                r = client.get(h.url)
-            if r.status_code in _BLOCKING_STATUSES:
-                runtime_blocked.add(host)
-                stats["blocked"] += 1
-                return
-            if r.status_code != 200 or "html" not in r.headers.get("content-type", "html"):
-                stats["failed"] += 1
-                return
-            text = trafilatura.extract(r.text[:_MAX_PAGE_BYTES], include_comments=False, include_tables=False) or ""
-            if len(text.split()) < _EXCERPT_MIN_WORDS:
-                stats["thin"] += 1
-                return
-            h.excerpt = _best_excerpt(text, stems)
-            stats["ok"] += 1
-        except Exception:
-            stats["failed"] += 1
-
-    client = httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
-    ex = ThreadPoolExecutor(_ARTICLE_WORKERS)
-    per_host: dict[str, int] = defaultdict(int)
-    to_fetch = []
-    for h in hits:  # hits arrive best-first, so a site's strongest articles are the ones that get read
-        per_host[h.host] += 1
-        if per_host[h.host] <= _MAX_FETCHES_PER_HOST:
-            to_fetch.append(h)
-    try:
-        futures = [ex.submit(one, h) for h in to_fetch]
-        done, pending = wait(futures, timeout=_ARTICLE_STAGE_TIMEOUT_S)
-        if pending:
-            logger.warning(f"[fulltext] {len(pending)} fetch(es) still running after {_ARTICLE_STAGE_TIMEOUT_S}s — dropped")
-    finally:
-        ex.shutdown(wait=False, cancel_futures=True)
-        client.close()
-    logger.info(f"[fulltext] {len(to_fetch)} of {len(hits)} hit(s) fetched: {dict(stats)}")
+    ExcerptReader(market_name, logger, focus).finish(hits)

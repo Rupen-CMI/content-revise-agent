@@ -1,41 +1,28 @@
-"""The U.S. data search: the article's U.S. section has no other region to lean on, so it gets a search of its own.
+"""The U.S. section's share of the market web search: the article's U.S. section has no other region to lean on, so it gets
+queries of its own (sections.US_QUERIES of them, inside the run's one Bing budget; no separate U.S. search runs).
 
-Runs beside the general market web search in Step 2 and returns pages about the market in the United States (news and
-statistics pages, found with several query styles). Every page kept must name the U.S. in its own text; the hits join the
-general pool, are shown to SELECT marked as found by the U.S. search, and SELECT tags the real U.S. findings "us".
-Best-effort like every search stage: a failure returns nothing and the planner flags the section for the editor.
+The queries are built here; the general search (pipeline.run_search_evidence) runs them with every other section's, and each
+hit they find carries the section "us". After the pages are read, every page found for "us" must name the U.S. in its own
+text: it is then marked scope "us" (SELECT sees it as found by the U.S. search and tags the real U.S. findings "us"); a page
+that does not loses the "us" section, and is dropped when it had no other.
 """
-import logging
 import re
 
-import config
-import feeds
 import search
-from pipeline import _market_core
-from pipeline_log import section
 
 _US_TEXT_RE = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican\b")
-_KEEP = 10
-_MIN_BEFORE_FALLBACK = 3
 
 
-def us_news_queries(market_name: str) -> list[str]:
-    core = _market_core(market_name)
+def us_news_queries(core: str) -> list[str]:
+    """The U.S. section's Bing queries for a market's core noun, best first (the budget takes the first sections.US_QUERIES)."""
+    # adoption, policy, company investment and news wording: size-style phrasings ("market growth", "statistics", "market share") bring
+    # back research firms' own report pages, which the search filters drop, and leave no U.S. page
     return [
         f'"{core}" United States',
-        f"{core} U.S. market growth",
         f"{core} U.S. adoption demand",
-        f"{core} U.S. federal policy",
         f"{core} U.S. companies investment",
-    ]
-
-
-def us_web_queries(market_name: str) -> list[str]:
-    core = _market_core(market_name)
-    return [
-        f"{core} market United States growth",
-        f"{core} industry United States statistics",
-        f"{core} U.S. market share demand",
+        f"{core} U.S. federal policy",
+        f"{core} U.S. expansion announced",
     ]
 
 
@@ -43,45 +30,17 @@ def names_the_us(hit: search.SearchHit) -> bool:
     return bool(_US_TEXT_RE.search(f"{hit.title} {hit.snippet} {hit.excerpt}"))
 
 
-def run_us_search(
-    market_name: str, sponsor_hosts: tuple[str, ...], key_players, logger: logging.Logger, topic_terms: list[str] = (),
-) -> list[search.SearchHit]:
-    """Pages about this market in the United States, each naming the U.S. in its own text, marked scope "us"."""
-    section(logger, "U.S. DATA SEARCH")
-    try:
-        raw = feeds.bing_search(us_news_queries(market_name), us_web_queries(market_name), logger)
-
-        def keep(hits: list[search.SearchHit]) -> list[search.SearchHit]:
-            kept = search.filter_hits(
-                hits, [market_name], sponsor_hosts, limit=_KEEP * 2, logger=logger, key_players=key_players,
-                max_per_host=config.SEARCH_MAX_PER_HOST, topic_terms=list(topic_terms),
-            )
-            return [h for h in kept if names_the_us(h) or h.is_news][:_KEEP]
-
-        kept = keep(raw)
-        if len(kept) < _MIN_BEFORE_FALLBACK:
-            logger.info(f"[us-search] only {len(kept)} page(s) from Bing; adding the text-search engines")
-            raw += search.run_text_searches(us_web_queries(market_name)[:2], logger)
-            kept = keep(raw)
-    except Exception:
-        logger.warning("[us-search] the U.S. search failed; the section relies on the report's own U.S. facts", exc_info=True)
-        return []
-    feeds.attach_excerpts(kept, market_name, logger)
-    kept = [h for h in kept if names_the_us(h)]
-    for h in kept:
-        h.scope = "us"
-    logger.info(f"[us-search] kept {len(kept)} page(s) that name the U.S.: " + "; ".join(h.host for h in kept))
-    return kept
-
-
-def merge_hits(general: list[search.SearchHit], us_hits: list[search.SearchHit]) -> list[search.SearchHit]:
-    """The general pool followed by the U.S. pages it does not already hold. A page both searches found keeps the U.S.
-    mark, so SELECT sees it as a U.S. candidate."""
-    by_url = {h.url: h for h in general}
-    extra: list[search.SearchHit] = []
-    for h in us_hits:
-        if h.url in by_url:
-            by_url[h.url].scope = "us"
-        else:
-            extra.append(h)
-    return list(general) + extra
+def mark_us_hits(hits: list[search.SearchHit]) -> list[search.SearchHit]:
+    """The hits with the U.S. section settled (call it once the pages are read): a hit found for "us" that names the U.S. is
+    marked scope "us"; one that does not loses the "us" section and is dropped when that was its only one."""
+    out: list[search.SearchHit] = []
+    for h in hits:
+        if "us" in h.sections:
+            if names_the_us(h):
+                h.scope = "us"
+            else:
+                h.sections = [s for s in h.sections if s != "us"]
+                if not h.sections:
+                    continue
+        out.append(h)
+    return out

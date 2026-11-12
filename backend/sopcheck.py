@@ -7,13 +7,12 @@ a run's context are listed as skipped, with the reason, so a pass never claims m
 """
 import re
 from io import BytesIO
-from urllib.parse import urlparse
 
 import docx
 from docx.oxml.ns import qn
 
 import checks
-from config import CMI_HOST
+from config import is_cmi_url
 
 _FAQ_HEADING_RE = re.compile(r"\bfaqs?\b|frequently asked", re.IGNORECASE)
 
@@ -69,7 +68,7 @@ def _read(raw: bytes) -> dict:
 
 
 def _is_cmi(url: str) -> bool:
-    return urlparse(url).netloc.lower().endswith(CMI_HOST)
+    return is_cmi_url(url)
 
 
 def _result(name: str, passed: bool, detail: str = "", soft: bool = False) -> dict:

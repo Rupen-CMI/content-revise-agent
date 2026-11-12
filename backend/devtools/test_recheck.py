@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import docx  # noqa: E402
 
 import checks  # noqa: E402
+import config  # noqa: E402
 import pipeline  # noqa: E402
 import prompts  # noqa: E402
 import recheck  # noqa: E402
@@ -154,11 +155,46 @@ check("humanized: the SOP rule behind them is checked instead", names.get("2-3 h
 check("humanized: a reworded FAQ question is not a failure", all(
     "planned MSQ" not in r.detail for r in humanized), str([r.detail for r in humanized if "planned MSQ" in r.detail]))
 # the builders pad every section with the same filler sentence, which the repeated-point check rightly flags (it has its own tests)
-_FIXTURE_ONLY = "No point is made twice across sections"
-check("humanized: nothing fails because of the edits", all(v for k, v in names.items() if k != _FIXTURE_ONLY),
-      str([k for k, v in names.items() if not v and k != _FIXTURE_ONLY]))
+# ... and the fixture's plan carries one U.S. fact, so its thin-U.S.-evidence warning is expected (tested in test_checks_v2)
+_FIXTURE_ONLY = ("No point is made twice across sections", checks.V2_US_EVIDENCE_CHECK_NAME)
+check("humanized: nothing fails because of the edits", all(v for k, v in names.items() if k not in _FIXTURE_ONLY),
+      str([k for k, v in names.items() if not v and k not in _FIXTURE_ONLY]))
 default_names = {r.name for r in t.run_v2(t.TITLE, original, faq=t.GOOD_FAQ)}
 check("final screen keeps the plan-identity checks", any(k.startswith("Draft structure matches") for k in default_names))
+
+# ------------------------------------------------------------------ only the report's own page is the report link
+ALD_URL = "https://aldwych.example/research"
+SEGS = {
+    "P1": [("The ", None), ("Zzz Widget Market", "http://coherentmarketinsights.com/market-insight/zzz-widget-services-market-1/"), (" grows.", None)],
+    "P2": [("See ", None), ("another report", "https://www.coherentmarketinsights.com/market-insight/other-market-2"), (" too.", None)],
+    "P3": [("Try ", None), ("research help", "http://www.aldwych.example/research/"), (" now.", None)],
+    "P4": [("Or ", None), ("a look-alike", "https://www.notcoherentmarketinsights.com/x"), (" here.", None)],
+}
+write_docx(OUT, t.TITLE, [{"heading": "", "sop": [], "paragraphs": list(SEGS)}], lambda text: SEGS.get(text, [(text, None)]))
+link_raw = OUT.read_bytes()
+OUT.unlink()
+blocks = recheck.read_blocks(link_raw, {ALD_URL: "L1"}, REPORT_URL)
+texts = {b["text"].split()[0]: b for b in blocks[1:]}
+check("report link: the report URL in another scheme, without www, with a trailing slash is the report link",
+      "[[CMI_LINK:Zzz Widget Market]]" in texts["The"]["text"] and texts["The"]["other_cmi"] == [], str(texts["The"]))
+check("report link: another page on the CMI site is plain words and is listed",
+      "[[CMI_LINK" not in texts["See"]["text"] and "another report" in texts["See"]["text"]
+      and len(texts["See"]["other_cmi"]) == 1 and "other-market-2" in texts["See"]["other_cmi"][0], str(texts["See"]))
+check("client link: matched by URL whatever the www, scheme and trailing slash", "[[CLIENT_LINK:L1|research help]]" in texts["Try"]["text"], str(texts["Try"]))
+check("report link: a look-alike host is not CMI, so it is neither the report link nor flagged",
+      "[[CMI_LINK" not in texts["Or"]["text"] and texts["Or"]["other_cmi"] == [], str(texts["Or"]))
+legacy = recheck.read_blocks(link_raw, None, None)
+check("report link: with no report URL given every CMI link counts as before",
+      sum(b["text"].count("[[CMI_LINK:") for b in legacy) == 2)
+no_report = recheck.read_blocks(link_raw, None, "")
+check("report link: with link_report off no CMI link counts as the report", sum(b["text"].count("[[CMI_LINK:") for b in no_report) == 0
+      and sum(len(b["other_cmi"]) for b in no_report) == 2)
+parsed_l = recheck.parse(link_raw, t.TITLE, [{"heading": "", "sop": [], "paragraphs": list(SEGS)}], [], "", {ALD_URL: "L1"}, REPORT_URL)
+check("report link: parse says a CMI link is not the report", any(n.startswith("a CMI link that is not the report") and "other-market-2" in n for n in parsed_l["notes"]),
+      str(parsed_l["notes"]))
+check("report link: same_url ignores scheme, www, host case, fragment and trailing slash but not the path",
+      config.same_url("HTTP://WWW.Site.com/a/#x", "https://site.com/a") and not config.same_url("https://site.com/a", "https://site.com/b")
+      and not config.same_url("", ""))
 
 if FAILURES:
     print("FAIL")

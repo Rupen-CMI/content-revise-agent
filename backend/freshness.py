@@ -72,6 +72,29 @@ def is_stale(d: date, today: date | None = None) -> bool:
     return d < ref - STALE_AFTER
 
 
+# A bare year that dates an event ("in 2018", "on 3 May 2018" is caught by INLINE_EVENT_DATE_RE). "founded in 2008" is
+# not an event date, so the years a company or product was founded, established or formed are excluded.
+_EVENT_YEAR_RE: re.Pattern[str] = re.compile(
+    r"(?<!founded )(?<!established )(?<!incorporated )(?<!formed )(?<!born )"
+    r"\b(?:in|on|during)\s+(?:early\s+|mid-?\s*|late\s+)?((?:19|20)\d\d)\b",
+    re.IGNORECASE,
+)
+_ANY_YEAR_RE: re.Pattern[str] = re.compile(r"(?<!\d)((?:19|20)\d\d)(?!\d)")
+
+
+def names_old_event(text: str, today: date | None = None) -> bool:
+    """True when the text dates an event two or more years back and carries no year in the current or previous year:
+    a month or quarter date older than the freshness window, or a bare year after in/on/during at least two years back."""
+    ref: date = today or date.today()
+    if any(int(y) >= ref.year - 1 for y in _ANY_YEAR_RE.findall(text or "")):
+        return False
+    for m in INLINE_EVENT_DATE_RE.finditer(text or ""):
+        d: date | None = event_date(m)
+        if d is not None and is_stale(d, ref):
+            return True
+    return any(int(y) <= ref.year - 2 for y in _EVENT_YEAR_RE.findall(text or ""))
+
+
 def strip_stale_developments(text: str, today: date | None = None) -> tuple[str, list[str]]:
     """Drop lines whose leading event date is stale; return (kept text, removed lines)."""
     ref: date = today or date.today()

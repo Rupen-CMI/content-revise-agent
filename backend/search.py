@@ -8,7 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
@@ -101,21 +101,39 @@ def report_page_reason(hit: "SearchHit") -> str | None:
     return "a market-report page" if pattern.search(hit.title) else None
 
 
+def listing_page_reason(hit: "SearchHit") -> str | None:
+    """Why this hit is a directory, review aggregator, listicle, guide or webinar page (so not evidence), or None."""
+    if sources.is_listing(hit.host):
+        return "a directory or review listing site"
+    return "a listicle, ranking, guide or webinar title" if _LISTING_TITLE_RE.search(hit.title) else None
+
+
 # Section/landing pages and profile pages ("Newsroom", "Nasdaq Watch", "United States", "Ross Allardice")
 # are 1-3 words; real headlines carrying a fact are longer.
 _MIN_TITLE_WORDS = 4
 
-# Titles of definition/how-to/explainer/directory pages — reference material, not a reported
-# event. Applied to text (background) hits only; news hits are dated articles about events and
-# don't need it. "Market Size, Share, Growth" is the report-PR SEO pattern itself (a page titled
-# exactly that is a rival firm's own report landing page even when its own domain isn't blocklisted
-# yet — found live on markwideresearch.com, techsciresearch.com, etc.). Also catches product-roundup/listicle pages ("10 Best X Reviewed for 2026", "Top 10 Best X (2026 Review)", "32 Best X Tools") — a buying-guide comparison page, not a reported event, confirmed live: 7 of 19 kept hits for one run were exactly this pattern and all were still correctly rejected by SELECT, but they crowded out the real candidates and wasted the match budget.
+# Titles of definition/explainer/directory pages — reference material, not a reported event. Applied to
+# text (background) hits only; news hits are dated articles about events and don't need it. "Market Size,
+# Share, Growth" is the report-PR SEO pattern itself (a page titled exactly that is a rival firm's own
+# report landing page even when its own domain isn't blocklisted yet — found live on markwideresearch.com,
+# techsciresearch.com, etc.). The listicle, guide and webinar titles are in _LISTING_TITLE_RE instead.
 _DEFINITIONAL_TITLE_RE = re.compile(
-    r"\b(meaning|definitions?|glossary)\b|\bwhat (is|are)\b|\bhow to\b|\b(guide|introduction|intro) to\b"
-    r"|\bexplained\b|\bfor beginners\b|\b(types|examples|benefits|advantages) of\b|\bvs\.?\b"
+    r"\b(meaning|definitions?|glossary)\b|\b(introduction|intro) to\b"
+    r"|\bexplained\b|\bfor beginners\b|\b(types|examples|benefits|advantages) of\b"
     r"|\bmarket (size|share),?\s*(share,?\s*)?growth\b|\blist of\b|\b(news|articles?) (archive|index|hub)\b"
-    r"|^\s*[\w\s&]+\s(articles|news)\s*$"
-    r"|\b(top|best)\s+\d+\b|\b\d+\+?\s+(best|tools|apps|platforms|solutions)\b|\(\d{4}\s*review\)",
+    r"|^\s*[\w\s&]+\s(articles|news)\s*$",
+    re.IGNORECASE,
+)
+# Titles of listicles, rankings, directories, comparisons, guides and webinar/eBook promotions — never a reported development
+# ("Top 10 Best X Reviewed for 2026", "Top 10 Best X (2026 Review)", "32 Best X Tools", "100 top skin care companies",
+# "Best X of 2026"). Applied to every hit, news included, because a dated headline that is itself a roundup or a "vs." piece is
+# not a development either. Confirmed live: 7 of 19 kept hits for one run were product roundups, all still rejected by SELECT,
+# but they crowded out the real candidates and wasted the match budget.
+_LISTING_TITLE_RE = re.compile(
+    r"\btop\s+\d+\b|\b\d+\+?\s+(?:top|best|tools|apps|platforms|solutions)\b|\bbest\b.{0,60}?\b(?:of|in|for) 20\d\d\b"
+    r"|\bhow to\b|\bguide to\b|\bwhat (?:is|are)\b|\bultimate guide\b|\beverything you need to know\b"
+    r"|\bvs\b|\bcomparisons?\b|\balternatives?\b|^\s*reviews?:|\(\d{4}\s*review\)"
+    r"|\bwebinars?\b|\be-?books?\b|\bwhite ?papers?\b",
     re.IGNORECASE,
 )
 
@@ -206,6 +224,9 @@ _QUERY_TIMEOUT_S = 20
 _QUERY_DELAY_S = 4.0  # base gap between queries (+ up to 2.5s jitter)
 _INTRA_QUERY_DELAY_S = 2.0  # base gap between the news and text calls of one query (+ jitter)
 _QUERY_RETRIES = 2
+# At most this many zero-result QUOTED queries a run are retried without their quotes (and only while their section, or for
+# the DDGS lanes the whole lane, has no hit yet): every retry is one more request on a throttled engine.
+UNQUOTED_RETRIES = 3
 
 
 @dataclass
@@ -225,6 +246,11 @@ class SearchHit:
     # "claim" for pages retrieved to back one claim of the original article (claim_id), else "market".
     scope: str = "market"
     claim_id: str = ""
+    # The rules that kept this hit in filter_hits ("tokens", "topic_terms", ...), set when it passes.
+    # strong_hit_count reads them to judge how strongly the kept pool actually names the market.
+    keep_rules: list[str] | None = None
+    # The evidence sections whose queries found this hit (sections.SECTIONS); a hit found by two sections' queries keeps both.
+    sections: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # a feed can hand the publisher's name percent-encoded ("Morningstar%2c Inc."); it is written into the article as a name
@@ -234,6 +260,11 @@ class SearchHit:
     @property
     def host(self) -> str:
         return urlparse(self.url).netloc.lower().removeprefix("www.")
+
+    def add_sections(self, names) -> None:
+        for n in names:
+            if n not in self.sections:
+                self.sections.append(n)
 
 
 # --------------------------------------------------------------- dev-only disk cache (config.SEARCH_CACHE)
@@ -412,10 +443,22 @@ def _ddgs_gate(kind: str):
 def _lane(kind: str, fn, queries: list[str], logger: logging.Logger) -> list[SearchHit]:
     """One kind of DDGS call (news or text) for every query, in order, each request through that kind's gate."""
     out: list[SearchHit] = []
+    retries = UNQUOTED_RETRIES
     with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
         for q in queries:
             with _ddgs_gate(kind):
                 batch = _attempt(fn, d, q, kind, logger)
+            if not batch and not out and retries > 0 and '"' in q and "site:" not in q:
+                # A quoted phrase plus extra words is the most over-constrained shape there is
+                # (15 of 24 Bing queries in one run found nothing): retry once unquoted, where a
+                # multi-word term is an implicit AND rather than a hard requirement. filter_hits
+                # re-checks relevance, so widening the query is safe. Each retry is an extra request, so it is
+                # spent only while the lane has found nothing at all yet, and at most UNQUOTED_RETRIES times.
+                retries -= 1
+                unquoted = " ".join(q.replace('"', "").split())
+                logger.info(f"[search] {kind} {q!r} gave 0 result(s); retrying without the quotes: {unquoted!r}")
+                with _ddgs_gate(kind):
+                    batch = _attempt(fn, d, unquoted, kind, logger)
             logger.info(f"[search] {kind} {q!r}: {len(batch)} raw result(s)")
             out += batch
     return out
@@ -467,6 +510,17 @@ _TECH_HEAD_SYNONYMS = frozenset({
     "applications", "tool", "tools", "technology", "technologies", "tech",
     "martech", "adtech", "cloud", "automation", "agentic",
 })
+
+# Product words that mark a software market's own story beyond the market's tokens and topic terms: a
+# headline naming a key player together with one of these ("monday.com brings voice and AI agents into
+# its work management platform", "Asana completes acquisition of StackAI, a no-code AI workflow
+# platform", "Asana launches Dash, a personal AI chief of staff") is this market's news even when it
+# holds no market token and no topic term — one live run kept only 1 of 3 such player stories for an
+# Agile project management market and the sub-segments went unbacked. Chosen so a Patch Tuesday /
+# Windows-update story ("fixes for Windows enterprise users") still carries none of them, and so a
+# non-software market (a "services" head, say) gains nothing.
+_PLAYER_PRODUCT_RE = re.compile(
+    r"\b(?:platforms?|apps?|applications?|software|suites?|workflows?|saas|ai|productivity)\b", re.IGNORECASE)
 
 # A market-name modifier seen in this share of catalog keywords or more is too common to
 # identify one market, so the gate doesn't require it. Kept at 0.5%: at 1% "digital"
@@ -530,6 +584,19 @@ def stem_hit(word: str, stem: str) -> bool:
     return word == stem or (len(stem) >= 5 and word.startswith(stem))
 
 
+def _word_plural_or_compound(token: str, hit_tokens: set[str]) -> bool:
+    """The market word as a whole word, its plural, or the first half of a compound built on it
+    ("wealth" -> "wealthtech"). Unlike the prefix stem match, a derived word is NOT a match:
+    "projector" is a different product from a "project" market and "marketer" is not market
+    coverage, so the extension must be long enough to be a word of its own rather than a
+    grammatical ending."""
+    if token in hit_tokens or token + "s" in hit_tokens:
+        return True
+    return len(token) >= 5 and any(
+        w.startswith(token) and 4 <= len(w) - len(token) <= 8 for w in hit_tokens
+    )
+
+
 def compile_topic_terms(terms: list[str]) -> list[re.Pattern]:
     """Whole-word/phrase patterns (plural allowed) for the topic vocabulary the query-writing step produced."""
     out = []
@@ -546,8 +613,102 @@ def _head_matched(head: str, hit_tokens: set[str]) -> bool:
     return head in _TECH_HEAD_SYNONYMS and bool(_TECH_HEAD_SYNONYMS & hit_tokens)
 
 
-def _player_patterns(key_players: list[str]) -> list[tuple[str, re.Pattern]]:
-    return [(p, re.compile(r"\b" + re.escape(p) + r"\b", re.IGNORECASE)) for p in key_players if p]
+# A key player whose name is also an ordinary English word — a weekday or month ("Monday",
+# "March") or a common noun ("Apple", "Square", "Target", "Box", "Slack", "Zoom", "Notion") —
+# matched case-insensitively keeps every headline that merely mentions the word: one real run kept
+# "Boston University misses revenue projections by $42M … Monday" because the market's key player
+# was Monday.com. Such a name is therefore matched case-sensitively as a proper name AND only when
+# a company marker follows (see _player_patterns).
+_COMMON_PLAYER_WORDS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "apple", "square", "target", "box", "notion", "slack", "zoom",
+})
+# Corporate suffixes at the end of a key player's name name no company on their own, and the same
+# for generic business words inside one ("Pivotal Software" must not add a bare "Software" matcher).
+_PLAYER_CORP_SUFFIXES = frozenset({
+    "inc", "ltd", "limited", "llc", "plc", "sa", "ag", "nv", "gmbh", "co", "corp",
+    "corporation", "company", "holdings", "group", "bv", "llp", "pvt", "pty", "oy",
+})
+_GENERIC_NAME_WORDS = frozenset({
+    "software", "solutions", "systems", "technologies", "technology", "platform", "platforms",
+    "cloud", "labs", "data", "digital", "network", "networks", "security", "analytics",
+    "global", "international", "partners", "consulting", "industries", "media", "ai",
+})
+
+
+def player_name_variants(player: str) -> list[str]:
+    """Every form one key player's name may be matched by, cleaned: corporate suffixes are dropped
+    and a multi-word name also matches by its significant words alone ("Atlassian JIRA" ->
+    "Atlassian JIRA", "Atlassian", "JIRA"), so coverage naming the vendor or its product counts
+    either way. A name that is also an ordinary English word gains its unambiguous domain form
+    ("Monday" -> also "monday.com"). Both the hit filter and the query builder start here."""
+    name = " ".join(str(player).split()).rstrip(",.")
+    words = name.split()
+    while len(words) > 1 and words[-1].lower().rstrip(".,") in _PLAYER_CORP_SUFFIXES:
+        words.pop()
+    name = " ".join(words).rstrip(",.")
+    if not name:
+        return []
+    variants = [name]
+    lowered = name.lower()
+    if lowered.endswith(".com") and len(name) > 4:
+        variants.append(name[:-4].rstrip(",."))
+    elif lowered in _COMMON_PLAYER_WORDS:
+        variants.append(lowered + ".com")
+    for w in words:
+        wl = w.lower().strip(".,")
+        if (len(wl) >= 4 and wl not in _PLAYER_CORP_SUFFIXES and wl not in _GENERIC_NAME_WORDS
+                and wl not in _COMMON_PLAYER_WORDS):
+            variants.append(w.strip(".,"))
+    return list(dict.fromkeys(variants))
+
+
+def clean_player_names(key_players: list[str]) -> list[str]:
+    """Key players as usable QUERY subjects (not match patterns): corporate suffixes are gone, and
+    a name that is also an ordinary English word is replaced by its unambiguous domain form — as a
+    query, "Monday" finds the weekday's news, "monday.com" finds the company's. Deduplicated, order
+    kept. The query-writing prompt and the in-code key-player queries both use this."""
+    out: list[str] = []
+    for player in key_players:
+        variants = player_name_variants(player)
+        if not variants:
+            continue
+        name = variants[0]
+        if name.lower() in _COMMON_PLAYER_WORDS:
+            name = name.lower() + ".com"
+        if name.lower() not in [x.lower() for x in out]:
+            out.append(name)
+    return out
+
+
+def _player_patterns(
+    key_players: list[str], market_words: frozenset[str] | set[str] = frozenset(),
+) -> list[tuple[str, re.Pattern]]:
+    """(player, pattern) for every cleaned variant of every key player (player_name_variants). A
+    variant that is also an ordinary English word or weekday/month ("Monday") is matched only as a
+    proper name followed by a company marker — a domain, a possessive, a corporate suffix, or a
+    word from the market's own vocabulary ("Monday launches a work management platform") — so the
+    bare weekday in an unrelated headline never counts as the company. Every other variant matches
+    case-insensitively."""
+    corp = r"\s+(?i:(?:inc|corp|corporation|ltd|llc|plc|gmbh)\b)"
+    product = ""
+    words = sorted(w for w in market_words if len(w) >= 3)
+    if words:
+        product = r"\s+(?i:(?:" + "|".join(re.escape(w) for w in words) + r")\b)"
+    marker = r"(?:\.com|['’]s|" + corp + (f"|{product}" if product else "") + ")"
+    out: list[tuple[str, re.Pattern]] = []
+    for player in key_players:
+        for variant in player_name_variants(player):
+            if variant.lower().endswith(".com"):  # the domain IS the marker: nothing may follow it
+                rx = re.compile(r"\b" + re.escape(variant), re.IGNORECASE)
+            elif variant.lower() in _COMMON_PLAYER_WORDS:
+                rx = re.compile(r"\b" + re.escape(variant) + marker)
+            else:
+                rx = re.compile(r"\b" + re.escape(variant), re.IGNORECASE)
+            out.append((player, rx))
+    return out
 
 
 def _is_key_player_own_site(host: str, key_players: list[str]) -> str | None:
@@ -590,7 +751,9 @@ def filter_hits(
         logger.info(f"[filter] gate {p!r}: head={head!r} required={required} generic={sorted(generic)}")
     logger.info(f"[filter] gate phrases ({len(full_phrases)}): {full_phrases}")
     logger.info(f"[filter] key players ({len(key_players)}): {list(key_players)}")
-    player_res = _player_patterns(list(key_players))
+    player_res = _player_patterns(list(key_players), {
+        t for _, (head, required, generic, non_head) in gates for t in (head, *non_head)
+    })
     topic_res = compile_topic_terms(list(topic_terms))
     logger.info(f"[filter] topic terms ({len(topic_res)}): {list(topic_terms)}")
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
@@ -613,7 +776,7 @@ def filter_hits(
             dropped += 1
             logger.info(f"[filter] DROP (blocked host {hit.host}): {hit.title!r}")
             continue
-        reason = report_page_reason(hit)
+        reason = report_page_reason(hit) or listing_page_reason(hit)
         if reason:
             dropped += 1
             logger.info(f"[filter] DROP ({reason}) [{hit.host}] {hit.title!r}")
@@ -665,34 +828,41 @@ def filter_hits(
             for _, (head, required, _, _) in gates
         )
         named_player = next((p for p, rx in player_res if rx.search(text)), None)
-        # A trusted source already vouches that this is real reporting, so the topical bar drops from
-        # "market identity AND head noun, as whole words" to "any market-identity word, matched by
-        # prefix". That is what lets "Wealthtech" / "Martech" / "Marketers" count for wealth / marketing,
-        # and lets a hit with no head noun ("Adhesion Wealth Launches Custom Model Solutions") through.
-        # SELECT still judges relevance afterwards.
         topic_hit = next((rx.pattern for rx in topic_res if rx.search(text)), None)
         # With a topic vocabulary, one market-identity word is not enough on its own either: a market named by a
         # generic word plus a specific one ("web" + "scraping") would otherwise pass every story that merely
         # contains the generic word ("web shells", "web apps"). The item must also use the market's head noun
         # or one of its topic terms.
+        # A trusted source already vouches that this is real reporting, so the topical bar drops
+        # from "market identity AND head noun, as whole words" to "a market-identity word, matched
+        # as a whole word, a plural or the head of a compound". That is what lets "Wealthtech" /
+        # "Martech" count for wealth / marketing — but the old prefix stem match also let
+        # "projector" count for "project" (22 unrelated items kept on trusted hosts in one real
+        # run), so a derived word is no longer a match. SELECT still judges relevance afterwards.
         trusted_ok = hit.is_news and sources.is_trusted(hit.host) and any(
-            any(stem_hit(w, t) for w in hit_tokens for t in (required or [head]))
+            any(_word_plural_or_compound(t, hit_tokens) for t in (required or [head]))
             and (not topic_res or topic_hit is not None or _head_matched(head, hit_tokens))
             for _, (head, required, _, _) in gates
         )
-        # A key-player name plus a generic category word is too weak a bar on its own — it is
-        # exactly the shape of that company's OWN homepage/product page ("Zoho | Cloud Software
-        # Suite", "Sign in to Zoho CRM"), true and on-topic but not a reported event or citable
-        # fact. Found live once LLM-generated queries started leaning on real company names much
-        # more than the old fixed templates did. Require the hit to also be a dated NEWS result —
-        # a background (undated) page naming a vendor is its own marketing material far more often
-        # than it is a substantive third-party fact about that vendor.
-        player_ok = hit.is_news and named_player is not None and (
-            sources.is_trusted(hit.host) or any(
-                any(t in hit_tokens for t in ([head] if not non_head else non_head))
-                for _, (head, _, _, non_head) in gates
-            )
+        # A key-player name alone never keeps a hit: with the old rule any dated news on a trusted
+        # host that merely named the player passed — "Microsoft" carried every Patch Tuesday story
+        # (one real run kept 70 items by that rule alone, and 46 of its 47 kept hits were noise),
+        # and the weekday-named player "Monday" matched the weekday in unrelated headlines. The
+        # name must come with a MARKET signal in the title+snippet: a topic term, or the market's
+        # head noun / a required market token as a whole word — or, for a software market
+        # (_TECH_HEAD_SYNONYMS head), a product word the headline itself carries
+        # (_PLAYER_PRODUCT_RE): "Asana completes acquisition of StackAI, a no-code AI workflow
+        # platform" and "Asana launches Dash, a personal AI chief of staff" are this market's news
+        # though they hold no market token and no topic term, while "Microsoft rolls out November
+        # Patch Tuesday fixes for Windows enterprise users" still carries no product word, and the
+        # weekday-name rule below is untouched.
+        product_ok = any(h in _TECH_HEAD_SYNONYMS for _, (h, _, _, _) in gates) \
+            and bool(_PLAYER_PRODUCT_RE.search(text))
+        market_signal = topic_hit is not None or product_ok or any(
+            _head_matched(head, hit_tokens) or any(t in hit_tokens for t in required)
+            for _, (head, required, _, _) in gates
         )
+        player_ok = hit.is_news and named_player is not None and market_signal
         # A sector-source item needs a topical signal beyond its host once the topic vocabulary exists: the trade press
         # of a broad industry (security, enterprise IT) publishes mostly stories that have nothing to do with this
         # market (patch notices, earnings dates, breaches). Without a vocabulary (the LLM step failed) the old
@@ -708,6 +878,7 @@ def filter_hits(
             ) if ok
         )
         if rules:
+            hit.keep_rules = rules.split("|")
             kept += 1
             logger.info(
                 f"[filter] KEEP (rule={rules}, tokens={sorted(matched_tokens)}, phrase={matched_phrase!r}"
@@ -731,6 +902,21 @@ def filter_hits(
         final.append(hit)
     logger.info(f"[filter] kept {kept}, dropped {dropped}, returning top {len(final)} of {kept}")
     return final
+
+
+# Rules that show the hit ITSELF names the market or uses its vocabulary. "key_player" only vouches
+# for the player (a Patch-Tuesday story names Microsoft), "trusted_source" and "sector_source" only
+# vouch for the host (a wire brief on a trusted site shares one market word at best) — none of the
+# three says anything about the market. The thin-evidence check counts the strong rules alone.
+STRONG_RULES = frozenset({"phrase", "tokens", "topic_terms"})
+
+
+def strong_hit_count(hits: list[SearchHit]) -> int:
+    """How many kept hits carry a STRONG rule (STRONG_RULES). The raw kept count can look healthy
+    while nearly everything in it is noise — one real run kept 47 hits and 46 were noise — so the
+    thin-evidence broader round (pipeline.run_search_evidence) and the editor's Step 2 summary both
+    count this instead."""
+    return sum(1 for h in hits if STRONG_RULES & set(h.keep_rules or ()))
 
 
 # ------------------------------------------------------------------------------- claim backing

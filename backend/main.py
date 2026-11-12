@@ -7,10 +7,14 @@ Serves the JSON API consumed by ``../frontend`` (also served statically from
     POST /step1   { filename, article, sponsor_index } -> { token, run_token, orient, candidates }
                   Step 1: identify the market. Orient (LLM) + CMI catalog match only — no web
                   search yet, since the human hasn't confirmed a market to search for.
-    POST /step2   { run_token, report_id }   -> { report, hits }
-                  Step 2: fetch market evidence online. Runs only after the human confirms a
-                  market in Step 1 — web search queries are built from the CONFIRMED report's
-                  own name, never the LLM's pre-confirmation guess.
+    POST /reports/fetch   { run_token, kind: "cmi"|"competitor", ... } -> { kind, report, fact_sheet, report_mode, warnings, confirmed }
+                  Step 2 (Reports): read one tab's chosen report into a fact sheet.
+    POST /reports/cmi_choice { run_token, report_id, cmi_report_url } -> the stored choice (restored by GET /run)
+    POST /reports/competitor_choice { run_token, market, found_url, link } -> the stored choice (restored by GET /run)
+    POST /reports/confirm { run_token, kind?, fact_sheet_edits } -> same shape, confirmed: true
+                  Step 2 (Reports): apply the editor's edits to the fact sheet and confirm it.
+    POST /evidence (alias /step2) { run_token } -> { report, hits, fact_sheet, demand, publisher, ... }
+                  Step 3 (Evidence): search the market from the CONFIRMED fact sheet; refuses without one.
     POST /step3   { run_token }              -> { selection, evidence }
                   Step 3: fetch market report facts. Call 2 (LLM) selects usable evidence from
                   the Step 2 web hits, scoped to the confirmed report.
@@ -52,6 +56,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 
 import sqlite3
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -66,6 +71,7 @@ import checks
 import clients as clients_mod
 import config
 import demand
+import evidence_call
 import external_reports
 import facts
 import faqs
@@ -79,9 +85,9 @@ import prompts
 import publisher
 import reports
 import search
+import sections as ev_sections
 import sopcheck
 import telemetry
-import us_search
 import variance
 import writer
 from docx_io import OUTPUT_DIR, Link, Paragraph, SourceArticle, read_docx
@@ -316,17 +322,29 @@ class RunState:
     clients: list = field(default_factory=list)         # clients.Client: who the paid backlinks belong to (Step 1) and what each offers (Step 2)
     # ---- Step 1 -> Step 2 hand-off, kept so the browser can rehydrate after a page reload:
     # the competitor-report candidates /step2/find_reports found for the picked markets, the
-    # markets themselves, and what the editor then confirmed at /step2 (CMI report ids and
+    # markets themselves, and what the editor then fetched at /reports/fetch (CMI report ids and
     # pasted report urls). All read back by GET /run/{run_token}.
     found_reports: list[dict] = field(default_factory=list)          # candidates /step2/find_reports returned
     picked_markets: list[str] = field(default_factory=list)          # the editor's cleaned market picks
-    picked_report_ids: list[int] = field(default_factory=list)       # CMI reports the editor ticked at /step2
+    picked_report_ids: list[int] = field(default_factory=list)       # CMI reports the editor picked at /reports/fetch
     picked_urls: list[str] = field(default_factory=list)             # outside report links the editor pasted/ticked
-    # The market evidence search for an agent-picked market starts the moment its competitor reports are being
-    # found (it needs only the market name), so the editor sees evidence beside the reports and Step 2 reuses it.
-    early_future: "Future | None" = None
-    early_market: str = ""
-    step2_timer: "StageTimer | None" = None   # the running Step 2's timer: GET /step2/progress reads which stages are live
+    # ---- Reports step (Step 2): what /reports/fetch built, per tab, and which one the editor confirmed.
+    # run.report / run.fact_sheet / run.report_mode always hold the ACTIVE tab's (the one fetched last, or the one /reports/confirm
+    # was told to use); report_tabs keeps both ({kind: {"report", "fact_sheet", "report_mode", "warnings"}}) so switching
+    # tabs loses neither. The Evidence step (Step 3, POST /step2 or /evidence) refuses to run until fact_sheet_confirmed.
+    report_kind: str = ""                   # "cmi" or "competitor": the active tab
+    report_tabs: dict[str, dict] = field(default_factory=dict)
+    report_warnings: list[str] = field(default_factory=list)   # the active tab's warnings (shown above its fact sheet)
+    fact_sheet_confirmed: bool = False
+    cmi_choice: dict = field(default_factory=dict)          # the CMI screen's pick: {report_id, cmi_report_url}
+    competitor_choice: dict = field(default_factory=dict)   # the Competitor screen's picks: {market, found_url, link}
+    # ---- Evidence step (v2): the section layer. The two sub-segments are fixed from the confirmed fact sheet before any news is
+    # searched; the plan, the grouped queries and the source groups stay on the run for the log and the editor's view.
+    subsegments: list[dict] = field(default_factory=list)       # [{"split", "name", "basis", "id"}]
+    section_plan: dict = field(default_factory=dict)            # sections.section_search_plan
+    section_queries: dict = field(default_factory=dict)         # {section: [query, ...]} as the model wrote them
+    search_groups: list[str] = field(default_factory=list)      # the source groups the query step chose
+    step2_timer: "StageTimer | None" = None   # the running Reports/Evidence step's timer: GET /step2/progress reads which stages are live
 
 
 _RUNS: dict[str, RunState] = {}
@@ -617,6 +635,7 @@ def _hit_dict(h: search.SearchHit) -> dict:
         "excerpt": h.excerpt,
         "scope": h.scope,
         "claim_id": h.claim_id,
+        "sections": list(h.sections),
     }
 
 
@@ -851,18 +870,35 @@ class Step1Request(BaseModel):
 
 
 class Step2Request(BaseModel):
+    """The Evidence step (POST /step2, alias POST /evidence): it reads the confirmed fact sheet off the run, so it takes
+    no report choice any more (those fields of the old Step 2 now belong to ReportsFetchRequest)."""
     run_token: str | None = None
-    report_id: int | None = None
-    # R1/R2: the editor ticks at most ONE CMI report (the first id wins) plus, only when no CMI report
-    # was picked, competitor report links. Ticking nothing and adding nothing means: find the picked
-    # market's report on the internet.
+
+
+class ReportsFetchRequest(BaseModel):
+    """POST /reports/fetch: one tab's report choice. kind "cmi" reads report_ids / cmi_report_url, kind "competitor" reads
+    markets / report_urls / url_markets; the other tab's fields are ignored."""
+    run_token: str | None = None
+    kind: Literal["cmi", "competitor"]
+    # R1/R2: the editor ticks at most ONE CMI report (the first id wins). The dedicated CMI report link is a CMI pick of its
+    # own: a catalog report becomes the picked report, any other CMI page is read as a CMI page. Both are used ALONE (R3).
     report_ids: list[int] = Field(default_factory=list)
-    report_urls: list[str] = Field(default_factory=list)
-    # The ONE market the editor picked in Step 1 (R1: never plural) — kept as a list for compatibility
-    # with the old multi-market frontend; only the first entry is used. url_markets maps each pasted
-    # report url to the market it was found for (from /step2/find_reports).
+    cmi_report_url: str = ""
+    # Competitor tab: the ONE market the editor picked (R1: never plural; a list for compatibility, only the first is used)
+    # and/or the report links they ticked or pasted. Ticking nothing and adding nothing means: find the market's report on
+    # the internet. url_markets maps each link to the market it was found for (from /step2/find_reports). CMI links are
+    # refused here.
     markets: list[str] = Field(default_factory=list)
+    report_urls: list[str] = Field(default_factory=list)
     url_markets: dict[str, str] = Field(default_factory=dict)
+
+
+class ReportsConfirmRequest(BaseModel):
+    """POST /reports/confirm: the editor's edits to the active fact sheet (the shapes facts.apply_editor_edits documents,
+    empty when they changed nothing) and, optionally, which tab's sheet to confirm when it is not the one fetched last."""
+    run_token: str | None = None
+    kind: Literal["cmi", "competitor"] | None = None
+    fact_sheet_edits: dict = Field(default_factory=dict)
 
 
 class CheckReportUrlRequest(BaseModel):
@@ -870,6 +906,8 @@ class CheckReportUrlRequest(BaseModel):
     url: str = ""
     # The market the editor picked for this link, when it was one of the found candidates; empty for a link they pasted.
     market: str = ""
+    # True when the link came from the CMI report link box: only coherentmarketinsights.com pages are accepted there.
+    cmi: bool = False
 
 
 class Step3Request(BaseModel):
@@ -1018,9 +1056,11 @@ def step1(req: Step1Request) -> dict:
     title = article.title or Path(req.filename).name or "upload.docx"
     try:
         orient = pipeline.run_orient(article, sponsor, logger)
-        claim_future = _start_claim_search(orient, logger)
+        # the claim-backing search is unused by the market-first chain (nothing reads run.claim_pool there)
+        claim_future = None if config.CMI_CHAIN_V2 else _start_claim_search(orient, logger)
         candidates = pipeline.run_match_catalog(orient, logger)
         candidates = pipeline.run_tier_catalog(orient, article, candidates, logger)
+        own_note = pipeline.own_market_report_note(orient, candidates, logger)
     except (PipelineError, LLMError) as e:
         # no run token exists yet (it is minted below, after the LLM work), but the calls that did
         # happen were paid for, so report them under their own id
@@ -1033,7 +1073,7 @@ def step1(req: Step1Request) -> dict:
         filename=Path(req.filename).name or "upload.docx",
         article=article, sponsor=sponsor, orient=orient,
         candidates=candidates, logger=logger, log_path=log_path, claim_future=claim_future,
-        clients=client_list, client_notes=list(client_notes),
+        clients=client_list, client_notes=list(client_notes), warnings=[own_note] if own_note else [],
     )
     logger.info(f"STEP 1 DONE — run token {token[:8]}…, {len(candidates)} candidates")
     _emit_progress(logger, token, title, "step1", started)
@@ -1043,14 +1083,18 @@ def step1(req: Step1Request) -> dict:
         "orient": orient,
         "suggested_markets": orient.get("suggested_markets") or {"tier1": [], "tier2": [], "tier3": []},
         "candidates": [_candidate_dict(c) for c in candidates],
+        "warnings": [own_note] if own_note else [],
     }
 
 
-def _fetch_cmi_sheets(chosen: list[reports.CatalogEntry], logger: logging.Logger) -> tuple[list[reports.Report], list[dict]]:
-    """Fetch every ticked CMI report and read each into a fact sheet, in parallel (the order of `chosen` is kept: the first
-    is the primary report)."""
-    with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool:
+def _fetch_cmi_sheets(
+    chosen: list[reports.CatalogEntry], logger: logging.Logger, page_urls=(), market: str = "",
+) -> tuple[list[reports.Report], list[dict]]:
+    """Fetch every ticked CMI report (and every pasted CMI page outside the catalog) and read each into a fact sheet, in
+    parallel (the order is kept: the first is the primary report)."""
+    with ThreadPoolExecutor(max_workers=max(1, len(chosen) + len(page_urls))) as pool:
         fetched = list(pool.map(lambda c: pipeline.run_fetch_confirmed_report(c, logger), chosen))
+        fetched += list(pool.map(lambda u: reports.fetch_report_page(u, market, logger), page_urls))
         sheets = list(pool.map(lambda r: facts.run_fact_sheet(r.name, r, logger), fetched))
     return fetched, sheets
 
@@ -1068,11 +1112,13 @@ def _outside_report(market: str, sheet: dict, texts: dict[str, str]) -> reports.
 
 def _use_outside_pages(
     market: str, pages: list[tuple[str, str, str]], titles: dict[str, str], warnings: list[str], logger: logging.Logger,
+    covered_out: list[str] | None = None,
 ) -> tuple[dict, list[dict], dict[str, str]]:
     """Read outside report pages `(url, text, market)` into one fact sheet. A page counts when it states a figure for its
     market exactly. When none does, the editor's own choice is respected rather than refused: each page is read again
     for the market its own title names (a report on 'Translation Services' ticked for 'Human Translation Services'), and the
-    editor is told in plain words that a related market's figures stand in. Returns (sheet, sources, {url: text})."""
+    editor is told in plain words that a related market's figures stand in (those markets are also appended to `covered_out`).
+    Returns (sheet, sources, {url: text})."""
     if not pages:
         return {}, [], {}
     sheet, sources, texts = external_reports.build_external_sheet(market, pages, logger)
@@ -1090,6 +1136,8 @@ def _use_outside_pages(
         sheet, sources, texts = external_reports.build_external_sheet(market, standin, logger)
         if sources:
             covered = sorted({own for u, _, own in standin if u in texts})
+            if covered_out is not None:
+                covered_out += covered
             warnings.append(
                 f"No page states figures for {market} exactly. The report(s) used cover {', '.join(covered)}, a related "
                 f"market, so those figures stand in for {market}. Check that they fit the article.")
@@ -1099,24 +1147,16 @@ def _use_outside_pages(
     return {}, [], {}
 
 
-def _collect_early_evidence(run: RunState, market: str) -> dict | None:
-    """The early evidence search's result when one ran for this very market (waiting for it if still running), else None
-    so Step 2 searches in full. A failed early search is never fatal: Step 2 simply redoes it."""
-    fut = run.early_future
-    if fut is None or run.early_market != market:
-        return None
-    try:
-        return fut.result(timeout=300)
-    except Exception as e:
-        run.logger.warning(f"[early evidence] unusable ({e}); Step 2 searches in full")
-        return None
+class ReportUnusable(PipelineError):
+    """The ONE report the editor pasted could not be read or gave no usable figure: /reports/fetch answers 422 with the reason."""
 
 
-def _step2_v2(
-    run: RunState, chosen: list[reports.CatalogEntry], urls: list[str], markets=(), url_markets=None,
+def _build_reports(
+    run: RunState, chosen: list[reports.CatalogEntry], urls: list[str], markets=(), url_markets=None, cmi_pages=(),
+    timer: "StageTimer | None" = None,
 ) -> dict:
-    """Step 2 on the market-first chain (plan §3 diagram): read the reports into the fact sheet, then — in parallel —
-    search demand, the publisher points and the LLM's search queries feeding the market web search.
+    """The REPORT half of the market-first chain (plan §3 diagram): read the chosen reports into the fact sheet.
+    Returns {"report": reports.Report, "fact_sheet", "report_mode", "warnings"}; nothing is stored on the run (the caller does).
 
     Which reports (R1-R3): when a CMI report was chosen it is the ONLY source — no competitor reports, no pasted
     links, no outside figure pages, no web figure gap-fill; a headline figure the report does not state simply stays
@@ -1126,101 +1166,146 @@ def _step2_v2(
     by 3-5% and listed for the editor (variance.py); a non-CMI sheet missing ALL THREE headline figures gets them
     from one web-searched outside page instead, marked external, varied 3-5% and flagged to the editor
     (facts.fill_headline_from_web)."""
-    run.logger.info("STEP 2 (market-first chain)")
-    timer = run.step2_timer = StageTimer(run.logger, "Step 2")
-    warnings: list[str] = list(run.client_notes)
+    timer = timer or StageTimer(run.logger, "Reports")
+    warnings: list[str] = []
     hosts = [search.urlparse(l.url).netloc.lower().removeprefix("www.") for l in run.sponsor.links if l.is_external]
     markets = _clean_markets(markets)      # one market at most, trimmed (R1)
     umarkets = {(k or "").strip(): v for k, v in (url_markets or {}).items() if v}
-    try:
-        cmi_reports: list[reports.Report] = []
-        sheets: list[dict] = []
-        sources: list[dict] = []
-        if chosen:
-            with timer.stage("Fetch CMI reports and fact sheets"):
-                cmi_reports, sheets = _fetch_cmi_sheets(chosen, run.logger)
-            sources = [{"name": r.name, "url": r.url, "kind": "cmi"} for r in cmi_reports]
-        market = cmi_reports[0].name if cmi_reports else (markets[0] if markets else external_reports.own_market(run.orient))
-        if not market:
-            raise PipelineError("The agent could not name this article's market. Pick a matched report and try again.")
-        outside_texts: dict[str, str] = {}
-        # R3: with a CMI report chosen, no outside report is read at all — the branch below runs only for a market
-        # pick (search finds the market's reports) or pasted links.
-        if not chosen:
-            with timer.stage("Outside reports"):
-                titles = {r.get("url"): r.get("title", "") for r in run.found_reports}
-                pages = []
-                for u in urls:
-                    text = external_reports.read_page(u, run.logger)
-                    if text:
-                        pages.append((u, text, umarkets.get(u) or market))
-                    else:
+    cmi_reports: list[reports.Report] = []
+    sheets: list[dict] = []
+    sources: list[dict] = []
+    if chosen or cmi_pages:
+        with timer.stage("Fetch CMI reports and fact sheets"):
+            cmi_reports, sheets = _fetch_cmi_sheets(
+                chosen, run.logger, cmi_pages, markets[0] if markets else external_reports.own_market(run.orient))
+        sources = [{"name": r.name, "url": r.url, "kind": "cmi"} for r in cmi_reports]
+    market = cmi_reports[0].name if cmi_reports else (markets[0] if markets else external_reports.own_market(run.orient))
+    if not market:
+        raise PipelineError("The agent could not name this article's market. Pick a matched report and try again.")
+    outside_texts: dict[str, str] = {}
+    covered: list[str] = []      # related markets whose figures stand in for `market` (see _use_outside_pages)
+    # A link the editor pasted names its own report: nothing else is searched or substituted for it (a suggested market,
+    # by contrast, may fall back to other reports found for it and, last, to the web).
+    pasted = bool(urls) and not markets
+    # R3: with a CMI report chosen, no outside report is read at all — the branch below runs only for a market
+    # pick (search finds the market's reports) or pasted links.
+    if not cmi_reports:
+        with timer.stage("Outside reports"):
+            titles = {r.get("url"): r.get("title", "") for r in run.found_reports}
+            pages = []
+            for u in urls:
+                text = external_reports.read_page(u, run.logger)
+                if text:
+                    pages.append((u, text, umarkets.get(u) or market))
+                else:
+                    warnings.append(
+                        f"The link {u} could not be read (the site shows the agent only a short preview, or blocks it) "
+                        "and was skipped.")
+            if not urls:
+                if markets:
+                    pages = []
+                    for m in markets:
+                        pages += [(u, t, m) for u, t in external_reports.find_pages(m, hosts, run.logger)]
+                else:
+                    pages = [(u, t, market) for u, t in external_reports.find_pages(market, hosts, run.logger)]
+            ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, pages, titles, warnings, run.logger, covered)
+            if not ext_sources and urls and not pasted:
+                # Nothing the editor chose could be used: try the other reports from the same list rather than stop.
+                spare = [(r["url"], external_reports.read_page(r["url"], run.logger), r.get("market") or market)
+                         for r in run.found_reports if r.get("url") and r["url"] not in urls][:3]
+                spare = [p for p in spare if p[1]]
+                if spare:
+                    ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, spare, titles, warnings, run.logger, covered)
+                    if ext_sources:
                         warnings.append(
-                            f"The link {u} could not be read (the site shows the agent only a short preview, or blocks it) "
-                            "and was skipped.")
-                if not chosen and not urls:
-                    if markets:
-                        pages = []
-                        for m in markets:
-                            pages += [(u, t, m) for u, t in external_reports.find_pages(m, hosts, run.logger)]
-                    else:
-                        pages = [(u, t, market) for u, t in external_reports.find_pages(market, hosts, run.logger)]
-                ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, pages, titles, warnings, run.logger)
-                if not ext_sources and urls:
-                    # Nothing the editor chose could be used: try the other reports from the same list rather than stop.
-                    spare = [(r["url"], external_reports.read_page(r["url"], run.logger), r.get("market") or market)
-                             for r in run.found_reports if r.get("url") and r["url"] not in urls][:3]
-                    spare = [p for p in spare if p[1]]
-                    if spare:
-                        ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, spare, titles, warnings, run.logger)
-                        if ext_sources:
-                            warnings.append(
-                                "None of the reports you ticked could be used, so the agent used other reports from the same "
-                                "list: " + ", ".join(sorted({external_reports.host_of(s["url"]) for s in ext_sources})) + ".")
-                if ext_sources:
-                    sheets.append(ext_sheet)
-                    sources += ext_sources
-        if not sheets:
-            # No usable report anywhere: before giving up, search the web for the market's own size, forecast and
-            # CAGR (one outside page, the same strict checks, varied 3-5%). Only when even that finds nothing does
-            # step 2 fail.
-            fs = facts._empty_fact_sheet()
-            fs.update({"sources": [], "variance": [], "report_mode": "external"})
-            with timer.stage("Headline figures from web"):
-                warnings += facts.fill_headline_from_web(fs, market, hosts, run.logger)
-            if len(fs["gaps"]) == 3:
-                raise PipelineError(" ".join(
-                    [f"No report could be found for {market}."] + warnings
-                    + ["Paste a link to a report on this market, or tick another report, and try again."]))
-            report = _outside_report(market, fs, {})
-            mode = fs["report_mode"]
+                            "None of the reports you ticked could be used, so the agent used other reports from the same "
+                            "list: " + ", ".join(sorted({external_reports.host_of(s["url"]) for s in ext_sources})) + ".")
+            if ext_sources:
+                sheets.append(ext_sheet)
+                sources += ext_sources
+    if not sheets:
+        if pasted:
+            raise ReportUnusable(" ".join(
+                warnings + ["No figures were taken from this link. Paste another report link, or pick a suggested market "
+                            "and let the agent find a report."]))
+        # No usable report anywhere: before giving up, search the web for the market's own size, forecast and
+        # CAGR (one outside page, the same strict checks, varied 3-5%). Only when even that finds nothing does
+        # the step fail.
+        fs = facts._empty_fact_sheet()
+        fs.update({"sources": [], "variance": [], "report_mode": "external"})
+        with timer.stage("Headline figures from web"):
+            filled = facts.fill_headline_from_web(fs, market, hosts, run.logger)
+        if urls and len(fs["gaps"]) < 3:
+            warnings.append("The report you chose gave no usable figures, so the agent took the market's headline figures "
+                            "from a web search instead.")
+        warnings += filled
+        if len(fs["gaps"]) == 3:
+            raise PipelineError(" ".join(
+                [f"No report could be found for {market}."] + warnings
+                + ["Paste a link to a report on this market, or tick another report, and try again."]))
+        report = _outside_report(market, fs, {})
+        mode = fs["report_mode"]
+    else:
+        if len(sheets) > 1 or not cmi_reports:
+            fs = facts.merge_fact_sheets(sheets, sources)
         else:
-            if len(sheets) > 1 or not cmi_reports:
-                fs = facts.merge_fact_sheets(sheets, sources)
+            fs = sheets[0]
+            fs["sources"], fs["report_mode"], fs["variance"] = sources, "cmi", []
+        mode = fs["report_mode"]
+        report = cmi_reports[0] if cmi_reports else _outside_report(market, fs, outside_texts)
+    if mode != "cmi":
+        warnings.insert(0, (
+            "A competitor report was used instead of a CMI report. Every figure was adjusted by 3-5% and no report is "
+            "linked in the article. Verify all values before proceeding."
+            if mode == "external" else
+            "Report links you added were used beside the CMI report. Their figures were adjusted by 3-5%. "
+            "Verify all values before proceeding."))
+        # A non-CMI sheet missing ALL three headline figures gets them from one web-found outside page (marked
+        # external and varied); a sheet that already states one of them is never mixed with a second source.
+        if len(fs["gaps"]) == 3:
+            if pasted:
+                warnings.append(
+                    "The page states no market size, forecast or growth rate, so none is used. Press Edit to enter them "
+                    "yourself, or paste another link.")
             else:
-                fs = sheets[0]
-                fs["sources"], fs["report_mode"], fs["variance"] = sources, "cmi", []
-            mode = fs["report_mode"]
-            report = cmi_reports[0] if cmi_reports else _outside_report(market, fs, outside_texts)
-        if mode != "cmi":
-            warnings.insert(0, (
-                "A competitor report was used instead of a CMI report. Every figure was adjusted by 3-5% and no report is "
-                "linked in the article. Verify all values before proceeding."
-                if mode == "external" else
-                "Report links you added were used beside the CMI report. Their figures were adjusted by 3-5%. "
-                "Verify all values before proceeding."))
-            # A non-CMI sheet missing ALL three headline figures gets them from one web-found outside page (marked
-            # external and varied); a sheet that already states one of them is never mixed with a second source.
-            if len(fs["gaps"]) == 3:
                 with timer.stage("Headline figures from web"):
-                    warnings += facts.fill_headline_from_web(fs, market, hosts, run.logger)
-        # R3: a CMI report is the only source — no figure gap search, no figure backing. A headline figure the
-        # report itself does not state stays a gap (the article states no figure for it). Only the non-CMI web
-        # fill above (fill_headline_from_web) may add outside figures.
+                    filled = facts.fill_headline_from_web(fs, market, hosts, run.logger)
+                if len(fs["gaps"]) < 3:
+                    warnings.append("The report states no market size, forecast or growth rate, so the agent took them from "
+                                    "a web search instead.")
+                warnings += filled
+    # R3: a CMI report is the only source — no figure gap search, no figure backing. A headline figure the
+    # report itself does not state stays a gap (the article states no figure for it). Only the non-CMI web
+    # fill above (fill_headline_from_web) may add outside figures.
+    hosts_used = sorted({external_reports.host_of(s["url"]) for s in fs.get("sources") or [] if s.get("kind") != "cmi" and s.get("url")})
+    return {"report": report, "fact_sheet": fs, "report_mode": mode, "warnings": warnings,
+            "covers_market": ", ".join(covered) if covered else market, "host": ", ".join(hosts_used)}
+
+
+def _search_segment_terms(run: RunState, report: reports.Report, fs: dict) -> list[str]:
+    """The segment names the market search is planned from: the report's own, unless the editor changed the sheet's segments."""
+    if any(g.get("edited_by_editor") for g in fs.get("segments") or []) or any(r["kind"] == "segments" for r in fs.get("editor_removed") or []):
+        return [i for g in fs.get("segments") or [] for i in g["items"]]
+    return list(report.segment_terms)
+
+
+def _step2_v2(run: RunState) -> dict:
+    """The EVIDENCE half of the market-first chain (plan §3 diagram): from the CONFIRMED fact sheet and report on the run
+    (run.report, run.fact_sheet; /reports/fetch + /reports/confirm built them — no report is fetched or read here), search
+    demand, the publisher points and the LLM's search queries feeding the market web search, in parallel."""
+    run.logger.info("EVIDENCE STEP (market-first chain)")
+    timer = run.step2_timer = StageTimer(run.logger, "Evidence")
+    report, fs, mode = run.report, run.fact_sheet, run.report_mode
+    warnings: list[str] = list(run.client_notes) + list(run.report_warnings)
+    try:
         gap_pages: list[search.SearchHit] = []
-        players = list(reports.key_players(report)) or list(fs.get("players") or [])
-        segment_terms = list(report.segment_terms)
-        early = None
+        players = list(fs.get("players") or []) if "agent_players" in fs else (list(reports.key_players(report)) or list(fs.get("players") or []))
+        segment_terms = _search_segment_terms(run, report, fs)
+        # The section search plan, in code, from the confirmed facts: the two sub-segments are fixed HERE (the planner no longer
+        # chooses them), and every section's queries are written from its own targets.
+        run.subsegments = ev_sections.choose_subsegments(fs, run.logger)
+        run.section_plan = pipeline.section_search_plan(fs, report, players, run.subsegments)
+        run.logger.info(f"[sections] sub-segments fixed: {[(s['name'], s['split'], s['basis']) for s in run.subsegments]}")
         prep = ThreadPoolExecutor(max_workers=4, thread_name_prefix="step2-v2")
         try:
             def timed(name: str, fn, *args):
@@ -1230,73 +1315,69 @@ def _step2_v2(
             # Real searches first (a few seconds): they ground the long-tail list and order the secondary-keyword pool.
             keywords_f = prep.submit(timed, "Keyword research", keyword_research.research, report.name, run.logger)
 
-            def demand_with_keywords():
-                keywords = keywords_f.result()
-                result = demand.run_search_demand(
-                    report.name, fs, run.logger, real_queries=[s["query"] for s in keywords["suggestions"]])
-                result["keyword_research"] = keywords
-                return result
+            def real_queries() -> list[str]:
+                return [s["query"] for s in keywords_f.result()["suggestions"]]
 
-            demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
             clients_f = (prep.submit(timed, "Client check", clients_mod.run_briefs, run.clients, report.name, run.logger)
                          if run.clients and config.CLIENT_REWRITE else None)
-            # An agent-picked market already had its evidence search running while the editor chose reports. The keyword, demand and
-            # client work above does not depend on it, so it is already running while this waits for the early search to finish.
-            if not chosen and run.early_future is not None and run.early_market == market:
-                with timer.stage("Evidence search begun while you chose the reports"):
-                    early = _collect_early_evidence(run, market)
-            publisher_f = None if early else prep.submit(
-                timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
-            topup = bool(players or segment_terms)
-            prepared_queries = None
-            if not early or topup:
+            demand_f = publisher_f = None
+            if config.EVIDENCE_ONE_CALL:
+                # The publisher points, the search demand and the search queries are ONE call (evidence_call.py).
+                def prep_call() -> dict:
+                    result = evidence_call.run_evidence_prep(
+                        run.article, run.sponsor, report.name, fs, players, segment_terms, run.section_plan, real_queries(), run.logger)
+                    result["demand"]["keyword_research"] = keywords_f.result()
+                    return result
+
+                prepared = prep.submit(timed, "Evidence prep call", prep_call).result()
+                demand_result, publisher_result, prepared_queries = prepared["demand"], prepared["publisher"], prepared["queries"]
+            else:
+                def demand_with_keywords():
+                    result = demand.run_search_demand(report.name, fs, run.logger, real_queries=real_queries())
+                    result["keyword_research"] = keywords_f.result()
+                    return result
+
+                demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
+                publisher_f = prep.submit(
+                    timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
                 search_queries_f = prep.submit(
                     timed, "Plan market search queries", pipeline.prepare_search_queries, report.name,
-                    players, run.logger, segment_terms,
+                    players, run.logger, segment_terms, run.section_plan,
                 )
                 prepared_queries = search_queries_f.result()
+            run.section_queries = prepared_queries[0] if isinstance(prepared_queries[0], dict) else {}
+            run.search_groups = list(prepared_queries[1])
         finally:
             prep.shutdown(wait=False)
-        if early:
-            hits = list(early["hits"])
-            if topup:
-                # The picked reports named segments and players the early search could not know: search for those too.
-                with timer.stage("Market web search (segments and players)"):
-                    more = pipeline.run_search_evidence(
-                        report.name, run.sponsor, run.candidates, run.logger,
-                        key_players=players, orient=run.orient, segments=segment_terms,
-                        search_queries=prepared_queries,
-                    )
-                seen = {h.url for h in hits}
-                hits += [h for h in more if h.url not in seen]
-            publisher_result = early["publisher"]
-            demand_result = demand_f.result()
-        else:
-            with timer.stage("Market web search"):
-                # The U.S. section has no other region to lean on, so its own search runs beside the general one.
-                sponsor_hosts = tuple(pipeline._host(l.url) for l in run.sponsor.links if l.is_external)
-                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="us-search") as us_pool:
-                    us_f = us_pool.submit(
-                        us_search.run_us_search, report.name, sponsor_hosts, players, run.logger, prepared_queries[2])
-                    hits = pipeline.run_search_evidence(
-                        report.name, run.sponsor, run.candidates, run.logger,
-                        key_players=players, orient=run.orient, segments=segment_terms,
-                        search_queries=prepared_queries,
-                    )
-                    hits = us_search.merge_hits(hits, us_f.result())
+        with timer.stage("Market web search"):
+            # One search for every section (the U.S. section's queries are part of it) within one Bing budget.
+            hits = pipeline.run_search_evidence(
+                report.name, run.sponsor, run.candidates, run.logger,
+                key_players=players, orient=run.orient, segments=segment_terms,
+                search_queries=prepared_queries, subsegments=run.subsegments,
+            )
+        if demand_f is not None:
             demand_result, publisher_result = demand_f.result(), publisher_f.result()
         if clients_f is not None:
             clients_f.result()
             for c in run.clients:
                 warnings += [f"{c.host}: {n}" for n in clients_mod.brief_notes(c)]
     except (PipelineError, LLMError, LiveFetchError) as e:
-        raise _pipeline_failure(run.logger, "Step 2", e)
-    run.report, run.hits = report, hits
-    run.fact_sheet, run.gap_pages, run.demand, run.publisher = fs, gap_pages, demand_result, publisher_result
-    run.report_mode, run.warnings = mode, warnings
+        raise _pipeline_failure(run.logger, "Evidence step", e)
+    # The count the editor should judge is the STRONG one — hits kept by a rule that names the market
+    # or its topic vocabulary (search.STRONG_RULES), not just a key player or a trusted host. The raw
+    # kept count can look healthy while nearly everything in it is noise (one real run: 47 kept, 46
+    # noise), so the response carries strong_hits and warns when even that is thin: the trends may
+    # end up built from the report's own drivers alone.
+    strong_hits = search.strong_hit_count(hits)
+    if strong_hits < 4:
+        warnings.append(f"Only {strong_hits} news item(s) about this market were found; the trends may lean on the report's own drivers.")
+    run.hits, run.gap_pages, run.demand, run.publisher = hits, gap_pages, demand_result, publisher_result
+    run.warnings = warnings
     run.timings = timer.summary()
+    section_hits = ev_sections.hit_counts(hits)
     run.logger.info(
-        f"STEP 2 DONE in {run.timings['total_s']}s — report {report.name} ({mode}), {len(hits)} hits, "
+        f"EVIDENCE STEP DONE in {run.timings['total_s']}s — report {report.name} ({mode}), {len(hits)} hits ({strong_hits} strong; by section {section_hits}), "
         f"{len(demand_result.get('questions') or [])} MSQ(s), fact sheet gaps: {fs['gaps'] or 'none'}"
     )
     return {
@@ -1306,6 +1387,9 @@ def _step2_v2(
         "publisher": publisher_result,
         "timings": run.timings,
         "report_mode": mode, "warnings": warnings,
+        "strong_hits": strong_hits,
+        "sections": section_hits,
+        "subsegments": run.subsegments,
         "clients": _client_dicts(run),
     }
 
@@ -1315,7 +1399,7 @@ def check_report_url(req: CheckReportUrlRequest) -> dict:
     """Early feedback on a report link the editor pasted (Step 1): readable, and about this article's market?"""
     run = _get_run(req.run_token)
     market = (req.market or "").strip() or external_reports.own_market(run.orient) or (run.candidates[0].keyword if run.candidates else "")
-    return external_reports.check_url(req.url, market, run.logger)
+    return external_reports.check_url(req.url, market, run.logger, cmi=req.cmi)
 
 
 class FindReportsRequest(BaseModel):
@@ -1342,10 +1426,6 @@ def find_reports(req: FindReportsRequest) -> dict:
     if not markets:
         raise HTTPException(400, "Pick one market.")
     hosts = [search.urlparse(l.url).netloc.lower().removeprefix("www.") for l in run.sponsor.links if l.is_external]
-    # The evidence search needs only the market name, so it starts now and runs while the editor reads the reports.
-    if run.early_future is None or run.early_market != markets[0]:
-        run.early_market = markets[0]
-        run.early_future = _BACKGROUND.submit(_early_evidence, run, markets[0])
     # Look at a few more than are shown, and offer only the pages the agent can really read (a ticked report that then
     # fails to open is the worst outcome for the editor).
     candidates = external_reports.keep_readable(
@@ -1356,84 +1436,164 @@ def find_reports(req: FindReportsRequest) -> dict:
     return {"markets": markets, "reports": candidates}
 
 
-def _early_evidence(run: RunState, market: str) -> dict:
-    """The market-name-only half of Step 2's evidence: the publisher's points and the web + U.S. search, run before the
-    editor has picked which competitor reports to read. Step 2 adds a top-up search for the picked reports' own segments
-    and players, and the demand search (which reads the fact sheet), on top of this."""
-    run.logger.info(f"EARLY EVIDENCE for {market}")
-    sponsor_hosts = tuple(pipeline._host(l.url) for l in run.sponsor.links if l.is_external)
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="early-evidence") as pool:
-        publisher_f = pool.submit(publisher.run_publisher_points, run.article, run.sponsor, market, run.logger)
-        queries = pipeline.prepare_search_queries(market, [], run.logger, [])
-        us_f = pool.submit(us_search.run_us_search, market, sponsor_hosts, [], run.logger, queries[2])
-        hits = pipeline.run_search_evidence(
-            market, run.sponsor, run.candidates, run.logger, key_players=[], orient=run.orient, segments=[],
-            search_queries=queries,
-        )
-        hits = us_search.merge_hits(hits, us_f.result())
-        return {"market": market, "hits": hits, "publisher": publisher_f.result()}
+def _resolve_report_pick(run: RunState, req: ReportsFetchRequest) -> tuple[list[reports.CatalogEntry], list[str], list[str], list[str]]:
+    """What one tab's fetch should read: (catalog reports, competitor links, markets, CMI pages outside the catalog).
+    kind "cmi" uses only the report ids / CMI link (R1/R2/R3: the first id wins, the link is a CMI pick of its own — a
+    catalog report becomes the picked report, any other CMI page is read as a CMI page — and a market or competitor link
+    is never mixed in); kind "competitor" uses only the market and the competitor links, which refuse a CMI link outright
+    (pasted there, a CMI figure was treated as a competitor's and adjusted)."""
+    picked: list[reports.CatalogEntry] = []
+    cmi_pages: list[str] = []
+    if req.kind == "cmi":
+        for rid in list(dict.fromkeys(req.report_ids))[:1]:
+            entry = next((c for c in run.candidates if c.news_id == rid), None)
+            if entry is None:
+                raise HTTPException(400, f"Report {rid} is not one of the matched reports for this run.")
+            picked.append(entry)
+        cmi_url = (req.cmi_report_url or "").strip()
+        if cmi_url and not config.is_cmi_url(cmi_url):
+            raise HTTPException(400, "The CMI report link must be a page on coherentmarketinsights.com.")
+        if cmi_url:
+            entry = reports.match_report_url(cmi_url)
+            if picked:
+                run.logger.info(f"REPORTS: a CMI report is already chosen, so the pasted CMI link {cmi_url} was ignored")
+            elif entry is not None:
+                run.logger.info(f"REPORTS: the pasted CMI link {cmi_url} is the catalog report {entry.news_id} {entry.keyword}; used as the picked report")
+                picked.append(entry)
+            else:
+                run.logger.info(f"REPORTS: the pasted CMI link {cmi_url} is not a catalog report; it is read as a CMI page")
+                cmi_pages.append(cmi_url)
+        if not picked and not cmi_pages:
+            raise HTTPException(400, "Pick a CMI report, or paste the link to a CMI report page.")
+        return picked, [], [], cmi_pages
+    urls = [u.strip() for u in req.report_urls if u and u.strip()]
+    for u in urls:
+        if config.is_cmi_url(u):
+            raise HTTPException(400, f"The link {u} is a CMI report link. Paste it in the CMI report link box, not among the competitor links.")
+    # One report only: the editor chose either a found report or one link of their own.
+    if len(urls) > 1:
+        run.logger.warning(f"REPORTS: {len(urls)} competitor links were sent; only the first ({urls[0]}) is used")
+        urls = urls[:1]
+    return [], urls, _clean_markets(req.markets), []
 
 
-@app.get("/step2/early_evidence")
-def early_evidence(run_token: str | None = None) -> dict:
-    """What the early evidence search has found so far for the picked market (the picker polls this)."""
-    run = _get_run(run_token)
-    fut = run.early_future
-    if fut is None:
-        return {"state": "none", "hits": []}
-    if not fut.done():
-        return {"state": "running", "hits": []}
-    if fut.exception() is not None:
-        run.logger.warning(f"[early evidence] failed: {fut.exception()}")
-        return {"state": "failed", "hits": []}
-    return {"state": "done", "hits": [_hit_dict(h) for h in fut.result()["hits"]]}
+def _activate_report(run: RunState, kind: str) -> None:
+    """Make `kind`'s tab the one the Evidence step will use. The sheet is unconfirmed again, and any evidence already collected
+    for another sheet is dropped (it was searched from different facts)."""
+    tab = run.report_tabs[kind]
+    run.report_kind, run.report, run.fact_sheet = kind, tab["report"], tab["fact_sheet"]
+    run.report_mode, run.report_warnings, run.warnings = tab["report_mode"], list(tab["warnings"]), list(tab["warnings"])
+    run.fact_sheet_confirmed = False
+    run.hits = run.selection = run.evidence = None
+
+
+def _reports_payload(run: RunState) -> dict:
+    tab = run.report_tabs.get(run.report_kind) or {}
+    report = {**_report_dict(run.report), "covers_market": tab.get("covers_market", ""), "host": tab.get("host", "")}
+    return {"kind": run.report_kind, "report": report, "fact_sheet": run.fact_sheet,
+            "report_mode": run.report_mode, "warnings": run.report_warnings, "confirmed": run.fact_sheet_confirmed}
+
+
+@app.post("/reports/fetch")
+@_reports_step("reports")
+def reports_fetch(req: ReportsFetchRequest) -> dict:
+    """Reports step, one tab's Fetch button: read the chosen report(s) into a fact sheet (_build_reports), keep it under its
+    tab (run.report_tabs[kind]) and make it the run's active sheet, unconfirmed. Evidence is NOT searched here."""
+    run = _get_run(req.run_token)
+    picked, urls, markets, cmi_pages = _resolve_report_pick(run, req)
+    # record the editor's picks before any work starts, so a page reload mid-fetch can restore them
+    run.picked_markets, run.picked_report_ids, run.picked_urls = markets, [c.news_id for c in picked], urls + cmi_pages
+    timer = run.step2_timer = StageTimer(run.logger, "Reports")
+    try:
+        built = _build_reports(run, picked, urls, markets=markets, url_markets=req.url_markets or {}, cmi_pages=cmi_pages, timer=timer)
+    except ReportUnusable as e:
+        run.logger.warning(f"REPORTS: the chosen report could not be used: {e}")
+        raise HTTPException(422, str(e))
+    except (PipelineError, LLMError, LiveFetchError) as e:
+        raise _pipeline_failure(run.logger, "Reports step", e)
+    timer.summary()
+    run.report_tabs[req.kind] = built
+    _activate_report(run, req.kind)
+    fs = run.fact_sheet
+    run.logger.info(f"REPORTS DONE ({req.kind}) — report {run.report.name} ({run.report_mode}), fact sheet gaps: {fs['gaps'] or 'none'}")
+    return _reports_payload(run)
+
+
+class CompetitorChoiceRequest(BaseModel):
+    """POST /reports/competitor_choice: what the Competitor screen currently holds, so a tab switch or reload restores it.
+    It is one or the other: a suggested market (with the found report picked, if any) or one pasted link."""
+    run_token: str | None = None
+    market: str = ""
+    found_url: str = ""
+    link: str = ""
+
+
+class CmiChoiceRequest(BaseModel):
+    """POST /reports/cmi_choice: what the CMI screen currently holds (a picked report or a pasted CMI link, never both)."""
+    run_token: str | None = None
+    report_id: int | None = None
+    cmi_report_url: str = ""
+
+
+@app.post("/reports/cmi_choice")
+def reports_cmi_choice(req: CmiChoiceRequest) -> dict:
+    run = _get_run(req.run_token)
+    link = (req.cmi_report_url or "").strip()
+    run.cmi_choice = {"report_id": None if link else req.report_id, "cmi_report_url": link}
+    return run.cmi_choice
+
+
+@app.post("/reports/competitor_choice")
+def reports_competitor_choice(req: CompetitorChoiceRequest) -> dict:
+    run = _get_run(req.run_token)
+    link = (req.link or "").strip()
+    market = "" if link else (req.market or "").strip()
+    run.competitor_choice = {"market": market, "found_url": "" if link else (req.found_url or "").strip(), "link": link}
+    return run.competitor_choice
+
+
+@app.post("/reports/confirm")
+def reports_confirm(req: ReportsConfirmRequest) -> dict:
+    """Reports step, Continue: apply the editor's edits to the active fact sheet (facts.apply_editor_edits — used exactly as
+    entered, never varied) and mark it confirmed, which is what lets the Evidence step run. `kind` picks the tab to confirm
+    when it is not the one fetched last."""
+    run = _get_run(req.run_token)
+    if req.kind and req.kind != run.report_kind:
+        if req.kind not in run.report_tabs:
+            raise HTTPException(400, f"No {req.kind} fact sheet has been fetched yet.")
+        _activate_report(run, req.kind)
+    if run.fact_sheet is None or run.report is None:
+        raise HTTPException(400, "No fact sheet yet — fetch a report first.")
+    if req.fact_sheet_edits:
+        facts.apply_editor_edits(run.fact_sheet, req.fact_sheet_edits)
+        run.logger.info(f"REPORTS: the editor edited the {run.report_kind} fact sheet; gaps now {run.fact_sheet['gaps'] or 'none'}")
+    run.fact_sheet_confirmed = True
+    run.hits = run.selection = run.evidence = None      # anything searched from the earlier facts is stale
+    return _reports_payload(run)
 
 
 @app.get("/step2/progress")
 def step2_progress(run_token: str | None = None) -> dict:
-    """The stages of the running Step 2 (the page lists them while it waits), plus whether the early evidence search
-    that started beside the report picker is still going."""
+    """The stages of the running Reports fetch or Evidence step (the page lists them while it waits)."""
     run = _get_run(run_token)
-    out = run.step2_timer.progress() if run.step2_timer else {"active": [], "done": []}
-    fut = run.early_future
-    out["early"] = "none" if fut is None else ("running" if not fut.done() else "done")
-    return out
+    return run.step2_timer.progress() if run.step2_timer else {"active": [], "done": []}
 
 
+@app.post("/evidence")
 @app.post("/step2")
 @_reports_step("step2")
 def step2(req: Step2Request) -> dict:
-    """Step 2: fetch market evidence online. Runs ONLY after the human confirms a market —
-    the web search queries are built from the CONFIRMED report's own name, never the LLM's
-    pre-confirmation guess (which can be a different market than what the human picks)."""
+    """Evidence step (was Step 2; the URL stays for compatibility, /evidence is its new name): search the market, demand and
+    publisher evidence driven by the CONFIRMED fact sheet on the run. Refuses without one, and never re-fetches a report."""
     run = _get_run(req.run_token)
-    # R1/R2: only the first report id is ever used — picked holds at most one CMI report.
-    wanted = list(dict.fromkeys(req.report_ids or ([req.report_id] if req.report_id is not None else [])))[:1]
-    urls = [u.strip() for u in req.report_urls if u and u.strip()]
-    markets = _clean_markets(req.markets)
-    picked = []
-    for rid in wanted:
-        entry = next((c for c in run.candidates if c.news_id == rid), None)
-        if entry is None:
-            raise HTTPException(400, f"Report {rid} is not one of the matched reports for this run.")
-        picked.append(entry)
-    # R3: a CMI report is used ALONE — no competitor reports, no pasted links. Any market pick and any
-    # report link the editor also sent are dropped here, before anything is recorded or passed on.
-    if picked and (markets or urls):
-        run.logger.info(
-            f"STEP 2: a CMI report was chosen ({picked[0].keyword}), so the extra picks were ignored "
-            f"and the report is used alone: dropped market(s) {markets}, dropped link(s) {urls}")
-        markets, urls = [], []
     run.step2_timer = None      # a retry must not show the failed attempt's stages
-    # record the editor's picks before any work starts, so a page reload mid-Step-2 can restore them
-    run.picked_markets = markets
-    run.picked_report_ids = [c.news_id for c in picked]
-    run.picked_urls = urls
     if config.CMI_CHAIN_V2:
-        return _step2_v2(run, picked, urls, markets=markets, url_markets=req.url_markets or {})
-    if not picked:
+        if run.report is None or run.fact_sheet is None or not run.fact_sheet_confirmed:
+            raise HTTPException(400, "Confirm the fact sheet first — finish the Reports step.")
+        return _step2_v2(run)
+    chosen = next((c for c in run.candidates if c.news_id in run.picked_report_ids), None)
+    if chosen is None:
         raise HTTPException(400, "No report selected — confirm a market first.")
-    chosen = picked[0]
     # Market-first chain (docs/restructure_plan.md §3): fact sheet (+ figure gap backing), search demand
     # and publisher points replace the old Step 2 prep (subheading questions, report claims, longtails —
     # those keep running unchanged behind the flag off, see _step2_v2's docstring).
@@ -1518,8 +1678,12 @@ def _step3_v2(run: RunState) -> dict:
     The same post-processing the devtools build_chain.load_chain applies to its fixtures."""
     run.logger.info("STEP 3 (market-first chain)")
     try:
-        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
-                                        headline_figures=pipeline._headline_figures(run.fact_sheet))
+        fs = run.fact_sheet
+        selection, hits, section_counts, thin_warnings = pipeline.run_sectioned_select(
+            run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
+            subsegments=run.subsegments, topic_terms=(run.orient or {}).get("topic_terms") or [],
+            headline_figures=pipeline._headline_figures(fs))
+        run.hits = hits       # the same hits the search returned, so every W(n) still maps to hits[n - 1]
         evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
         evidence_items = [it for it in pipeline._parse_evidence(evidence) if it.get("group") != "article"]
         questions = demand.mark_answerability(
@@ -1529,7 +1693,7 @@ def _step3_v2(run: RunState) -> dict:
         run.plan_inputs = planning.build_inputs(
             run.report.name, run.fact_sheet, evidence_items, run.demand, run.publisher,
             clients_mod.paragraph_words(run.clients) if run.clients and config.CLIENT_REWRITE else pipeline._word_count(run.sponsor.text),
-            clients=run.clients if config.CLIENT_REWRITE else ())
+            clients=run.clients if config.CLIENT_REWRITE else (), subsegments=run.subsegments, sectioned=True)
         # The market-first chain's long-tail phrases come from Step 2's search demand (run.demand's
         # long_tail records), and the planner shards them onto sections via plan_inputs; expose the
         # same list as run.longtails (the old chain sets it in Step 2) so finalize's usage check, the
@@ -1538,14 +1702,17 @@ def _step3_v2(run: RunState) -> dict:
     except (PipelineError, LLMError, LookupError) as e:
         raise _pipeline_failure(run.logger, "Step 3", e)
     run.selection, run.evidence = selection, evidence
+    run.warnings = [w for w in run.warnings if not w.startswith("Thin evidence for")] + thin_warnings
     msqs = run.demand.get("questions") if run.demand else []
     run.logger.info(
-        f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s), "
+        f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s) by section {section_counts}, "
         f"{sum(1 for q in msqs or [] if q.get('answerable'))}/{len(msqs or [])} MSQ(s) answerable")
     # long_tail_keywords rides along for the UI (renderStep3Panel reads state.run.longtails);
     # the old chain's Step 2 response already sent it, this chain populates run.longtails here.
     return {"selection": selection, "evidence": evidence, "demand": run.demand,
-            "long_tail_keywords": run.longtails}
+            "long_tail_keywords": run.longtails, "sections": section_counts, "subsegments": run.subsegments,
+            "minimums": {k: ev_sections.minimum(k) for k in section_counts}, "warnings": thin_warnings,
+            "hits": [_hit_dict(h) for h in run.hits]}
 
 
 @app.post("/step3")
@@ -1651,9 +1818,24 @@ def get_run(run_token: str) -> dict:
         "claim_hits": _claim_hits_dict(run.claim_pool),
         "report": _report_dict(run.report) if run.report else None,
         "selection": run.selection,
+        # the Evidence step's section layer (the "sections" key below is the draft's): the two fixed sub-segments, the hits found
+        # per section and the selected items per section with their minimums
+        "subsegments": run.subsegments,
+        "evidence_sections": {
+            "hits": ev_sections.hit_counts(run.hits or []),
+            "selected": (ev_sections.counts((run.selection or {}).get("evidence") or [], run.subsegments)
+                         if run.selection else {}),
+        },
         "questions": run.questions,
         "demand": run.demand,
         "fact_sheet": run.fact_sheet,
+        "evidence_done": run.hits is not None,      # the Evidence step has run (hits may still be empty)
+        "fact_sheet_confirmed": run.fact_sheet_confirmed,
+        "report_kind": run.report_kind,
+        "report_tabs": {k: {"report": {"news_id": t["report"].news_id, "name": t["report"].name, "url": t["report"].url,
+                                       "covers_market": t.get("covers_market", ""), "host": t.get("host", "")},
+                            "fact_sheet": t["fact_sheet"], "report_mode": t["report_mode"], "warnings": t["warnings"]}
+                        for k, t in run.report_tabs.items()},
         "publisher": run.publisher,
         "plan": run.plan,
         "long_tail_keywords": run.longtails,
@@ -1672,6 +1854,8 @@ def get_run(run_token: str) -> dict:
         "picked_markets": run.picked_markets,
         "picked_report_ids": run.picked_report_ids,
         "picked_urls": run.picked_urls,
+        "cmi_choice": run.cmi_choice,
+        "competitor_choice": run.competitor_choice,
         "sources": (run.fact_sheet or {}).get("sources", []),
     }
 
@@ -1819,7 +2003,8 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
         restated = bool(run.clients) and config.CLIENT_REWRITE
         parsed = recheck_mod.parse(
             raw, run.title, run.sections, run.faq, "" if restated else run.sponsor.text,
-            client_urls={l["url"]: l["id"] for c in run.clients for l in c.links} if restated else None)
+            client_urls={l["url"]: l["id"] for c in run.clients for l in c.links} if restated else None,
+            report_url=(run.report.url or "") if run.plan_inputs.link_report else "")
     except Exception as e:
         run.logger.error(f"recheck could not read {name}: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(400, "This file could not be read as a Word document (.docx). "
@@ -1828,7 +2013,7 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
         parsed["title"], parsed["sections"], run.plan, run.plan_inputs, faq=parsed["faq"],
         sponsor_brand_terms=pipeline._brand_terms(run.sponsor), sponsor_text=run.sponsor.text,
         report_text=pipeline._report_text(run.report), report_name=run.report.name,
-        selection=run.selection, hits=run.hits, humanized=True,
+        selection=run.selection, hits=run.hits, humanized=True, report_url=run.report.url,
     )
     run.logger.info(f"[recheck] humanized draft {name!r}: "
                     f"{sum(1 for c in check_results if c.passed)}/{len(check_results)} checks pass")

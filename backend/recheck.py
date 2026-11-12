@@ -12,14 +12,13 @@ of passing by accident.
 import difflib
 import re
 from io import BytesIO
-from urllib.parse import urlparse
 
 import docx
 from docx.oxml.ns import qn
 
 import checks
 import subheads
-from config import CMI_HOST
+from config import is_cmi_url, same_url
 from prompts import SPONSOR_TOKEN
 
 FAQ_HEADING = "Frequently Asked Questions"
@@ -38,27 +37,33 @@ def _ratio(a: str, b: str) -> float:
 
 
 def _is_cmi(url: str) -> bool:
-    return urlparse(url).netloc.lower().endswith(CMI_HOST)
+    return is_cmi_url(url)
 
 
-def read_blocks(raw: bytes, client_urls: dict[str, str] | None = None) -> list[dict]:
-    """Every non-empty paragraph of the docx as {text, heading, bullet, bold}. A hyperlink to the CMI
-    site becomes the CMI link placeholder, the form the checks and the renderer expect; a hyperlink to a client's
-    page (`client_urls`: url -> link id) becomes that client's link token."""
+def read_blocks(raw: bytes, client_urls: dict[str, str] | None = None, report_url: str | None = None) -> list[dict]:
+    """Every non-empty paragraph of the docx as {text, heading, bullet, bold, other_cmi}. A hyperlink to the report
+    (`report_url`, compared without scheme, 'www.' and trailing slash) becomes the CMI link placeholder, the form the checks
+    and the renderer expect; any other link on the CMI site stays plain words and is listed in `other_cmi`. With
+    `report_url` None every CMI link counts as the report link; with '' none does. A hyperlink to a client's page
+    (`client_urls`: url -> link id, matched the same way) becomes that client's link token."""
     document = docx.Document(BytesIO(raw))
-    client_urls = {u.rstrip("/"): i for u, i in (client_urls or {}).items()}
     rels = {rid: rel.target_ref for rid, rel in document.part.rels.items() if "hyperlink" in rel.reltype}
     blocks: list[dict] = []
     for p in document.paragraphs:
         pieces: list[str] = []
+        other_cmi: list[str] = []
         for child in p._p:
             text = "".join(t.text or "" for t in child.iter(qn("w:t")))
             if child.tag == qn("w:hyperlink"):
                 url = rels.get(child.get(qn("r:id")))
+                client_id = next((i for u, i in (client_urls or {}).items() if url and same_url(u, url)), None)
                 if url and _is_cmi(url) and text.strip():
-                    text = f"[[CMI_LINK:{text}]]"
-                elif url and url.rstrip("/") in client_urls and text.strip():
-                    text = f"[[CLIENT_LINK:{client_urls[url.rstrip('/')]}|{text.strip()}]]"
+                    if report_url is None or same_url(report_url, url):
+                        text = f"[[CMI_LINK:{text}]]"
+                    else:
+                        other_cmi.append(f"{text.strip()} -> {url}")
+                elif client_id and text.strip():
+                    text = f"[[CLIENT_LINK:{client_id}|{text.strip()}]]"
             pieces.append(text)
         text = "".join(pieces).strip()
         if not text:
@@ -77,6 +82,7 @@ def read_blocks(raw: bytes, client_urls: dict[str, str] | None = None) -> list[d
             "subhead": style == "Heading 3",
             "bullet": bool(bullet),
             "bold": bool(runs) and all(r.bold for r in runs),
+            "other_cmi": other_cmi,
         })
     return blocks
 
@@ -173,13 +179,16 @@ def _parse_faq(blocks: list[dict], run_faq: list[dict]) -> list[dict]:
 
 
 def parse(raw: bytes, run_title: str, run_sections: list[dict], run_faq: list[dict], sponsor_text: str,
-          client_urls: dict[str, str] | None = None) -> dict:
+          client_urls: dict[str, str] | None = None, report_url: str | None = None) -> dict:
     """{title, sections, faq, notes}: the humanized draft in the run's own shape. When the run restated its client paragraph,
-    `sponsor_text` is empty and `client_urls` maps each client link's URL to its id."""
-    blocks = read_blocks(raw, client_urls)
+    `sponsor_text` is empty and `client_urls` maps each client link's URL to its id. `report_url` is the one link that counts
+    as the report link (see read_blocks); a link on the CMI site that is not that page is flagged in `notes`."""
+    blocks = read_blocks(raw, client_urls, report_url)
     if not blocks:
         raise ValueError("document has no text")
     notes: list[str] = []
+    for b in blocks:
+        notes += [f"a CMI link that is not the report: {o}" for o in b["other_cmi"]]
     title = blocks[0]["text"]
     blocks = blocks[1:]
 

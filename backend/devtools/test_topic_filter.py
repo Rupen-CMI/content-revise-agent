@@ -71,6 +71,7 @@ check("trusted source: the same host passes when a topic term is used",
 
 # market sizing is the CMI report's alone
 import logging as _lg
+import feeds  # noqa: E402
 import pipeline  # noqa: E402
 sel = {"evidence": [
     {"id": "W1", "fact": "Firecrawl Inc., a provider of web scraping tools for AI agents, raised $75 million in funding.", "detail": ""},
@@ -184,6 +185,201 @@ built = pipeline.run_build_evidence(sel_f, [old_hit, new_hit], _lg.getLogger("t"
 text = built[0] if isinstance(built, tuple) else built
 check("evidence builder: a source older than the freshness window is dropped, a recent one kept",
       "Calastone" not in str(text) and "A vendor launched a product" in str(text), str(text)[:300])
+
+# --------------------------------------------------------------------------- round 3 merge fixes
+# The real failure this round fixes: market "Agile Project Management Software Market", key players
+# Microsoft, Atlassian JIRA, Monday, Asana — 47 hits kept, 46 noise ("Microsoft" carried every Patch
+# Tuesday story, "Monday" matched the weekday, a projector review matched "project" by prefix).
+AGILE = ["Agile Project Management Software Market"]
+AGILE_PLAYERS = ["Microsoft", "Atlassian JIRA", "Monday", "Asana"]
+AGILE_TERMS = ["sprint planning", "backlog", "kanban", "retrospective"]
+
+
+def kept_hits(hits, **kw):
+    return search.filter_hits(hits, AGILE, logger=LOG, **kw)
+
+
+# a key-player name alone never keeps a hit: Patch Tuesday on a trusted host is dropped
+patch = hit("Microsoft rolls out November Patch Tuesday fixes for Windows enterprise users",
+            "https://www.prnewswire.com/ag1")
+check("key player: a Patch Tuesday story naming Microsoft on a trusted host is dropped",
+      kept_hits([patch], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) == [],
+      str(kept_hits([patch], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)))
+
+# a player named after a weekday does not match the weekday in an unrelated headline
+monday = hit("Boston University misses revenue projections by $42M as Monday budget talks stall",
+             "https://www.prnewswire.com/ag2")
+check("key player: the weekday 'Monday' in an unrelated headline is not the company Monday",
+      kept_hits([monday], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) == [],
+      str(kept_hits([monday], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)))
+
+# a trusted host never keeps an item that shares no market token and no topic term ("projector" is not "project")
+proj = hit("Xgimi projector review: a bright picture for a small home cinema",
+           "https://www.prnewswire.com/ag3")
+check("trusted source: 'projector' no longer matches the market word 'project' by prefix",
+      kept_hits([proj], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) == [],
+      str(kept_hits([proj], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)))
+
+# the good cases: a key player plus a topic term, and an unknown vendor plus the market's own words
+atl = hit("Atlassian launches Jira AI sprint planning for agile teams", "https://www.reuters.com/ag4")
+vaiz = hit("Vaiz introduces agile project management tools for small teams", "https://random-news.example.org/ag5")
+kept2 = kept_hits([atl, vaiz], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)
+check("key player: an on-topic key-player item is kept", any(h.title == atl.title for h in kept2), str([h.title for h in kept2]))
+check("tokens: an unknown vendor using the market's own words is kept", any(h.title == vaiz.title for h in kept2), str([h.title for h in kept2]))
+
+# keep_rules are exposed, and the strong count separates market-naming keeps from host/player keeps
+asana = hit("Asana expands its agile project management suite for enterprise buyers", "https://random-news.example.org/ag6")
+kept3 = kept_hits([atl, vaiz, asana], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)
+rules = {h.title.split()[0]: h.keep_rules for h in kept3}
+check("keep rules: the kept hits record the rules that kept them",
+      set(rules) == {"Atlassian", "Vaiz", "Asana"} and rules.get("Asana") == ["key_player"], str(rules))
+check("strong hits: a key-player-only keep is weak, a token or topic-term keep is strong",
+      search.strong_hit_count(kept3) == 2, str(rules))
+
+# the live recall regression this round fixes: with the market "Agile Project Management Software Market"
+# the search found only 1 strong hit and the key-player stories below were lost (2 of 3 dropped, and the
+# monday.com query never ran under the old 4-query cap).
+AGILE_PLAYERS = ["Asana", "Atlassian JIRA", "Microsoft", "Monday", "Pivotal Software"]
+AGILE_TERMS = ["agile project management", "agile planning", "scrum board", "sprint planning", "kanban board",
+               "backlog management", "work management software", "project tracking", "team collaboration"]
+player_stories = [
+    hit("Asana completes acquisition of StackAI, a no-code AI workflow platform", "https://www.reuters.com/agp1"),
+    hit("monday.com brings voice and AI agents into its work management platform", "https://www.reuters.com/agp2"),
+]
+dash_story = hit("Asana launches Dash, a personal AI chief of staff", "https://www.reuters.com/agp3")
+player_stories.append(dash_story)
+kept_stories = kept_hits(player_stories, key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)
+check("key player: a player story naming a product word (platform, AI, workflow) is kept for a software market",
+      sorted(h.title for h in kept_stories) == sorted(h.title for h in player_stories), str([h.title for h in kept_stories]))
+check("key player: the product-word rule keeps the Patch Tuesday and the weekday drops in force",
+      kept_hits([patch, monday], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) == [],
+      str(kept_hits([patch, monday], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)))
+non_software = search.filter_hits(
+    [hit("Acme launches Dash, a personal AI chief of staff", "https://www.reuters.com/agp4")],
+    ["Widget Consulting Services Market"], logger=LOG, key_players=["Acme"], topic_terms=["widget consulting", "advisory services"])
+check("key player: a product word is a market signal for a software market only (a services market keeps nothing)",
+      kept_hits([dash_story], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) != [] and non_software == [], str(non_software))
+
+# the player-name cleaner: one helper feeds both the filter and the query builder
+check("player cleaner: a multi-word name matches the vendor and the product separately",
+      set(search.player_name_variants("Atlassian JIRA")) >= {"Atlassian JIRA", "Atlassian", "JIRA"},
+      str(search.player_name_variants("Atlassian JIRA")))
+check("player cleaner: 'Pivotal Software' does not gain a bare 'Software' matcher",
+      "Software" not in search.player_name_variants("Pivotal Software"), str(search.player_name_variants("Pivotal Software")))
+mv = search.player_name_variants("Monday")
+check("player cleaner: a weekday-named player gains its unambiguous domain form",
+      "Monday" in mv and "monday.com" in mv, str(mv))
+check("player cleaner: the query form of a weekday-named player is its domain",
+      search.clean_player_names(["Monday", "Atlassian JIRA", "Microsoft", "Monday"]) == ["monday.com", "Atlassian JIRA", "Microsoft"],
+      str(search.clean_player_names(["Monday", "Atlassian JIRA", "Microsoft", "Monday"])))
+
+# a common-word player name is matched only with a company marker after it
+pats = search._player_patterns(["Monday"], {"project", "management", "software"})
+weekday_text = "boston university misses revenue projections as Monday budget talks stall"
+domain_text = "monday.com launches a new work management suite"
+possessive_text = "Monday's agile project management plan for enterprise buyers"
+check("common-word player: the bare weekday never matches, the domain and the marked form do",
+      not any(rx.search(weekday_text) for _, rx in pats)
+      and any(rx.search(domain_text) for _, rx in pats)
+      and any(rx.search(possessive_text) for _, rx in pats))
+
+# the in-code key-player news queries: cleaned names, market anchor, at most six (the key-players Bing allotment) —
+# with the cap raised, the Asana, Atlassian/Jira and monday.com news queries all fit one run
+pq = pipeline._player_news_queries("Agile Project Management Software Market", AGILE_PLAYERS + ["Pivotal Software"])
+check("player queries: one per cleaned player, capped at six, anchored to the market's core, with the Asana, Atlassian and monday.com news queries in",
+      len(pq) == 5 and pq[0] == "Asana agile project management"
+      and any(q.startswith("Atlassian JIRA ") for q in pq) and any(q.startswith("monday.com ") for q in pq)
+      and any(q.startswith("Pivotal Software ") for q in pq) and "Microsoft agile project management" in pq, str(pq))
+capped = pipeline._player_news_queries("Agile Project Management Software Market",
+                                       ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta", "Eta BV"])
+check("player queries: seven players are cut to the six-query allotment", len(capped) == 6, str(capped))
+
+# ---- a quoted Bing keyword query that returns 0 results is retried once unquoted
+feeds._BING_QUERY_DELAY_S = feeds._BING_JITTER_S = 0
+EMPTY_RSS = b"<rss><channel/></rss>"
+ITEM_RSS = (b"<rss><channel><item><title>Atlassian launches a Jira AI assistant for sprint planning</title>"
+            b"<link>https://example.org/ag7</link><pubDate>Mon, 02 Nov 2026 10:00:00 GMT</pubDate>"
+            b"<summary>Agile project management news for buyers</summary></item></channel></rss>")
+
+
+class _FakeResp:
+    def __init__(self, content: bytes):
+        self.status_code = 200
+        self.content = content
+
+
+class _FakeBingClient:
+    def __init__(self, pages: dict[str, bytes]):
+        self.pages, self.queries = pages, []
+
+    def get(self, url, params=None, **kw):
+        q = (params or {}).get("q", "")
+        self.queries.append(q)
+        return _FakeResp(self.pages.get(q, EMPTY_RSS))
+
+
+client = _FakeBingClient({'"agile project management" launch': EMPTY_RSS,
+                          "agile project management launch": ITEM_RSS})
+bing_hits = feeds._Bing(client, LOG).run(['"agile project management" launch'])
+check("bing retry: a quoted keyword query with 0 results is retried once unquoted",
+      client.queries == ['"agile project management" launch', "agile project management launch"] and len(bing_hits) == 1,
+      str(client.queries))
+client2 = _FakeBingClient({'"agile project management" launch': ITEM_RSS})
+feeds._Bing(client2, LOG).run(['"agile project management" launch'])
+check("bing retry: a quoted query that answers is not retried", client2.queries == ['"agile project management" launch'], str(client2.queries))
+
+# the retry rule: only while the query's section has no hit at all yet, and at most sections.UNQUOTED_RETRIES times a run
+import sections  # noqa: E402
+
+q_trend, q_trend2, q_us = '"agile project management" adoption', '"agile project management" funding', '"agile project management" United States'
+client3 = _FakeBingClient({q_trend: ITEM_RSS})
+feeds._Bing(client3, LOG).run([q_trend, q_trend2], {q_trend.lower(): ["trends"], q_trend2.lower(): ["trends"]})
+check("bing retry: a section that already has a hit does not retry its next empty quoted query",
+      client3.queries == [q_trend, q_trend2], str(client3.queries))
+client4 = _FakeBingClient({q_trend: ITEM_RSS})
+feeds._Bing(client4, LOG).run([q_trend, q_us], {q_trend.lower(): ["trends"], q_us.lower(): ["us"]})
+check("bing retry: another section with no hit yet still gets its retry",
+      client4.queries == [q_trend, q_us, "agile project management United States"], str(client4.queries))
+many_empty = [f'"agile project management" word{i}' for i in range(6)]
+client5 = _FakeBingClient({})
+feeds._Bing(client5, LOG).run(many_empty, {q.lower(): [f"s{i}"] for i, q in enumerate(many_empty)})
+check("bing retry: at most three retries a run, whatever the number of empty quoted queries",
+      len(client5.queries) == 6 + sections.UNQUOTED_RETRIES == 9 and sum(1 for q in client5.queries if '"' not in q) == 3, str(client5.queries))
+bing5 = feeds._Bing(_FakeBingClient({}), LOG)
+bing5.run(many_empty[:2], {q.lower(): ["x"] for q in many_empty[:2]})
+check("bing retry: the queries sent are counted for the timing line (retries included)", bing5.queries == 4, str(bing5.queries))
+
+# the DDGS lanes follow the same rule: a quoted query is retried only while the lane has found nothing, at most three times
+lane_calls: list[str] = []
+
+
+class _NoDDGS:
+    def __init__(self, *a, **kw):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def fake_attempt(fn, d, query, kind, logger):
+    lane_calls.append(query)
+    return [search.SearchHit(title="Agile project management news for buyers", snippet="s", url="https://x.example/1", source="x", date=None)] \
+        if query == "agile word2" else []
+
+
+_orig_ddgs, _orig_attempt, _orig_gate = search.DDGS, search._attempt, search._ddgs_gate
+search.DDGS, search._attempt = _NoDDGS, fake_attempt
+search._ddgs_gate = lambda kind: __import__("contextlib").nullcontext()
+try:
+    search._lane("news", None, ['"agile" word0', '"agile" word1', '"agile" word2', '"agile" word3', '"agile" word4'], LOG)
+finally:
+    search.DDGS, search._attempt, search._ddgs_gate = _orig_ddgs, _orig_attempt, _orig_gate
+check("ddgs lane: retries stop once the lane has a hit",
+      lane_calls == ['"agile" word0', "agile word0", '"agile" word1', "agile word1", '"agile" word2', "agile word2", '"agile" word3', '"agile" word4'],
+      str(lane_calls))
 
 print()
 print("all topic filter tests passed" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}")

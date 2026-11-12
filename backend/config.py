@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -48,6 +49,11 @@ SEARCH_CLAIMS_ENABLED = os.getenv("SEARCH_CLAIMS_ENABLED", "false").strip().lowe
 # (old Step 2 prep, old write + revise, old FAQ, old checks) — this only flips which Step 2/3/4 branches run.
 CMI_CHAIN_V2 = os.getenv("CMI_CHAIN_V2", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# The Evidence step's three preparation calls (publisher points, search demand, market search queries) as ONE call
+# (evidence_call.py). EVIDENCE_ONE_CALL=false brings back the three separate parallel calls: the one call is longer, and the
+# web search waits for all of it, where the separate queries call used to finish first.
+EVIDENCE_ONE_CALL = os.getenv("EVIDENCE_ONE_CALL", "true").strip().lower() not in ("0", "false", "no", "off")
+
 # Style anchors: when on, the write prompt carries four short passages from the content team's reference article as a register
 # guide (prompts.STYLE_ANCHORS). On by default (devtools/ab_voice.py compared the writer with and without them: shorter sentences,
 # every trend anchored); WRITE_STYLE_ANCHORS=false turns them off.
@@ -59,6 +65,24 @@ WRITE_STYLE_ANCHORS = os.getenv("WRITE_STYLE_ANCHORS", "true").strip().lower() n
 
 CMI_SITE = "https://www.coherentmarketinsights.com"
 CMI_HOST = "coherentmarketinsights.com"
+
+
+def same_url(a: str, b: str) -> bool:
+    """True when two links point at the same page: scheme, 'www.', host case, a port-less host, a fragment and a trailing
+    slash do not matter; the path and the query string do."""
+    def key(url: str) -> tuple[str, str, str]:
+        url = (url or "").strip()
+        u = urlparse(url if "//" in url else "//" + url)
+        return ((u.hostname or "").lower().removeprefix("www.").rstrip("."), u.path.rstrip("/"), u.query)
+    return bool(key(a)[0]) and key(a) == key(b)
+
+
+def is_cmi_url(url: str) -> bool:
+    """True when the link (or a bare host) is on CMI's own site: the host, lower-cased and without its port, is the CMI
+    host or a subdomain of it. A look-alike such as notcoherentmarketinsights.com is not CMI."""
+    url = (url or "").strip()
+    host = (urlparse(url if "//" in url else "//" + url).hostname or "").rstrip(".")
+    return host == CMI_HOST or host.endswith("." + CMI_HOST)
 
 # DEV-ONLY search cache (CMI_SEARCH_CACHE=1): reuse a previous run's engine results (Bing news/web
 # queries, DDGS news/text) for an identical query instead of re-hitting the rate-limited engines.

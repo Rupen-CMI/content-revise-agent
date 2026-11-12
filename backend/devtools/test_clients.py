@@ -121,14 +121,60 @@ clients.run_briefs(c1, "Widget Market", LOG)
 check("brief: a page that cannot be read leaves no brief and a note for the editor", c1[0].brief is None and c1[0].notes and "could not be read" in c1[0].notes[0])
 external_reports.read_page = lambda url, logger: page
 seen_prompts = []
-llm.chat_json = lambda system, user, **kw: (seen_prompts.append(user), {"name": "Aldwych Writing Studio", "offer": "Drafting and editing of research papers for graduate students.",
-                                                                       "category": "academic writing", "anchor_fit": "matches", "market_fit": "distant", "bridge": "Both serve people who write reports."})[1]
+calls = []
+BRIEF = {"name": "Aldwych Writing Studio", "offer": "Drafting and editing of research papers for graduate students.",
+         "category": "academic writing", "anchor_fit": "matches", "market_fit": "distant", "bridge": "Both serve people who write reports."}
+
+
+def batched(system, user, **kw):
+    calls.append(kw.get("call_name"))
+    seen_prompts.append(user)
+    return {"briefs": [{"client": "C1", **BRIEF}, {"client": "C2", **BRIEF, "name": "Invented Corp", "market_fit": "close", "bridge": ""}]}
+
+
+llm.chat_json = batched
 c2, _ = clients.build_clients(art, [0, 2])
 clients.run_briefs(c2, "Widget Market", LOG)
-check("brief: each client is read and given its own brief", all(c.brief and c.brief["offer"] for c in c2) and len(seen_prompts) == 2)
-check("brief: the prompt carries the market, the paragraph with its marked links and the page text",
-      "Widget Market" in seen_prompts[0] and "<<L1: research paper help>>" in seen_prompts[0] and "graduate students" in seen_prompts[0], seen_prompts[0][:200])
+check("brief: ONE call briefs every client, each given its own brief", all(c.brief and c.brief["offer"] for c in c2) and len(seen_prompts) == 1 and calls == ["client_briefs"],
+      f"{len(seen_prompts)} {calls}")
+check("brief: each client's entry is validated on its own (a name the page never wrote is dropped for that client only)",
+      c2[0].brief["name"] == "Aldwych Writing Studio" and c2[1].brief["name"] == "" and c2[1].brief["market_fit"] == "close")
+check("brief: the prompt carries the market, every client's paragraph with its marked links and page text, and asks for one entry per client",
+      "Widget Market" in seen_prompts[0] and "<<L1: research paper help>>" in seen_prompts[0] and "<<L2: thesis editing>>" in seen_prompts[0]
+      and "CLIENT C1" in seen_prompts[0] and "CLIENT C2" in seen_prompts[0] and "graduate students" in seen_prompts[0]
+      and '"briefs"' in seen_prompts[0] and '"client"' in seen_prompts[0] and "TESTS BEFORE ANSWERING" in seen_prompts[0], seen_prompts[0][:300])
 check("brief: a distant offer is reported to the editor with its bridge", any("far from this blog's market" in n for n in clients.brief_notes(c2[0])), str(clients.brief_notes(c2[0])))
+
+llm.chat_json = lambda system, user, **kw: {"briefs": [{"client": "C2", **BRIEF}, {"client": "C2", **BRIEF}, {"client": "C9", **BRIEF}, "junk"]}
+c3, _ = clients.build_clients(art, [0, 2])
+clients.run_briefs(c3, "Widget Market", LOG)
+check("brief: a client the answer leaves out gets no brief and a note; an unknown or repeated client entry is ignored",
+      c3[0].brief is None and any("could not be worked out" in n for n in c3[0].notes) and c3[1].brief and not c3[1].notes, str([c.notes for c in c3]))
+llm.chat_json = lambda system, user, **kw: dict(BRIEF)
+c4, _ = clients.build_clients(art, [0])
+clients.run_briefs(c4, "Widget Market", LOG)
+check("brief: an old-shape answer (no 'briefs' list) leaves the client without a brief, with a note", c4[0].brief is None and c4[0].notes)
+llm.chat_json = lambda system, user, **kw: {"briefs": [dict(BRIEF)]}
+c5, _ = clients.build_clients(art, [0])
+clients.run_briefs(c5, "Widget Market", LOG)
+check("brief: with one client an entry that names no client is that client's", c5[0].brief and c5[0].brief["offer"])
+
+
+def failing(system, user, **kw):
+    raise llm.LLMError("down")
+
+
+llm.chat_json = failing
+c6, _ = clients.build_clients(art, [0, 2])
+clients.run_briefs(c6, "Widget Market", LOG)
+check("brief: a failed call leaves every client without a brief and each with a note, and never raises",
+      all(c.brief is None and any("could not be worked out" in n for n in c.notes) for c in c6))
+no_call = []
+llm.chat_json = lambda system, user, **kw: no_call.append(1) or {}
+external_reports.read_page = lambda url, logger: ""
+c7, _ = clients.build_clients(art, [0, 2])
+clients.run_briefs(c7, "Widget Market", LOG)
+check("brief: when no client's page can be read no call is made at all", not no_call and all(c.brief is None and c.notes for c in c7))
 llm.chat_json, external_reports.read_page = orig_chat, orig_read
 
 # ------------------------------------------------------------------ the write prompt
@@ -179,6 +225,37 @@ absent = [{"heading": "", "sop": [], "paragraphs": ["Lead-in.", "Nothing about i
 fixed = clients.normalize_tokens(absent, c_one, LOG)
 check("tokens: a link the writer left out stays missing, for the check to report", clients.link_problems(fixed, c_one))
 
+# ------------------------------------------------------------------ every link renders to its own page
+import copy  # noqa: E402
+
+DOMAIN_NAME = "Every link goes to its own page"
+RPT = "https://www.coherentmarketinsights.com/market-insight/zzz-1"
+dom_secs = [{"heading": "", "sop": [], "paragraphs": ["The [[CMI_LINK:Zzz Market]] and [[CLIENT_LINK:L1|research paper help]] grow."]}]
+check("link domains: the report link to the report and the client link to its client is clean",
+      checks.link_domain_problems(dom_secs, RPT, True, c_one) == [], str(checks.link_domain_problems(dom_secs, RPT, True, c_one)))
+check("link domains: a CMI link with no report URL given is not judged", checks.link_domain_problems(dom_secs, None, True, c_one) == [])
+off = checks.link_domain_problems(dom_secs, RPT, False, c_one)
+check("link domains: with link_report off a CMI link is a problem", len(off) == 1 and "no report is linked" in off[0], str(off))
+bad_cmi = copy.deepcopy(c_one)
+bad_cmi[0].links[0]["url"] = "https://www.coherentmarketinsights.com/market-insight/other-2"
+res = checks.link_domain_problems(dom_secs, RPT, True, bad_cmi)
+check("link domains: a client link that resolves to the CMI site is a problem", len(res) == 1 and "aldwych.example" in res[0], str(res))
+bad_host = copy.deepcopy(c_one)
+bad_host[0].links[0]["url"] = "https://brexton.example/x"
+res = checks.link_domain_problems(dom_secs, RPT, True, bad_host)
+check("link domains: a client link that resolves to another client's host is a problem", len(res) == 1, str(res))
+sub_ok = copy.deepcopy(c_one)
+sub_ok[0].links[0]["url"] = "https://shop.aldwych.example/x"
+check("link domains: a subdomain of the client's own domain is fine", checks.link_domain_problems(dom_secs, RPT, True, sub_ok) == [])
+check("link domains: an unknown link id is left to the backlink check", checks.link_domain_problems(
+    [{"heading": "", "sop": [], "paragraphs": ["See [[CLIENT_LINK:L9|nobody]]."]}], RPT, True, c_one) == [])
+with_rpt = checks.run_checks_v2(t.TITLE, dom_secs, t.PLAN, inp_one, report_url=RPT)
+check("link domains: the v2 checks carry the new check", any(r.name.startswith(DOMAIN_NAME) for r in with_rpt))
+bad_inp = dataclasses.replace(inp_one, clients=bad_cmi)
+bad_run = checks.run_checks_v2(t.TITLE, dom_secs, t.PLAN, bad_inp, report_url=RPT)
+check("link domains: the v2 check fails for a client link that resolves to CMI",
+      any(r.name.startswith(DOMAIN_NAME) and not r.passed for r in bad_run))
+
 # ------------------------------------------------------------------ the checks in client mode
 RESTATED = ("Readers who must turn research into finished reports can find [[CLIENT_LINK:L1|research paper help]] in many forms today, "
             "from structure guidance to formatting and revision. ")
@@ -198,8 +275,8 @@ def run_client(draft, inp=inp_one):
 
 good = run_client(client_draft())
 for r in good:
-    if r.name == "No point is made twice across sections":
-        continue
+    if r.name in ("No point is made twice across sections", checks.V2_US_EVIDENCE_CHECK_NAME):
+        continue        # the fixture's plan carries one U.S. fact, so its thin-evidence warning is expected (tested in test_checks_v2)
     check(f"client mode, good draft: {r.name}", r.passed, r.detail)
 names = [r.name for r in good]
 check("client mode: the word-for-word placeholder checks are not run", not any(n.startswith("Retained") for n in names), str(names[:6]))
@@ -268,15 +345,19 @@ check("offer check: words that only the other client's link brings are not this 
 check("offer check: the same words are still flagged when no other client explains them",
       len(clients.feature_problems(two_draft, [ME], "", "")) == 1, str(clients.feature_problems(two_draft, [ME], "", "")))
 
-# figures from the client's own website are a legitimate source: the number trace allows them, and only them
+# figures from the client's own website brief are not a market source: only the guest paragraph's own figures trace
 with_figs = RESTATED.replace("revision.", "revision in more than 250 languages.")
 no_brief = dataclasses.replace(inp_one, clients=clients.build_clients(art, [0])[0])
 trace_off = t.by_name(run_client(client_draft(with_figs), no_brief), "Every number traces")
 check("client mode: a figure the client's page never gave fails the number trace", not trace_off.passed and "250" in trace_off.detail, trace_off.detail)
 c_site, _ = clients.build_clients(art, [0])
 c_site[0].brief = {"name": "Aldwych Writing Studio", "offer": "Drafting for graduate students in 250+ languages.", "category": "", "anchor_fit": "matches", "anchor_note": "", "market_fit": "close", "bridge": ""}
-trace_on = t.by_name(run_client(client_draft(with_figs), dataclasses.replace(inp_one, clients=c_site)), "Every number traces")
-check("client mode: the same figure, given by the client's page, passes the number trace", trace_on.passed, trace_on.detail)
+trace_offer = t.by_name(run_client(client_draft(with_figs), dataclasses.replace(inp_one, clients=c_site)), "Every number traces")
+check("client mode: a figure that appears only in the client brief offer fails the number trace too",
+      not trace_offer.passed and "250" in trace_offer.detail, trace_offer.detail)
+with_para = RESTATED.replace("revision.", "revision, as in a studio that prepares 120 papers a term.")
+trace_para = t.by_name(run_client(client_draft(with_para), no_brief), "Every number traces")
+check("client mode: a figure from the client paragraph itself traces", trace_para.passed, trace_para.detail)
 
 # ------------------------------------------------------------------ the whole write step with a stub model
 plan = t.PLAN

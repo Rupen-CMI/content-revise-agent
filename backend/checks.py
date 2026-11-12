@@ -5,7 +5,7 @@ from datetime import date
 import sentsplit
 import subheads
 import freshness
-from prompts import CMI_LINK_PATTERN, SPONSOR_TOKEN
+from prompts import CMI_LINK_PATTERN, FAQ_ANSWER_MAX_WORDS, SPONSOR_TOKEN
 
 # A sentence that gives a view in the voice of a CMI analyst ("A CMI analyst expects...", "An analyst at CMI believes...",
 # "CMI's research team suggests..."). The post carries one or two of them, no more.
@@ -1462,7 +1462,8 @@ def v2_stray_credit_problems(sections: list[dict], plan: dict, inp) -> list[str]
 
 def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], planned_only: bool = True) -> list[str]:
     """The FAQ is MSQs only (§3.8): every question is the verbatim text of a planned, answerable MSQ from
-    the plan's faq list, and every figure in an answer traces to that question's own facts or the draft."""
+    the plan's faq list, every figure in an answer traces to that question's own facts or the draft, and an
+    answer is one or two sentences of 40 to 60 words."""
     out: list[str] = []
     planned_questions: set[str] = set()
     if inp is not None:
@@ -1479,6 +1480,15 @@ def v2_faq_problems(faq: list[dict], plan: dict, inp, sections: list[dict], plan
         for p in s["paragraphs"]:
             draft_nums |= _fact_numbers(_sponsor_replacement(p, " "))
     for qa in faq:
+        answer = str(qa.get("answer") or "")
+        words = len(answer.split())
+        sentences = [s for s in sentsplit.split(answer) if s.strip()]
+        if words > FAQ_ANSWER_MAX_WORDS:
+            out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} runs {words} words; an MSQ answer is "
+                       "40 to 60 words in all")
+        if len(sentences) > 2:
+            out.append(f"the FAQ answer to {str(qa.get('question'))[:50]!r} holds {len(sentences)} sentences; an MSQ "
+                       "answer is one or two")
         q = next((q for q in inp.questions if q["id"] == qa.get("id")), None)
         if q is None:
             continue
@@ -1682,6 +1692,7 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
 # ('remove all these SOPs'): the code that produces them is kept untouched above, the results just no
 # longer surface in the draft's checks list. Re-enable by emptying this set. The names are derived
 # from the same constants that build them inside run_checks_v2, so the strings keep matching there.
+V2_US_EVIDENCE_CHECK_NAME = "U.S. section rests on report facts (thin U.S. evidence): verify (soft)"
 V2_VAGUE_CHECK_NAME = "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)"
 
 V2_DISCONNECTED_CHECKS = frozenset({
@@ -1703,14 +1714,42 @@ V2_DISCONNECTED_CHECKS = frozenset({
 # ===================================================================================================
 
 
+def link_domain_problems(sections: list[dict], report_url: str | None, link_report: bool, client_list: list) -> list[str]:
+    """What is wrong with where the link tokens of the sections would render (pipeline.expand_segments resolves them the same
+    way): a [[CMI_LINK]] must resolve to the report's own URL, and there must be none when no report is linked; a
+    [[CLIENT_LINK]] must resolve to a URL on its own client's domain, never CMI's or another client's. `sections` carry the tokens."""
+    import clients as clients_mod
+    import config
+    import pipeline
+    table = clients_mod.link_table(client_list)
+    owner = {l["id"]: c for c in client_list for l in c.links}
+    out: list[str] = []
+    for s in sections:
+        for p in s["paragraphs"]:
+            for m in pipeline._LINK_TOKEN_RE.finditer(p):
+                url = pipeline._cmi_link_segments(m.group(0), report_url, table)[0][1]
+                if m.group(1) is not None:
+                    if not link_report:
+                        out.append(f"the CMI link {m.group(1)!r} is present although no report is linked")
+                    elif report_url is not None and not (url and config.same_url(url, report_url)):
+                        out.append(f"the CMI link {m.group(1)!r} goes to {url!r}, not the report {report_url!r}")
+                    continue
+                client = owner.get(m.group(2))
+                if client is None:
+                    continue    # an unknown link id renders as plain words; link_problems reports it
+                if not url or config.is_cmi_url(url) or clients_mod.registrable_host(url) != client.host:
+                    out.append(f"the link {m.group(3)!r} of {client.host} goes to {url!r}, not to {client.host}")
+    return out
+
+
 def run_checks_v2(
     title: str, sections: list[dict], plan: dict, inp, faq: list[dict] | None = None,
     sponsor_brand_terms: list[str] = (), sponsor_text: str = "",
     report_text: str = "", report_name: str = "",
     selection: dict | None = None, hits: list | None = None,
-    include_disconnected: bool = False, humanized: bool = False,
+    include_disconnected: bool = False, humanized: bool = False, report_url: str | None = None,
 ) -> list[CheckResult]:
-    """`humanized` is for a draft a person has edited after the run: the checks that only prove the generator
+    """`report_url` is the page the CMI link must render to (the link-domain check skips that half when it is None). `humanized` is for a draft a person has edited after the run: the checks that only prove the generator
     followed its own plan (the plan's title, headings and order, planned FAQ questions, a keyword in its assigned
     section) are replaced by the SOP rules they stand for — 2-3 question headings, every keyword used somewhere —
     because an editor may legitimately change any of those. Every content rule runs unchanged."""
@@ -1729,7 +1768,7 @@ def run_checks_v2(
         # the writer restated the client paragraph and wrote each link as a token: every check below reads the linked words as plain
         # text, and only the client-link checks read the tokens
         sections = clients_mod.plain_sections(sections)
-        sponsor_text = clients_mod.source_text(client_list)         # its figures may appear in the restatement
+        sponsor_text = clients_mod.original_text(client_list)       # the guest paragraph's own figures, never the client website's
         sponsor_brand_terms = []
     paragraphs = [p for s in sections for p in s["paragraphs"]]
     full = "\n".join(paragraphs)
@@ -1798,6 +1837,12 @@ def run_checks_v2(
             "No report is cited (an outside report was used, so no report is named or credited to CMI)",
             not cited, "; ".join(dict.fromkeys(c.lower() for c in cited)),
         ))
+
+    # ---- where each link goes once the tokens are resolved: the report link to the report, each client link to its own client
+    domain_issues = link_domain_problems(
+        token_sections, report_url, getattr(inp, "link_report", True), client_list)
+    results.append(CheckResult("Every link goes to its own page: the report link to the report, each client link to its client",
+                               not domain_issues, "; ".join(domain_issues)))
 
     # ---- the SOP's own rule, whether or not a report is linked: the market's full name is in the first 100 words
     name_at = market_name_offset(sections, sponsor_text, market_name)
@@ -1929,6 +1974,16 @@ def run_checks_v2(
                                not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
+    us_plan = next((p for p in (plan.get("sections") or []) if p.get("sop") == "country_us"), None) if isinstance(plan, dict) else None
+    if us_plan is not None:
+        n_us = len(planning.us_fact_ids(us_plan.get("facts") or [], inp.items))
+        thin = n_us < planning._US_MIN_FACTS
+        detail = ""
+        if thin:
+            detail = (f"{n_us} verified U.S. fact(s): the section is written from the report's own facts, framed for the U.S. Check that it "
+                      "stays on the United States and adds no U.S. figure" if us_plan.get("us_source") == "report"
+                      else f"{n_us} verified U.S. fact(s) and no report fact to write from: the section is an editor note to fill in")
+        results.append(CheckResult(V2_US_EVIDENCE_CHECK_NAME, not thin, detail))
     import content_rules
     us_problems = content_rules.us_only_problems(sections)
     results.append(CheckResult(
@@ -1946,6 +2001,12 @@ def run_checks_v2(
     results.append(CheckResult(
         "No point is made twice across sections",
         not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
+
+    news_items = [{"id": i["id"], "fact": i["text"]} for i in getattr(inp, "items", {}).values() if i.get("kind") == "evidence"]
+    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items) if news_items else []
+    results.append(CheckResult(
+        "Each piece of news evidence is cited in one section and in one trend only",
+        not reuse, "; ".join(reuse[:3]) + (f" (+{len(reuse) - 3} more)" if len(reuse) > 3 else "") if reuse else ""))
 
     # ---- kept: CMI analyst opinion voice, 1-2 labelled statements
     opinions = count_cmi_opinions(paragraphs)

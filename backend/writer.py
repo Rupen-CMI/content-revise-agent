@@ -17,6 +17,7 @@ import re
 from datetime import date
 
 import config
+import content_rules
 import llm
 import clients
 import sentsplit
@@ -36,9 +37,11 @@ _DETAIL_CHARS = 300
 _SHAPES = {
     "report_context": 'One or two paragraphs. It states every listed headline figure as its fact gives it: the market size with its year, the forecast value with its year and the growth rate with its period, then the leading and the fastest-growing region where they are listed. It says where the market is heading only as far as the listed facts show.',
     "trends": 'A list "paragraphs" of exactly 13 plain-text entries, in this order. Entry 1: a lead-in paragraph of 30 to 45 words that names the market by its full name, states the three trends in one sentence and says in one sentence what they change together. Then, for each of three distinct trends, four entries: first a sub-heading entry, the string "### " followed by the trend\'s heading (6 to 12 words that state the consequence for this market, for example what is raising demand for what; never a bare label, never a question); then three paragraphs of 35 to 55 words each. Paragraph one: the development itself, anchored in a listed fact: name the organisation, study, launch or event, give its date, and state its figure and its limits (scope, sample, stage) as the fact states them. Paragraph two: the mechanism: how the development changes demand, adoption or competition in this market, tied to a listed driver or segment where one is given. Paragraph three: the commercial implication: what providers, buyers or investors in this market can do or should expect, framed as inference from the facts above and adding no new fact. A trend with few listed facts keeps all three paragraphs by reasoning more fully from what its facts show, never by adding a fact. The section ends with the third trend\'s third paragraph: no closing or summary paragraph, and no bullets anywhere in the section.',
-    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. Where a listed fact names the category that leads that type, or gives a category\'s share or value, the same line states it with its figure, as the fact gives it. No line, and not the lead-in either, says what the segmentation lets anyone see or do, or why the segmentation matters. Nothing else.',
-    "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: it states the sub-segment\'s listed share or value with its year and says that it leads its split where a fact says so, then what drives its adoption, where it is used and what it adds to the market, stating only what the listed facts state and reasoning from them (the mechanism, the buyer, the use) for what follows; where the facts say little, the paragraph stays short and adds no fact. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
+    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. Where a listed fact names the category that leads that type, or gives a category\'s share or value, the same line states that leading category with its figure, as the fact gives it, and adds one clause on why it leads (the driver, the shift in demand or the adoption behind it) where a listed fact supports that reason; where no listed fact does, the line adds no reason and no figure. The lead-in does not say what the segmentation lets anyone see or do. Nothing else.',
+    "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: it states the sub-segment\'s listed share or value with its year and says that it leads its split where a fact says so, then explains the growth drivers behind it, the demand pattern, the adoption trend and why the sub-segment dominates or grows, reasoning from the listed facts (the mechanism, the buyer, the use) and, where the facts say little about this sub-segment, from the market\'s own drivers that apply to it; no figure or company detail is added that no listed fact states. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers the United States and only the United States: its demand, adoption, drivers and developments as the listed facts give them, in 100 to 200 words in all. Name no other region or country anywhere in the section, not even for comparison; fewer than 100 words is a miss, so carry the U.S. picture with the listed facts plus your own analytical sentences about what it means for providers and buyers in the U.S.',
+    "us_from_report": 'Prose in one or two short paragraphs, 100 to 200 words in all, about the United States and only the United States. The listed facts are the report\'s own statements, drivers and opportunities, so the section opens with the report\'s U.S. statements where listed, then turns each driver, opportunity or leading segment into what it means for U.S. demand, adoption, buyers and providers, as inference from that fact. Put every fact in your own words, completely: a different sentence structure and different wording, never a phrase copied from the fact. A figure appears only where a listed fact states it, and no U.S. figure is ever added. Name no other region or country anywhere in the section, not even for comparison, and never say that U.S. data is missing or was not found.',
+    "us_missing": 'The single line [EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.] and nothing else: no prose, no word count, and no mention of any other region or country.',
     "key_players": 'Two entries in "paragraphs", both prose with no bullet lines. First: a short passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
     "key_players_names_only": 'Two entries in "paragraphs", both prose with no bullets. First: a short passage on how crowded or concentrated the field is, naming the companies the facts name together in its opening sentence, using only what the listed facts say. Second: here no company has a listed fact, so the companies stay named together in one or two complete sentences; never give a company a detail the facts do not supply.',
     "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, the growth rate stated earlier) and puts no label of its own on the pace ("modest", "rapid", "steady", "strong"), because the figures already say it. It uses the market\'s full name once, inside a sentence about the market itself, never a sentence about the name. It restates no fact, region, segment or company from the sections above, not even in other words: it looks ahead. Its last sentence is the CMI analyst\'s view.',
@@ -72,6 +75,8 @@ _UNLINKED_SHAPE_WORDS = (
     ("with the report as its actor, saying how many segment types the report uses", "saying how many segment types the market is divided by"),
     ("never the report's own list wording", "never the source's own list wording"),
     ("all of the report's companies", "all of the market's companies"),
+    ("are the report's own statements, drivers and opportunities, so the section opens with the report's U.S. statements",
+     "are the market's own statements, drivers and opportunities, so the section opens with its U.S. statements"),
 )
 
 
@@ -123,7 +128,8 @@ def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
 
 def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, str]) -> str:
     msq = next((q for q in inp.questions if q["id"] == s["msq"]), None)
-    rows = [f'### {i}. {s["sop"]}  |  heading: "{s["heading"]}"  |  about {s["words"]} words']
+    size = "" if s["length"] == "us_missing" else f'  |  about {s["words"]} words'
+    rows = [f'### {i}. {s["sop"]}  |  heading: "{s["heading"]}"{size}']
     rows.append(f'Purpose (what the reader learns here): {s["point"] or "(the section\'s ordinary job)"}')
     if msq:
         rows.append("The heading is a question people really search. Answer it directly in the first one or two sentences (about 40 to 60 words), in precise terms, then continue with the section.")
@@ -131,15 +137,29 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
         rows.append("This section has few facts: state them exactly and add the analysis they support (what they mean for buyers and providers "
                     "in this market) without adding a fact. It may land under the budget.")
     elif s["length"] == "us_missing":
-        rows.append("No verified U.S. fact was found for this market. Do not write about any other region or country. "
-                    "The section's entire paragraph is the single line: [EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]")
+        rows.append("Neither a verified U.S. fact nor a report fact exists for this section. Keep the heading and write only the editor line given in the "
+                    "SHAPE below, as the section's one paragraph. Do not write about any other region or country.")
+    elif s["length"] == "us_from_report":
+        rows.append("Little verified U.S. data was found for this market, so this section is written from the market's own facts listed below "
+                    "(its U.S. statements first, then its drivers, opportunities and leading segments), each framed as what it means for U.S. demand, "
+                    "adoption, buyers and providers. Rephrase every fact fully in your own words, with a different sentence structure and wording; "
+                    "add no U.S. figure that no listed fact states; name no other region or country (no North America, no Europe, no Asia).")
     facts_rows = [_fact_text(inp.items[f]) for f in s["facts"]]
     if s["sop"] == "trends" and s.get("trend_groups"):
         parts = []
         for n, g in enumerate(s["trend_groups"], 1):
             name = g["trend"] or "(the planner gave this trend no name: name it from its facts)"
             body = "\n".join(_fact_text(inp.items[f]) for f in g["facts"]) or "- (no listed fact: reason from the section's purpose without adding a fact)"
-            parts.append(f"Trend {n}: {name}\n{body}")
+            # A trend whose facts are all the report's own (no news item survived SELECT for it) is
+            # told so on its own trend line: built from the report driver, not padded with a generic
+            # definition of the technology.
+            head = f"Trend {n}: {name}"
+            if g["facts"] and not any(inp.items[f]["kind"] == "evidence" for f in g["facts"]):
+                head += (" — This trend has no news item: build it on its report driver: paragraph one states the driver "
+                         "precisely as the fact gives it, paragraph two the mechanism in this market (who buys what "
+                         "differently and why), paragraph three the commercial implication; no generic definitions or "
+                         "textbook explanation of the technology.")
+            parts.append(f"{head}\n{body}")
         rows.append("Facts to use, by trend (each trend is written only from its own facts, and its sub-heading states that trend):\n" + "\n".join(parts))
     else:
         rows.append("Facts to use:\n" + ("\n".join(facts_rows) if facts_rows else "- (none)"))
@@ -153,7 +173,8 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
     if s["snippet"]:
         rows.append(f'Guest example (optional, at most one sentence, only if it makes the point clearer): "{points[s["snippet"]]}"')
     names_only = s["sop"] == "key_players" and not any(inp.items[f]["kind"] == "evidence" for f in s["facts"])
-    rows.append("SHAPE: " + _shape_text("key_players_names_only" if names_only else s["sop"], getattr(inp, "link_report", True)))
+    shape = s["length"] if s["length"] in ("us_missing", "us_from_report") else "key_players_names_only" if names_only else s["sop"]
+    rows.append("SHAPE: " + _shape_text(shape, getattr(inp, "link_report", True)))
     return "\n".join(rows)
 
 
@@ -243,6 +264,11 @@ _META_RE = re.compile(
     r"|\bno\s+(?:further|more|specific)\s+(?:detail|data|figures?)\s+(?:is|are|was|were)\b"
     r"|\bthe\s+(?:observation|finding|statement|source|figure)\s+(?:is\s+(?:qualitative|descriptive)|does\s+not\s+(?:quantify|state|measure|give))\b"
     r"|\brather\s+than\s+any\s+measured\b|\bdoes\s+not\s+quantify\b"
+    # the post saying what its sources lack: "No specific U.S. data is available", "we could not find ...", "figures were not available"
+    r"|\bno\s+(?:specific|verified|separate|dedicated|reliable)\s+(?:(?:u\.s\.|us|united\s+states)\s+)?(?:data|figures?|statistics|facts?|numbers)\b"
+    r"|\b(?:we|i)\s+(?:could|can|did|were|was)\s*(?:not|n['’]t)\s+(?:able\s+to\s+)?(?:find|locate|verify|identify)\b"
+    r"|\b(?:could|can)\s*(?:not|n['’]t)\s+be\s+(?:found|located|verified)\b"
+    r"|\b(?:data|figures?|statistics|numbers|facts?|information|details?)\b[^.;]{0,40}\b(?:(?:is|are|was|were)\s+(?:not|n['’]t)\s+available|unavailable|not\s+(?:yet\s+)?(?:published|disclosed))\b"
     # the post announcing itself: "The sections that follow set out...", "this article explains..."
     r"|\b(?:sections?|parts?)\s+(?:that\s+)?(?:follow|ahead|below)\b|\b(?:the\s+)?following\s+(?:sections?|parts?)\b"
     r"|\b(?:this|the)\s+(?:article|post|piece)\s+(?:explains|examines|sets\s+out|covers|outlines|looks\s+at|will)\b",
@@ -336,6 +362,30 @@ def _drop_orphans(kept: list[str], removed: set[int]) -> list[str]:
     return out
 
 
+_US_EDITOR_NOTE = "[EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]"
+
+
+def editor_note(sop: str) -> str:
+    """The one line a market section carries when it has no text of its own to keep."""
+    if sop == "country_us":
+        return _US_EDITOR_NOTE
+    return f"[EDITOR: the {sop.replace('_', ' ')} section's text did not survive the checks; write it here.]"
+
+
+def keep_emptied_sections(sections: list[dict], logger: logging.Logger) -> list[dict]:
+    """The sections that still have paragraphs. A planned market section left with none keeps its heading and gets an editor
+    note instead of vanishing from the post (the editor sees where the text belongs); the opening and the transition, which
+    have no heading to keep, are dropped. Logged as a warning."""
+    out = []
+    for s in sections:
+        if s["paragraphs"]:
+            out.append(s)
+        elif s.get("sop") and s["sop"][0] in planning.ORDER:
+            logger.warning(f"[write] every paragraph of the {s['sop'][0]} section was removed; it keeps its heading with an editor note")
+            out.append({**s, "paragraphs": [editor_note(s["sop"][0])]})
+    return out
+
+
 def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[dict]:
     """Remove sentences that describe the facts or the plan instead of the market, or that advertise a publication's
     coverage without reporting any finding from it. Works line by line so bullet lists keep
@@ -346,7 +396,8 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
             lines = []
             for line in p.split("\n"):
                 kept = [_trim_roadmap_clause(x) for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                gone = {i for i, x in enumerate(kept) if not _holds_link(x) and (_META_RE.search(x) or _is_coverage_ad(x))}
+                gone = {i for i, x in enumerate(kept) if not _holds_link(x) and not x.lstrip().startswith("[EDITOR")
+                        and (_META_RE.search(x) or _is_coverage_ad(x))}
                 good = _drop_orphans(kept, gone)
                 if len(good) != len(kept):
                     logger.info(f"[write] removed {len(kept) - len(good)} process-language sentence(s) from {s['sop'] or 'the opening'}: "
@@ -356,7 +407,7 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
             if lines:
                 paragraphs.append("\n".join(lines))
         s["paragraphs"] = paragraphs
-    return [s for s in sections if s["paragraphs"]]
+    return keep_emptied_sections(sections, logger)
 
 
 # The sentence-end bar `_sponsor_problems` applies to the text before an inline placeholder: trailing
@@ -635,7 +686,7 @@ def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, spons
             if lines:
                 paragraphs.append("\n".join(lines))
         s["paragraphs"] = paragraphs
-    return [s for s in sections if s["paragraphs"]]
+    return keep_emptied_sections(sections, logger)
 
 
 def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
@@ -701,8 +752,39 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
             if lines:
                 paragraphs.append("\n".join(lines))
         s["paragraphs"] = paragraphs
-    return [s for s in sections if s["paragraphs"]]
+    return keep_emptied_sections(sections, logger)
 
+
+
+def strip_repeat_evidence(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
+    """A piece of news evidence is cited in one section and in one trend only (the write prompt says so; a prompt rule alone
+    did not hold). A sentence that cites one already cited earlier in another section, or in another trend block, goes, with
+    the sentences that refer to it, exactly like the other strips; the first citation stays. Found with
+    content_rules.evidence_reuse, the same function the check uses."""
+    if inp is None:
+        return sections
+    items = [{"id": i["id"], "fact": i["text"]} for i in inp.items.values() if i["kind"] == "evidence"]
+    rows = [r for r in content_rules.evidence_reuse(sections, items) if not _holds_link(r["sentence"])]
+    if not rows:
+        return sections
+    flagged = {r["at"] for r in rows}
+    for si, s in enumerate(sections):
+        paragraphs = []
+        for pi, p in enumerate(s["paragraphs"]):
+            lines = []
+            for li, line in enumerate(p.split("\n")):
+                kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
+                gone = {ci for ci in range(len(kept)) if (si, pi, li, ci) in flagged}
+                good = _drop_orphans(kept, gone)
+                if len(good) != len(kept):
+                    logger.info(f"[write] removed {len(kept) - len(good)} sentence(s) that cite news evidence already cited elsewhere from "
+                                f"{s['sop'][0] if s.get('sop') else 'the opening'}: " + " | ".join(x[:110] for x in kept if x not in good))
+                if good:
+                    lines.append(" ".join(good))
+            if lines:
+                paragraphs.append("\n".join(lines))
+        s["paragraphs"] = paragraphs
+    return keep_emptied_sections(sections, logger)
 
 
 def enforce_trend_shape(sections: list[dict], logger: logging.Logger) -> list[dict]:
@@ -838,12 +920,12 @@ def assemble_sections(written: dict, plan: dict, logger: logging.Logger) -> list
     market: list[dict] = []
     for ps in plan["sections"]:
         raw = by_sop.get(ps["sop"])
-        if raw is None:
-            logger.warning(f"[write] the model left out the {ps['sop']} section")
-            continue
-        cleaned = _clean_sections([{**raw, "heading": ps["heading"], "sop": [ps["sop"]]}])
+        cleaned = _clean_sections([{**raw, "heading": ps["heading"], "sop": [ps["sop"]]}]) if raw is not None else []
         if not cleaned:
-            logger.warning(f"[write] the {ps['sop']} section came back empty")
+            # a planned section never vanishes: it keeps its heading with an editor note where its text belongs
+            logger.warning(f"[write] the model {'left out' if raw is None else 'returned an empty'} {ps['sop']} section; "
+                           "it keeps its heading with an editor note")
+            market.append({"heading": ps["heading"], "sop": [ps["sop"]], "paragraphs": [editor_note(ps["sop"])]})
             continue
         if str(raw.get("heading") or "").strip() != ps["heading"]:
             logger.info(f"[write] {ps['sop']}: the heading was set to the plan's ({raw.get('heading')!r} -> {ps['heading']!r})")
@@ -864,13 +946,14 @@ def run_write_v2(
     if client_list:
         # the writer restated the client paragraph: every link is one correct token in the opening (the URLs stay in code)
         sections = clients.normalize_tokens(sections, client_list, logger)
-        allowed_text = clients.source_text(client_list)
+        allowed_text = clients.original_text(client_list)
     else:
         # the placement repair runs before the other strips so they all see the token in the shape the checks expect
         sections = repair_sponsor_placement(sections, logger, sponsor.text)
         allowed_text = sponsor.text
     sections = strip_untraced_figures(sections, inp, allowed_text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
+    sections = strip_repeat_evidence(sections, inp, logger)
     sections = strip_reader_filler(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
     sections = enforce_trend_shape(sections, logger)

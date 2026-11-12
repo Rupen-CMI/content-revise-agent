@@ -3,13 +3,21 @@ key-players tag (no network, no real LLM calls). Run from backend/: python devto
 import inspect
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config  # noqa: E402
+import llm  # noqa: E402
 import pipeline  # noqa: E402
+import prompts  # noqa: E402
+import reports  # noqa: E402
+import search  # noqa: E402
+from docx_io import Paragraph, SourceArticle  # noqa: E402
 
 LOG = logging.getLogger("t")
+LOG.setLevel(logging.INFO)  # the run_select messages this test greps are logged at INFO
 FAILED: list[str] = []
 
 
@@ -145,6 +153,130 @@ kept = run_players([
 ])
 check("players: a launch fact that mentions a personnel change alongside loses the players tag",
       kept == [], str(kept))
+
+# ------------------------------------------------------------------ test 1: the inside-the-market rule and the category list
+check("prompt: test 1 keeps rejecting a different or broader market",
+      "a different, related, or broader market is a wrong-market result" in prompts.SELECT_USER
+      and "Reject a different or" in prompts.SELECT_USER)
+check("prompt: test 1 states that a product category inside the market counts",
+      "product category, segment, technology, vendor or use case WITHIN this market" in prompts.SELECT_USER
+      and "never reject a product category inside this one" in prompts.SELECT_USER)
+check("prompt: test 1 carries the generic inside-the-market examples, not one market's wording",
+      "marketing automation or SEO tools are part of digital marketing software" in prompts.SELECT_USER
+      and "Jira or sprint-planning tools are part of project management software" in prompts.SELECT_USER
+      and "CMO-level story about marketing budgets" in prompts.SELECT_USER)
+
+REPORT = reports.Report(news_id=1, name="Zzz Widget Services Market", subject="", url="u", source="s",
+                        sections={}, segment_terms=["Widget Testing", "Widget Supply"])
+ORIENT = {"topic_terms": ["widget maker", "widget supply"], "topic_summary": "t", "bridge_angle": "a"}
+
+cats = pipeline._market_category_terms(REPORT, ORIENT)
+check("categories: the report's segment names and orient's topic terms are both listed",
+      "Widget Testing" in cats and "Widget Supply" in cats and "widget maker" in cats, cats)
+check("categories: deduped, lowercase topic terms folded once",
+      cats.count("widget supply") + cats.count("Widget Supply") == 1, cats)
+check("categories: no segments and no topic terms gives the placeholder",
+      pipeline._market_category_terms(
+          reports.Report(news_id=1, name="X Market", subject="", url="u", source="s"), {}) == "(none listed)")
+check("categories: an explicit topic_terms argument wins over orient's",
+      pipeline._market_category_terms(REPORT, ORIENT, topic_terms=["explicit term"]) .count("widget maker") == 0
+      and "explicit term" in pipeline._market_category_terms(REPORT, ORIENT, topic_terms=["explicit term"]))
+
+# ------------------------------------------------------------------ run_select end to end with a stubbed llm.chat_json
+ARTICLE = SourceArticle(title="A Blog Title", paragraphs=[])
+SPONSOR = Paragraph(index=0, text="Sponsor line.")
+
+
+def mkhit(i: int) -> search.SearchHit:
+    return search.SearchHit(title=f"Widget story {i}", snippet="Acme Corp launched a widget testing service for "
+                            "widget supply teams.", url=f"https://h{i}.example.org/{i}", source="",
+                            date=datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+
+def ev(w: int, tags: str = "trends") -> dict:
+    return {"id": f"W{w}", "fact": "Acme Corp launched a widget testing service.", "detail": "", "use_for": tags}
+
+
+LOG_CAPTURE: list[str] = []
+
+
+class _Capture(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        LOG_CAPTURE.append(record.getMessage())
+
+
+_capture = _Capture()
+LOG.addHandler(_capture)
+_orig_chat = llm.chat_json
+
+
+def run_with(responses: list[dict], hits: list[search.SearchHit], orient: dict | None = ORIENT) -> tuple[dict, list[str]]:
+    """run_select with llm.chat_json stubbed to return the given responses in order; returns
+    (selection, the user prompts each call received)."""
+    calls: list[str] = []
+    llm.chat_json = lambda system, user, **kw: (calls.append(user), responses[len(calls) - 1])[1]
+    try:
+        sel = pipeline.run_select(ARTICLE, orient or {}, SPONSOR, REPORT, hits, LOG)
+    finally:
+        llm.chat_json = _orig_chat
+    return sel, calls
+
+
+# a first pass with only 2 kept items triggers the second pass, whose items are merged with unique ids
+HITS10 = [mkhit(i) for i in range(1, 11)]
+sel, calls = run_with(
+    [{"evidence": [ev(1), ev(2)]},
+     {"evidence": [ev(1), ev(2), ev(3)]}],  # second pass: rest-list ids 1..3 -> original W3..W5
+    HITS10)
+ids = [e["id"] for e in sel["evidence"]]
+check("second pass: a 2-item first pass runs exactly one more SELECT call", len(calls) == 2, str(len(calls)))
+check("second pass: the second pass's items are merged with unique, remapped ids",
+      ids == ["W1", "W2", "W3", "W4", "W5"] and len(set(ids)) == len(ids), str(ids))
+check("second pass: the merge is logged",
+      any(m == "[select] second pass: first kept 2, second added 3" for m in LOG_CAPTURE), str(LOG_CAPTURE[-3:]))
+check("second pass: the second prompt carries the SECOND PASS instruction",
+      "The first pass kept only 2 results" in calls[1] and "product category, vendor or segment inside this market"
+      in calls[1], calls[1][:400])
+check("second pass: the second prompt lists only the candidates the first pass did not keep",
+      "[W1] Widget story 3" in calls[1] and "[W1] Widget story 1" not in calls[1], "")
+check("second pass: the categories block reaches both prompts",
+      all("CATEGORIES INSIDE THIS MARKET" in c and "Widget Testing" in c for c in calls))
+check("second pass: the first prompt has no SECOND PASS block",
+      "SECOND PASS" not in calls[0])
+# the remapped ids still map onto the original hits list the way run_build_evidence reads them
+built = pipeline.run_build_evidence(sel, HITS10, LOG)
+check("second pass: the merged ids survive run_build_evidence (no bad-id drops)",
+      all(f"(W{i})" in built for i in range(1, 6)), built[:400])
+
+# a first pass with 6 kept items does NOT trigger the second pass
+LOG_CAPTURE.clear()
+sel6, calls6 = run_with([{"evidence": [ev(i) for i in range(1, 7)]}], HITS10)
+check("second pass: a 6-item first pass runs only one SELECT call",
+      len(calls6) == 1 and [e["id"] for e in sel6["evidence"]] == [f"W{i}" for i in range(1, 7)],
+      f"{len(calls6)} calls")
+
+# a thin candidate pool never triggers the second pass, however few items the first pass kept
+LOG_CAPTURE.clear()
+sel4, calls4 = run_with([{"evidence": [ev(1), ev(2)]}], HITS10[:4])
+check("second pass: a pool smaller than 8 candidates runs only one SELECT call",
+      len(calls4) == 1 and [e["id"] for e in sel4["evidence"]] == ["W1", "W2"], f"{len(calls4)} calls")
+
+# the total stays within config.SEARCH_MAX_SELECTED
+LOG_CAPTURE.clear()
+_saved_max = config.SEARCH_MAX_SELECTED
+config.SEARCH_MAX_SELECTED = 4
+try:
+    selc, callsc = run_with(
+        [{"evidence": [ev(1), ev(2)]},
+         {"evidence": [ev(1), ev(2), ev(3), ev(4), ev(5), ev(6)]}],
+        HITS10)
+finally:
+    config.SEARCH_MAX_SELECTED = _saved_max
+check("second pass: the merged total respects SEARCH_MAX_SELECTED",
+      len(selc["evidence"]) == 4 and [e["id"] for e in selc["evidence"]] == ["W1", "W2", "W3", "W4"],
+      str([e["id"] for e in selc["evidence"]]))
+
+LOG.removeHandler(_capture)
 
 print()
 print("all select rule tests passed" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}")

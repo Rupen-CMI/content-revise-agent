@@ -23,13 +23,14 @@ import prompts
 import reports
 import search
 import variance
+from config import is_cmi_url
 from pipeline import _market_core, _report_text
 from pipeline_log import section
 
 HEADLINE_KEYS = ("size", "forecast", "cagr")
 # Only upside is recorded: the articles carry positive trends and evidence, so restraints are not read at all and a
 # statement whose wording is negative is dropped (see polarity.py).
-STATEMENT_KEYS = ("us", "drivers", "opportunities")
+STATEMENT_KEYS = ("us", "drivers", "opportunities", "segment_drivers")
 _MAX_STATEMENTS = 6               # per statement field: a few strong entries, not everything the page mentions
 _MIN_QUOTE_WORDS = 5
 _FIGURE_MAX_AGE_YEARS = 2         # an outside figure must be for a year within this many years of today
@@ -178,7 +179,7 @@ def _empty_fact_sheet() -> dict:
     return {
         "size": None, "forecast": None, "cagr": None, "segments": [],
         "regions": {"leader": None, "fastest": None},
-        "us": [], "drivers": [], "opportunities": [],
+        "us": [], "drivers": [], "opportunities": [], "segment_drivers": [],
         "players": [], "gaps": list(HEADLINE_KEYS), "figure_source": None,
     }
 
@@ -284,7 +285,7 @@ def _headline_entry(
 
 
 def _statement_list(
-    raw, key: str, source_norm: str, today: date, logger: logging.Logger, ignore=frozenset(),
+    raw, key: str, source_norm: str, today: date, logger: logging.Logger, ignore=frozenset(), extra=(),
 ) -> list[dict]:
     out: list[dict] = []
     for item in raw if isinstance(raw, list) else []:
@@ -307,7 +308,8 @@ def _statement_list(
         if _has_stale_event(text, today) or _has_stale_event(quote, today):
             logger.info(f"[facts] {key} entry dropped: it rests on an event dated more than a year ago: {text[:90]!r}")
             continue
-        out.append({"id": f"fs.{key}.{len(out)}", "text": text, "quote": quote, "historical": _is_historical(quote, today)})
+        out.append({"id": f"fs.{key}.{len(out)}", "text": text, "quote": quote, "historical": _is_historical(quote, today),
+                    **{k: " ".join(str(item.get(k) or "").split()) for k in extra}})
         if len(out) >= _MAX_STATEMENTS:
             break
     return out
@@ -360,7 +362,9 @@ def validate_fact_sheet(
     regions = raw.get("regions") if isinstance(raw.get("regions"), dict) else {}
     fs["regions"] = {which: _region_entry(regions.get(which), which, source_norm, today, logger) for which in ("leader", "fastest")}
     for key in STATEMENT_KEYS:
-        fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger, polarity.market_words(market_name))
+        fs[key] = _statement_list(raw.get(key), key, source_norm, today, logger, polarity.market_words(market_name),
+                                  extra=("split", "name") if key == "segment_drivers" else ())
+    _match_segment_drivers(fs, logger)
     fs["players"] = _players(raw.get("players"), source_norm, logger)
     fs["gaps"] = headline_gaps(fs)
     return fs
@@ -394,9 +398,62 @@ def _parse_figure(text: str) -> tuple[str, float] | None:
     return None
 
 
+def _flex_tokens(text: str) -> list[str]:
+    """A name's words as a quote may spell them: lowercased, each word stripped of a trailing plural ('Vehicles' ->
+    'vehicle'); short words keep their tail ('bev', 'us'). Both sides of a comparison are built with this."""
+    out = []
+    for t in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if len(t) > 3 and t.endswith("es"):
+            out.append(t[:-2])
+        elif len(t) > 3 and t.endswith("s"):
+            out.append(t[:-1])
+        else:
+            out.append(t)
+    return out
+
+
+def _name_variants(name: str) -> list[list[str]]:
+    """The token lists a quote may spell a category name with: the name as given, without its bracketed part
+    ('(BEV)' is optional in the quote) and the bracketed abbreviation alone ('BEV' names the category too)."""
+    inner = re.findall(r"\(([^)]*)\)", name or "")
+    out = [_flex_tokens(name)]
+    if inner:
+        out.append(_flex_tokens(re.sub(r"\([^)]*\)", " ", name)))
+        out.append(_flex_tokens(" ".join(inner)))
+    return [v for v in out if v]
+
+
+def _name_in_quote(name: str, quote: str) -> bool:
+    """Whether a quote names a category, beyond the literal spelling: case and singular/plural differences
+    ('Vehicles'/'vehicle', 'Chargers'/'charger'), the bracketed part optional, the abbreviation in brackets alone, and
+    a hyphenated name spelled with spaces or joined ('on-board' = 'on board' = 'onboard')."""
+    toks = _flex_tokens(quote)
+    solid = "".join(toks)
+    for variant in _name_variants(name):
+        if any(toks[i:i + len(variant)] == variant for i in range(len(toks) - len(variant) + 1)):
+            return True
+        joined = "".join(variant)
+        if len(variant) > 1 and len(joined) >= 6 and joined in solid:
+            return True
+    return False
+
+
+def _quote_share(quote: str) -> tuple[str, float] | None:
+    """The share a dominance quote states for its category ('approximately 57.0%'): ('57.0', 57.0), taken from the
+    first number the quote carries a unit for; a bare number (a year, a count) states no share."""
+    for m in _FIGURE_RE.finditer(quote or ""):
+        if (m.group(2) or "").lower() in ("%", "percent"):
+            num = m.group(1).replace(",", "")
+            try:
+                return num, float(num)
+            except ValueError:
+                continue
+    return None
+
+
 def _segment_figures(items_raw: list, names: list[str], source_norm: str, logger: logging.Logger) -> dict[str, dict]:
     """The per-category figure (share or value) the report states, kept only when its quote is a real stretch of the page
-    that names the category and carries every number of the figure. Pure."""
+    that names the category (tolerant to spellings, see _name_in_quote) and carries every number of the figure. Pure."""
     out: dict[str, dict] = {}
     for item in items_raw:
         if not isinstance(item, dict):
@@ -411,7 +468,7 @@ def _segment_figures(items_raw: list, names: list[str], source_norm: str, logger
         if not parsed or not nums or any(n not in _numbers(quote) for n in nums):
             logger.info(f"[facts] segment figure for {name!r} dropped: {figure!r} is not a share or an amount in its quote")
             continue
-        if not _quote_ok(quote, source_norm) or _norm(match) not in _norm(quote):
+        if not _quote_ok(quote, source_norm) or not _name_in_quote(match, quote):
             logger.info(f"[facts] segment figure for {name!r} dropped: its quote is not in the report text or does not name it")
             continue
         out[match] = {"figure": figure, "kind": parsed[0], "amount": parsed[1], "quote": quote}
@@ -440,7 +497,9 @@ def derive_dominant(names: list[str], figures: dict[str, dict]) -> dict | None:
 def _segments(raw_segments, raw_dominant, source_norm: str, logger: logging.Logger) -> list[dict]:
     """Segment splits with each category's stated figure and the split's dominant category. A category list entry may be
     a plain name or {name, figure, quote}. The dominant category is what the page says leads the split ('stated') or what
-    its figures prove ('derived'); a stated one wins, a disagreement between the two is logged."""
+    its figures prove ('derived'); a stated one wins, a disagreement between the two is logged. A stated claim's quote is
+    matched to the category tolerantly (see _name_in_quote), and when that quote states the category's share, the share
+    is kept as the category's figure when it has none of its own."""
     stated: dict[str, dict] = {}
     for d in raw_dominant if isinstance(raw_dominant, list) else []:
         if isinstance(d, dict):
@@ -458,22 +517,39 @@ def _segments(raw_segments, raw_dominant, source_norm: str, logger: logging.Logg
                 logger.info(f"[facts] segment {stype!r} dropped: fewer than two of its categories are in the report text")
             continue
         figures = _segment_figures(raw_items, names, source_norm, logger)
-        entry = {"id": f"fs.segments.{len(segments)}", "type": stype, "items": names, "figures": figures, "dominant": None}
-        derived = derive_dominant(names, figures)
         claim = stated.get(_norm(stype))
         said = None
         if claim:
             cname = next((n for n in names if _norm(n) == _norm(str(claim.get("name") or ""))), None)
             cquote = str(claim.get("quote") or "").strip()
-            if cname and _quote_ok(cquote, source_norm) and _norm(cname) in _norm(cquote) and _DOMINANCE_RE.search(cquote):
+            if cname and _quote_ok(cquote, source_norm) and _name_in_quote(cname, cquote) and _DOMINANCE_RE.search(cquote):
                 said = {"name": cname, "basis": "stated", "quote": cquote}
+                if cname not in figures:      # the dominant quote states the category's share: keep it as its figure
+                    num_share = _quote_share(cquote)
+                    if num_share:
+                        figures[cname] = {"figure": f"{num_share[0]}%", "kind": "share", "amount": num_share[1], "quote": cquote}
             else:
                 logger.info(f"[facts] dominant claim for {stype!r} dropped: the quote is missing, does not name the category, or does not say it leads")
+        derived = derive_dominant(names, figures)
+        entry = {"id": f"fs.segments.{len(segments)}", "type": stype, "items": names, "figures": figures, "dominant": None}
         if said and derived and said["name"] != derived["name"]:
             logger.warning(f"[facts] {stype!r}: the report states {said['name']!r} leads but its figures put {derived['name']!r} on top; the stated claim is used")
         entry["dominant"] = said or derived
         segments.append(entry)
     return segments
+
+
+def _match_segment_drivers(fs: dict, logger: logging.Logger) -> None:
+    """Each segment reason is tied to the split and category it explains, in the names the fact sheet's own segments use. A
+    reason whose split or category is not one of them keeps its text but loses the tie (the planner can still place it)."""
+    for e in fs.get("segment_drivers") or []:
+        seg = next((g for g in fs.get("segments") or [] if _norm(g["type"]) == _norm(e.get("split", ""))), None)
+        name = next((n for n in seg["items"] if _norm(n) == _norm(e.get("name", ""))), None) if seg else None
+        if name:
+            e["split"], e["name"] = seg["type"], name
+        else:
+            logger.info(f"[facts] segment reason {e['id']} names no split or category of the report's segments; it is kept untied")
+            e["split"] = e["name"] = ""
 
 
 def _players(raw, source_norm: str, logger: logging.Logger) -> list[str]:
@@ -522,7 +598,7 @@ def run_fact_sheet(market_name: str, report: reports.Report, logger: logging.Log
         + ", ".join(f"{k}={'yes' if fs.get(k) else 'GAP'}" for k in HEADLINE_KEYS)
         + f"; {len(fs['segments'])} segment split(s); regions leader={'yes' if fs['regions']['leader'] else 'no'}"
         f" fastest={'yes' if fs['regions']['fastest'] else 'no'}; "
-        + ", ".join(f"{k}={len(fs[k])}" for k in STATEMENT_KEYS) + f"; {len(fs['players'])} player(s)"
+        + ", ".join(f"{k}={len(fs.get(k) or [])}" for k in STATEMENT_KEYS) + f"; {len(fs['players'])} player(s)"
     )
     return fs
 
@@ -537,7 +613,7 @@ def figure_gap_queries(market_name: str) -> list[str]:
 
 
 def _excluded(host: str, exclude_hosts) -> bool:
-    return any(host == h or host.endswith("." + h) for h in (*_ALWAYS_EXCLUDED_HOSTS, *exclude_hosts))
+    return is_cmi_url(host) or any(host == h or host.endswith("." + h) for h in (*_ALWAYS_EXCLUDED_HOSTS, *exclude_hosts))
 
 
 def filter_figure_hits(
@@ -793,6 +869,203 @@ def merge_fact_sheets(sheets: list[dict], sources: list[dict]) -> dict:
     return merged
 
 
+# ------------------------------------------------------------------------------------------ the editor's own values
+
+def _clean(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _editor_source(fs: dict, prev: dict | None) -> dict:
+    """The source fields an editor-entered headline figure carries: the entry it replaces keeps its own (so an outside
+    report's figure stays unnamed in the article), a new one takes the sheet's own base source."""
+    if prev:
+        return {"source": prev.get("source", "CMI report"), **({"external": True} if prev.get("external") else {}),
+                **({"url": prev["url"]} if prev.get("url") else {})}
+    if fs.get("report_mode") == "external":
+        return {"source": "Editor", "external": True}
+    return {"source": fs.get("source_label") or "CMI report"}
+
+
+def _drop_audit(fs: dict, field: str, original: str | None = None) -> None:
+    """Remove the variance audit row of a figure the editor has now set (what the editor typed was never moved)."""
+    fs["variance"] = [r for r in fs.get("variance") or []
+                      if not (r.get("field") == field and (original is None or r.get("original") == original or r.get("shown") == original))]
+
+
+def _edit_headline(fs: dict, key: str, raw) -> None:
+    prev = fs.get(key)
+    raw = raw if isinstance(raw, dict) else {}
+    value, when = _clean(raw.get("value")), _clean(raw.get("when"))
+    if not value:
+        if prev:
+            fs.setdefault("editor_removed", []).append({"kind": key, "text": f"{prev['value']} ({prev.get('when', '')})"})
+        fs[key] = None
+        _drop_audit(fs, key)
+        return
+    if prev and prev["value"] == value and prev.get("when", "") == when:
+        return
+    entry = {"id": f"fs.{key}", "value": value, "when": when, "quote": "", "stale": False, "edited_by_editor": True,
+             "varied": False, **_editor_source(fs, prev)}
+    if prev:
+        entry["agent_value"], entry["agent_when"] = prev.get("agent_value", prev["value"]), prev.get("agent_when", prev.get("when", ""))
+        if prev.get("original_value"):
+            entry["original_value"] = prev["original_value"]
+    fs[key] = entry
+    _drop_audit(fs, key)
+
+
+def _edit_region(fs: dict, which: str, raw) -> None:
+    prev = (fs.get("regions") or {}).get(which)
+    raw = raw if isinstance(raw, dict) else {}
+    name, basis = _clean(raw.get("name")), _clean(raw.get("basis"))
+    if not name:
+        if prev:
+            fs.setdefault("editor_removed", []).append({"kind": f"regions.{which}", "text": prev["name"]})
+        fs["regions"][which] = None
+    elif not (prev and prev["name"] == name and prev["basis"] == basis):
+        fs["regions"][which] = {
+            "id": f"fs.regions.{which}", "name": name, "basis": basis, "quote": "", "historical": False, "edited_by_editor": True,
+            **({"agent_value": prev.get("agent_value", {"name": prev["name"], "basis": prev["basis"]})} if prev else {})}
+
+
+def _edit_statements(fs: dict, key: str, raw) -> None:
+    prev_by_id = {e["id"]: e for e in fs.get(key) or []}
+    extra = ("split", "name") if key == "segment_drivers" else ()
+    used = {e["id"] for e in raw if isinstance(e, dict) and e.get("id") in prev_by_id}
+    counter = 1 + max([int(m.group(1)) for i in prev_by_id for m in [re.search(r"(\d+)$", i)] if m] or [-1])
+    out: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not _clean(item.get("text")):
+            continue
+        text, prev = _clean(item["text"]), prev_by_id.get(item.get("id"))
+        tied = {k: _clean(item.get(k)) for k in extra}
+        if prev and prev["text"] == text and all(prev.get(k, "") == v for k, v in tied.items()):
+            out.append(prev)
+            continue
+        if prev:
+            eid = prev["id"]
+        else:
+            eid = f"fs.{key}.{counter}"
+            counter += 1
+        entry = {"id": eid, "text": text, "quote": "", "historical": False, "edited_by_editor": True, **tied}
+        if prev:
+            entry["agent_text"] = prev.get("agent_text", prev["text"])
+            if prev.get("original_text"):
+                entry["original_text"] = prev["original_text"]
+            _drop_audit(fs, f"{key}: statement", prev.get("original_text") or prev["text"])
+        out.append(entry)
+    for pid, prev in prev_by_id.items():
+        if pid not in {e["id"] for e in out}:
+            fs.setdefault("editor_removed", []).append({"kind": key, "text": prev["text"]})
+            _drop_audit(fs, f"{key}: statement", prev.get("original_text") or prev["text"])
+    fs[key] = out
+
+
+def _edit_segments(fs: dict, raw) -> None:
+    prev_by_id = {g["id"]: g for g in fs.get("segments") or []}
+    counter = 1 + max([int(m.group(1)) for i in prev_by_id for m in [re.search(r"(\d+)$", i)] if m] or [-1])
+    out: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not _clean(item.get("type")):
+            continue
+        stype, prev = _clean(item["type"]), prev_by_id.get(item.get("id"))
+        rows, seen = [], set()
+        for it in item.get("items") or []:
+            name = _clean(it.get("name") if isinstance(it, dict) else it)
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                rows.append((name, _clean(it.get("figure")) if isinstance(it, dict) else ""))
+        if not rows:
+            continue
+        figures: dict[str, dict] = {}
+        for name, figure in rows:
+            old = ((prev or {}).get("figures") or {}).get(name)
+            if not figure:
+                continue
+            if old and old["figure"] == figure:
+                figures[name] = old
+                continue
+            parsed = _parse_figure(figure)
+            fig = {"figure": figure, "kind": parsed[0] if parsed else "other", "amount": parsed[1] if parsed else 0.0,
+                   "quote": "", "edited_by_editor": True, "varied": False}
+            if old:
+                fig["agent_figure"] = old.get("agent_figure", old["figure"])
+                if old.get("original_figure"):
+                    fig["original_figure"] = old["original_figure"]
+                _drop_audit(fs, f"{(prev or {}).get('type', stype)}: {name}", old.get("original_figure") or old["figure"])
+            figures[name] = fig
+        names = [n for n, _ in rows]
+        lead = _clean(item.get("dominant"))
+        lead = next((n for n in names if n.lower() == lead.lower()), None)
+        old_dom = (prev or {}).get("dominant")
+        if not lead:
+            dominant = None
+        elif old_dom and old_dom["name"] == lead:
+            dominant = old_dom
+        else:
+            dominant = {"name": lead, "basis": "editor", "quote": ""}
+        entry = {"id": prev["id"] if prev else f"fs.segments.{counter}", "type": stype, "items": names, "figures": figures,
+                 "dominant": dominant}
+        if not prev:
+            counter += 1
+        changed = (not prev or prev["type"] != stype or prev["items"] != names or figures != prev.get("figures")
+                   or (old_dom or {}).get("name") != (dominant or {}).get("name"))
+        if prev and prev.get("agent_original"):
+            entry["agent_original"] = prev["agent_original"]
+        if changed or (prev and prev.get("edited_by_editor")):
+            entry["edited_by_editor"] = True
+        if changed:
+            if prev:
+                entry.setdefault("agent_original", {"type": prev["type"], "items": prev["items"],
+                                                    "figures": {n: f.get("figure", "") for n, f in (prev.get("figures") or {}).items()},
+                                                    "dominant": (old_dom or {}).get("name", "")})
+        out.append(entry)
+    for pid, prev in prev_by_id.items():
+        if pid not in {e["id"] for e in out}:
+            fs.setdefault("editor_removed", []).append({"kind": "segments", "text": f"{prev['type']}: " + ", ".join(prev["items"])})
+    fs["segments"] = out
+
+
+def apply_editor_edits(fs: dict, edits: dict) -> dict:
+    """Apply the editor's edits to a fact sheet IN PLACE, in the same shapes flatten_fact_sheet reads, so the planner, the
+    writer and the number trace use them with no other change. Returns `fs`. Pure (no network, no model).
+
+    `edits` holds only the parts the editor sent; a key that is absent leaves that part alone.
+      size / forecast / cagr  {"value", "when"}            an empty value removes the figure
+      regions                 {"leader": {"name", "basis"}, "fastest": {...}}   an empty name removes it
+      segments                [{"id"?, "type", "items": [{"name", "figure"}], "dominant": name}]   the WHOLE list
+      us / drivers / opportunities / segment_drivers   [{"id"?, "text", ("split", "name")}]   the WHOLE list
+      players                 [name]                        the WHOLE list
+    A list replaces the sheet's list: an item sent with its `id` and the same text is kept exactly as it was; one sent with
+    an id and new text, or with no id, is the editor's own (`edited_by_editor`); one left out is removed. Whatever the
+    editor sets is used exactly as entered — never varied (`varied` False, its variance audit row dropped) — and what the
+    agent had read stays beside it (`agent_value` / `agent_text` / `agent_figure` / `agent_original`, `editor_removed`)."""
+    fs.setdefault("regions", {"leader": None, "fastest": None})
+    for key in HEADLINE_KEYS:
+        if key in edits:
+            _edit_headline(fs, key, edits[key])
+    for which, raw in (edits.get("regions") or {}).items():
+        if which in ("leader", "fastest"):
+            _edit_region(fs, which, raw)
+    if "segments" in edits:
+        _edit_segments(fs, edits["segments"])
+    for key in STATEMENT_KEYS:
+        if key in edits:
+            _edit_statements(fs, key, edits[key])
+    if "players" in edits:
+        players: list[str] = []
+        for name in edits["players"] if isinstance(edits["players"], list) else []:
+            name = _clean(name)
+            if name and name.lower() not in (p.lower() for p in players):
+                players.append(name)
+        if players != fs.get("players"):
+            fs.setdefault("agent_players", list(fs.get("players") or []))
+            fs["players"] = players
+    _match_segment_drivers(fs, logging.getLogger("revamp"))
+    fs["gaps"] = headline_gaps(fs)
+    return fs
+
+
 # ------------------------------------------------------------------------------------------ for later stages
 
 def flatten_fact_sheet(fs: dict) -> list[dict]:
@@ -817,7 +1090,8 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                     "text": f"Segmentation {seg['type']}: " + ", ".join(seg["items"])})
         dom = seg.get("dominant")
         if dom:
-            how = "the report states it leads this split" if dom["basis"] == "stated" else "its stated figure is the largest in this split"
+            how = {"stated": "the report states it leads this split", "editor": "the editor confirmed it leads this split"}.get(
+                dom["basis"], "its stated figure is the largest in this split")
             out.append({"id": f"{seg['id']}.dominant", "kind": "segments", "source": base, "historical": False,
                         "text": f"Dominant category in {seg['type']}: {dom['name']} ({how})"})
         for k, name in enumerate(seg["items"]):
@@ -836,7 +1110,13 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                                 + (f" ({basis})" if basis else "")})
     for key in STATEMENT_KEYS:
         for e in fs.get(key) or []:
-            out.append({"id": e["id"], "kind": key, "source": base, "historical": e["historical"], "text": e["text"]})
+            row = {"id": e["id"], "kind": key, "source": base, "historical": e["historical"], "text": e["text"]}
+            if key == "segment_drivers":
+                # the reason names the category it explains, so the writer reads it as that category's reason
+                row["split"], row["name"] = e.get("split", ""), e.get("name", "")
+                if row["name"]:
+                    row["text"] = f"Why {row['name']} stands out in {row['split']}: {e['text']}"
+            out.append(row)
     if fs.get("players"):
         out.append({"id": "fs.players", "kind": "players", "source": base, "historical": False,
                     "text": "Key players the report names: " + ", ".join(fs["players"])})

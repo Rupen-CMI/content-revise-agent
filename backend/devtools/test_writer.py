@@ -512,8 +512,10 @@ check("assembly: the opening is untagged, the transition is tagged, market secti
       sections[0]["sop"] == [] and sections[1]["sop"] == ["transition"] and sections[2]["sop"] == ["report_context"])
 check("assembly: headings are set to the plan's exact headings", all(s["heading"] == next(p["heading"] for p in plan["sections"] if p["sop"] == s["sop"][0])
                                                                     for s in sections[2:]))
-check("assembly: a section the model left out is skipped and a duplicate tag is ignored",
-      [s["sop"][0] for s in sections[2:]] == ["report_context", "trends", "segmentation", "subsegment", "country_us", "conclusion"])
+check("assembly: a section the model left out keeps its heading with an editor note, and a duplicate tag is ignored",
+      [s["sop"][0] for s in sections[2:]] == list(planning.ORDER)
+      and next(s for s in sections if s["sop"] == ["key_players"])["paragraphs"][0].startswith("[EDITOR")
+      and next(s for s in sections if s["sop"] == ["key_players"])["heading"] == next(p["heading"] for p in plan["sections"] if p["sop"] == "key_players"))
 
 # ------------------------------------------------------------------ prompt
 sponsor = Paragraph(index=0, text="Teams can ask Acme Corp for help with scraping at scale today.", links=[Link(anchor="Acme Corp", url="https://acmecorp.com")])
@@ -843,6 +845,92 @@ check("meta: a sentence that comments on what a source does not quantify is cut"
 check("pointing words are no longer rewritten by code: the write pipeline no longer calls the two backstops",
       "fix_pointing_determiners(sections" not in __import__("inspect").getsource(writer.run_write_v2)
       and "join_bare_pointers(sections" not in __import__("inspect").getsource(writer.run_write_v2))
+
+# ------------------------------------------------------------------ the U.S. section: enough evidence, thin evidence, nothing at all
+import test_planning  # noqa: E402
+
+
+def us_prompt(n_us: int, with_report_facts: bool = True) -> tuple[dict, str]:
+    raw = good_plan()
+    raw["sections"][1]["facts"] = ["fs.drivers.0", "W1"]
+    raw["sections"][4]["facts"] = []
+    plan_us = test_planning.plan_of(raw, test_planning.us_inputs(n_us, with_report_facts))
+    inp_us = test_planning.us_inputs(n_us, with_report_facts)
+    block = writer._section_block(5, next(s for s in plan_us["sections"] if s["sop"] == "country_us"), inp_us, {})
+    return plan_us, block
+
+
+_, enough_block = us_prompt(2)
+_, thin_block = us_prompt(1)
+_, none_block = us_prompt(0, with_report_facts=False)
+check("U.S. enough: the block carries the ordinary shape and neither the report-facts nor the editor-note instruction",
+      "SHAPE: Prose in one or two short paragraphs, or a lead-in sentence" in enough_block
+      and "written from the market's own facts" not in enough_block and "[EDITOR" not in enough_block, enough_block)
+check("U.S. thin: the block says the section is written from the report's own facts, rephrased fully, with no U.S. figure added and no other region",
+      "written from the market's own facts" in thin_block and "Rephrase every fact fully in your own words" in thin_block
+      and "add no U.S. figure that no listed fact states" in thin_block and "no North America" in thin_block
+      and "SHAPE: Prose in one or two short paragraphs, 100 to 200 words" in thin_block and "never a phrase copied from the fact" in thin_block, thin_block)
+check("U.S. thin: no editor-note placeholder and a word budget", "[EDITOR" not in thin_block and "words" in thin_block.splitlines()[0])
+check("U.S. thin: the report facts are listed for the writer (the U.S. statement, then the driver)",
+      thin_block.index("A review of widget exports") < thin_block.index("Digital marketing adoption drives demand"), thin_block)
+check("U.S. thin: the writer is never asked to say that U.S. data is missing", "never say that U.S. data is missing" in thin_block)
+check("U.S. none: the heading stays with the one editor line and there is no word-count shape",
+      "[EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]" in none_block
+      and "about" not in none_block.splitlines()[0] and "100 to 200 words" not in none_block, none_block)
+check("U.S. none: the shape is the editor line alone", "SHAPE: The single line [EDITOR" in none_block and "and nothing else" in none_block)
+
+# "no data / could not find" sentences are stripped from the normal sections, the editor line itself is kept
+meta_secs = [{"heading": "h", "sop": ["country_us"], "paragraphs": [
+    "No specific U.S. data is available for this market. Providers in the United States adopt cloud tools for reporting.",
+    "We could not find verified U.S. figures. Hospitals buy these systems to cut manual work.",
+    "U.S. statistics were not available at the time of writing. Buyers favour vendors with a local presence.",
+    "[EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]"]}]
+meta_out = writer.strip_meta_sentences(meta_secs, LOG)[0]["paragraphs"]
+check("meta: 'no specific U.S. data', 'could not find' and 'figures were not available' sentences are stripped",
+      meta_out[0] == "Providers in the United States adopt cloud tools for reporting." and "Hospitals buy" in meta_out[1]
+      and meta_out[2] == "Buyers favour vendors with a local presence.", str(meta_out))
+check("meta: the editor note line survives the stripper", meta_out[3].startswith("[EDITOR: no verified U.S. data"), str(meta_out))
+check("meta: ordinary sentences with 'no', 'not' and 'data' are kept",
+      all(writer._META_RE.search(x) is None for x in (
+          "Data from hospitals is not shared across regions in the same format.",
+          "There is no single standard for widget exports in the United States.",
+          "Providers could not meet demand last year without new capacity.")))
+
+# a planned market section whose paragraphs were all stripped keeps its heading with an editor note
+gone = [{"heading": "U.S. Analysis", "sop": ["country_us"], "paragraphs": ["No specific U.S. data is available for this market."]},
+        {"heading": "Segments", "sop": ["segmentation"], "paragraphs": ["The facts say nothing."]},
+        {"heading": "", "sop": [], "paragraphs": ["The facts say nothing."]}]
+kept = writer.strip_meta_sentences(gone, LOG)
+check("emptied: a market section stripped to nothing keeps its heading with an editor note; an emptied opening is dropped",
+      [(x["heading"], x["sop"]) for x in kept] == [("U.S. Analysis", ["country_us"]), ("Segments", ["segmentation"])]
+      and kept[0]["paragraphs"] == [writer.editor_note("country_us")] and kept[1]["paragraphs"][0].startswith("[EDITOR: the segmentation section"),
+      str(kept))
+untraced = writer.strip_untraced_figures(
+    [{"heading": "Seg", "sop": ["segmentation"], "paragraphs": ["The market reached 99999 units."]}], inp, "", LOG)
+check("emptied: the same holds when the figure stripper removes every sentence", untraced[0]["paragraphs"][0].startswith("[EDITOR"), str(untraced))
+
+# ------------------------------------------------------------------ segmentation and sub-segments explain why, not only what
+seg_shape, sub_shape = writer._SHAPES["segmentation"], writer._SHAPES["subsegment"]
+check("shapes: segmentation no longer bans explaining: each leading category gets one clause on why it leads, where a fact supports it",
+      "why it leads" in seg_shape and "the driver, the shift in demand or the adoption" in seg_shape
+      and "where no listed fact does, the line adds no reason" in seg_shape and "No line, and not the lead-in either, says what the segmentation lets" not in seg_shape,
+      seg_shape)
+check("shapes: segmentation still names the leader with its figure and keeps the earlier rules",
+      "states that leading category with its figure" in seg_shape and "names the market in that same sentence" in seg_shape and "split" not in seg_shape)
+check("shapes: each sub-segment paragraph explains the growth drivers, demand pattern, adoption trend and why it dominates or grows",
+      all(w in sub_shape for w in ("growth drivers", "demand pattern", "adoption trend", "dominates or grows")), sub_shape)
+check("shapes: the sub-segment shape no longer says it stays short and adds no fact; it reasons from the market's own drivers",
+      "stays short" not in sub_shape and "own drivers that apply to it" in sub_shape, sub_shape)
+
+# ------------------------------------------------------------------ the web search asks about segment demand, and SELECT counts it
+_sq = " ".join(prompts.SEARCH_QUERIES_USER.split())
+check("search prompt: a ninth category asks for demand and adoption shifts within the named segments",
+      "these 9 categories" in _sq and "9. Segment demand" in _sq and "ONE segment name from that list" in _sq
+      and "That totals 15 queries" in _sq and "EACH of these 6 categories" in _sq and "6 queries total" in _sq and "the 9 categories above describe" in _sq, _sq[:300])
+_sel = " ".join(prompts.SELECT_USER.split())
+check("SELECT: test 4 counts a segment's demand as usable evidence", "a segment's demand (why a category is growing or being adopted)" in _sel)
+check("SELECT: a dated item is eligible for trends only when it shows a direction, not on date alone",
+      "only when it shows a direction the market is moving in" in _sel and "never on its date alone" in _sel and "on date alone." not in _sel)
 
 print()
 if FAILURES:

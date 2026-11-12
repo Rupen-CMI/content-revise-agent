@@ -65,14 +65,17 @@
       <button class="step-item" data-nav="step1" disabled>
         <i data-lucide="lock" class="step-icon"></i> <span>Step 1 · Choose the Market</span>
       </button>
-      <button class="step-item" data-nav="step2" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 2 · Reports & Evidence</span>
+      <button class="step-item" data-nav="reports" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 2 · Reports</span>
       </button>
-      <button class="step-item" data-nav="step3" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 3 · Pick the Facts</span>
+      <button class="step-item" data-nav="evidence" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 3 · Evidence</span>
       </button>
-      <button class="step-item" data-nav="step4" disabled>
-        <i data-lucide="lock" class="step-icon"></i> <span>Step 4 · Write the Article</span>
+      <button class="step-item" data-nav="facts" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 4 · Pick the Facts</span>
+      </button>
+      <button class="step-item" data-nav="write" disabled>
+        <i data-lucide="lock" class="step-icon"></i> <span>Step 5 · Write the Article</span>
       </button>
       <button class="step-item" data-nav="final" disabled>
         <i data-lucide="lock" class="step-icon"></i> <span>Final · Check &amp; Download</span>
@@ -215,44 +218,15 @@
         </div>
 
         <div id="step1-confirm-block" class="content-card">
-          <h3 class="subheading subheading-first">Choose the market for your article</h3>
-          <p class="field-hint">Pick from either list, or both, and add report links of your own if you have them. The tier shows how closely a market fits your article. You decide what is used.</p>
-          <div class="market-columns">
-            <section class="market-col" aria-labelledby="market-col-agent-title">
-              <header class="market-col-head">
-                <span class="market-col-title" id="market-col-agent-title"><i data-lucide="sparkles"></i> Agent-suggested markets</span>
-                <span class="market-col-note">Pick one market. Competitor reports for it are found in the next step, and there you choose which to use.</span>
-                <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-agent-clear" hidden><i data-lucide="x"></i> Clear selection</button>
-              </header>
-              <div class="market-col-body" id="step1-suggested"></div>
-            </section>
-            <section class="market-col" aria-labelledby="market-col-cmi-title">
-              <header class="market-col-head">
-                <span class="market-col-title" id="market-col-cmi-title"><i data-lucide="library"></i> CMI markets</span>
-                <span class="market-col-note">Pick one. Its CMI report is used on its own and linked in the article. No competitor reports are used.</span>
-                <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-cmi-clear" hidden><i data-lucide="x"></i> Clear selection</button>
-              </header>
-              <div class="market-col-body" id="step1-cmi"></div>
-            </section>
+          <h3 class="subheading subheading-first">Confirm the market</h3>
+          <p class="field-hint">This is the market the agent matched to your article. In the next step you choose which report the article's facts and figures come from: one of CMI's reports, or a competitor's.</p>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">CMI reports that fit this article</span>
+            <ul class="plain-list" id="step1-matched-candidates"></ul>
           </div>
           <hr class="divider">
-          <div class="links-locked" id="step1-links-locked" hidden>
-            <span>Own report links are off while a CMI report is chosen: it is used on its own.</span>
-            <button type="button" class="btn btn-secondary btn-small" id="step1-links-unlock"><i data-lucide="x"></i> Clear the CMI choice to add links</button>
-          </div>
-          <div id="step1-links-section">
-            <h3 class="subheading">Have your own report links?</h3>
-            <p class="field-hint" id="step1-links-hint">Paste any report pages you already have. Checking a link is optional: it only gives early feedback on whether the link looks usable and never blocks anything.</p>
-            <div class="report-url-list" id="step1-report-urls"></div>
-            <div class="btn-row">
-              <button type="button" class="btn btn-secondary btn-small" id="step1-add-url-btn"><i data-lucide="plus"></i> Add another report</button>
-            </div>
-          </div>
-          <hr class="divider">
-          <div class="selection-summary" id="step1-selection-summary" aria-live="polite"></div>
-          <p class="field-hint" id="step1-none-selected-hint">Choose at least one market, or add a report link, to continue.</p>
           <div class="btn-row">
-            <button class="btn btn-primary" id="step1-confirm-btn" disabled><i data-lucide="arrow-right"></i> <span id="step1-confirm-label">Continue to Step 2</span></button>
+            <button class="btn btn-primary" id="step1-confirm-btn"><i data-lucide="arrow-right"></i> <span id="step1-confirm-label">Continue to Step 2 · Reports</span></button>
             <button class="btn btn-ghost" id="step1-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
           </div>
         </div>
@@ -275,41 +249,105 @@
       </div>
     </section>
 
-    <section class="panel" data-panel="step2" hidden>
-      <h2 class="panel-title">Reports and evidence</h2>
-      <ol class="flow-tracker" id="step2-tracker" hidden></ol>
+    <section class="panel" data-panel="reports" hidden>
+      <h2 class="panel-title">Reports</h2>
+      <p class="field-hint">Choose where the article's facts and figures come from, then fetch the report. Every fact it gives is listed below; you can edit any value before continuing to the evidence search.</p>
+
+      <div class="tabs" id="reports-tabs">
+        <div class="tabs-list" role="tablist" aria-label="Report source" id="reports-tablist">
+          <button type="button" class="tabs-trigger" role="tab" id="reports-tab-cmi" data-tab="cmi" aria-selected="true" aria-controls="reports-panel-cmi" tabindex="0">CMI reports</button>
+          <button type="button" class="tabs-trigger" role="tab" id="reports-tab-competitor" data-tab="competitor" aria-selected="false" aria-controls="reports-panel-competitor" tabindex="-1">Competitor reports</button>
+        </div>
+
+        <div class="tabs-content" role="tabpanel" id="reports-panel-cmi" aria-labelledby="reports-tab-cmi" tabindex="0" data-tab="cmi">
+          <!-- CMI tab: the report choice (suggestions + own link); its fact sheet renders into #reports-cmi-factsheet below. -->
+          <div id="reports-cmi-screen">
+            <div class="market-col-head">
+              <span class="market-col-title"><i data-lucide="library"></i> CMI report suggestions</span>
+              <span class="market-col-note">Pick one. Its CMI report is used on its own and linked in the article.</span>
+              <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="reports-cmi-clear" hidden><i data-lucide="x"></i> Clear selection</button>
+            </div>
+            <div class="market-col-body" id="reports-cmi-list"></div>
+            <div class="report-url-entry" id="reports-cmi-url-block">
+              <span class="kv-label">Or paste a CMI report link</span>
+              <div class="report-url-row">
+                <input type="text" class="text-input report-url-input" id="reports-cmi-url" placeholder="https://www.coherentmarketinsights.com/...">
+                <button type="button" class="btn btn-secondary btn-small" id="reports-cmi-url-check">Check</button>
+              </div>
+              <p class="url-check-result" id="reports-cmi-url-status" hidden></p>
+              <p class="field-hint">For a CMI report that is not in the list. It is read exactly like a picked CMI report.</p>
+            </div>
+            <p class="field-hint" id="reports-cmi-note">CMI figures are used exactly as the report states them; nothing is adjusted.</p>
+          </div>
+          <div class="btn-row reports-fetch-row" id="reports-cmi-fetch-area">
+            <button type="button" class="btn btn-primary" id="reports-cmi-fetch-btn" disabled><i data-lucide="download"></i> <span>Fetch report</span></button>
+            <span class="field-hint" id="reports-cmi-fetch-hint"></span>
+          </div>
+          <div class="spinner-block" id="reports-cmi-spinner" hidden>
+            <i data-lucide="loader-circle" class="spin"></i>
+            <span>Reading the CMI report and building its fact sheet…</span>
+          </div>
+          <div class="factsheet-panel" id="reports-cmi-factsheet" hidden></div>
+        </div>
+
+        <div class="tabs-content" role="tabpanel" id="reports-panel-competitor" aria-labelledby="reports-tab-competitor" tabindex="0" data-tab="competitor" hidden>
+          <div id="reports-competitor-screen">
+            <div class="market-col-head">
+              <span class="market-col-title"><i data-lucide="sparkles"></i> Agent-suggested markets</span>
+              <span class="market-col-note">Pick one market, then find competitor reports for it, or paste one report link of your own below. Competitor figures are moved by 3-5% and no competitor is named in the article.</span>
+              <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-agent-clear" hidden><i data-lucide="x"></i> Clear selection</button>
+            </div>
+            <div class="market-col-body" id="step1-suggested"></div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-secondary btn-small" id="reports-find-btn" disabled><i data-lucide="search"></i> Find reports</button>
+              <span class="field-hint" id="reports-find-status"></span>
+            </div>
+            <div id="reports-found-block" hidden>
+              <h3 class="subheading">Competitor reports found</h3>
+              <p class="field-hint" id="reports-found-hint">Choose the one report whose figures you want to use.</p>
+              <div id="reports-found-list"></div>
+            </div>
+            <hr class="divider">
+            <div id="reports-competitor-url-block">
+              <h3 class="subheading">Or paste your own competitor report link</h3>
+              <p class="field-hint" id="reports-competitor-url-hint">One link. A CMI report link goes in the CMI tab, never here. Choosing a market above clears this link, and pasting a link clears the market. Checking the link is optional.</p>
+              <div class="report-url-row">
+                <input type="text" class="text-input report-url-input" id="reports-competitor-url" placeholder="Paste a report link (https://...)">
+                <button type="button" class="btn btn-secondary btn-small" id="reports-competitor-url-check">Check</button>
+                <button type="button" class="btn btn-ghost btn-small" id="reports-competitor-url-clear" hidden>Clear link</button>
+              </div>
+              <p class="url-check-result" id="reports-competitor-url-status" hidden></p>
+            </div>
+          </div>
+          <div class="btn-row reports-fetch-row" id="reports-competitor-fetch-area">
+            <button type="button" class="btn btn-primary" id="reports-competitor-fetch-btn" disabled><i data-lucide="download"></i> <span>Fetch report</span></button>
+            <span class="field-hint" id="reports-competitor-fetch-hint"></span>
+          </div>
+          <div class="spinner-block" id="reports-competitor-spinner" hidden>
+            <i data-lucide="loader-circle" class="spin"></i>
+            <span>Reading the competitor report and building its fact sheet…</span>
+          </div>
+          <div class="factsheet-panel" id="reports-competitor-factsheet" hidden></div>
+        </div>
+      </div>
+
+      <ul class="plain-list live-list" id="reports-live" hidden></ul>
+      <hr class="divider">
+      <p class="field-hint" id="reports-confirm-hint"></p>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="reports-confirm-btn" disabled><i data-lucide="arrow-right"></i> <span>Continue to Step 3 · Evidence</span></button>
+        <button class="btn btn-ghost" id="reports-back-btn"><i data-lucide="arrow-left"></i> Back to Step 1</button>
+        <button class="btn btn-ghost" id="reports-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="evidence" hidden>
+      <h2 class="panel-title">Evidence</h2>
       <div class="spinner-block" id="step2-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
-        <span id="step2-spinner-text">Step 2: searching the web for supporting evidence (this can take a little while)…</span>
+        <span id="step2-spinner-text">Step 3: searching the web for supporting evidence from your confirmed facts (this can take a little while)…</span>
       </div>
       <ul class="plain-list live-list" id="step2-live" hidden></ul>
-      <div class="skeleton-list" id="step2-skeleton" hidden aria-hidden="true">
-        <div class="skeleton-card"></div>
-        <div class="skeleton-card"></div>
-        <div class="skeleton-card"></div>
-      </div>
-      <div id="step2-pick-block" hidden>
-        <div class="content-card">
-          <h3 class="subheading subheading-first">Competitor reports found</h3>
-          <p class="field-hint">These reports were found for the market you picked. Tick every report whose figures you want to use. Their figures are adjusted by a few percent in the article, no report is linked, and the SOP check asks you to verify every value.</p>
-          <div id="step2-found-list"></div>
-          <hr class="divider">
-          <p class="field-hint" id="step2-pick-hint"></p>
-          <div class="btn-row">
-            <button class="btn btn-primary" id="step2-pick-confirm-btn"><i data-lucide="arrow-right"></i> <span id="step2-pick-confirm-label">Continue</span></button>
-            <button class="btn btn-ghost" id="step2-pick-back-btn"><i data-lucide="arrow-left"></i> Back to Step 1</button>
-          </div>
-        </div>
-        <div class="content-card" id="step2-early-card">
-          <h3 class="subheading subheading-first">Market evidence (searching while you choose)</h3>
-          <p class="field-hint" id="step2-early-status">Searching the web for supporting evidence while you choose the reports&hellip;</p>
-          <div class="skeleton-list" id="step2-early-skeleton" aria-hidden="true">
-            <div class="skeleton-card"></div>
-            <div class="skeleton-card"></div>
-          </div>
-          <ul class="plain-list" id="step2-early-hits"></ul>
-        </div>
-      </div>
       <div id="step2-content" hidden>
         <div id="step2-warnings" class="warning-box" hidden>
           <p class="warning-box-title"><i data-lucide="alert-triangle"></i> <span>Please verify before continuing</span></p>
@@ -330,9 +368,18 @@
         </div>
         <div class="content-card" id="step2-factsheet-block" hidden>
           <div class="kv-block kv-block-last">
-            <span class="kv-label">Fact sheet</span>
-            <p class="field-hint">Every figure the article may state, read off the report. A missing market size, forecast or growth rate is highlighted as a gap; a figure that stays a gap is never stated anywhere in the article.</p>
-            <ul class="plain-list" id="step2-factsheet"></ul>
+            <span class="kv-label">Confirmed fact sheet</span>
+            <p class="field-hint">The facts you confirmed in Step 2. The evidence search below was driven by them. A figure that stays a gap is never stated anywhere in the article.</p>
+            <div class="factsheet-panel" id="step2-factsheet"></div>
+          </div>
+        </div>
+        <div class="content-card" id="step2-sections-block" hidden>
+          <div class="kv-block kv-block-last">
+            <span class="kv-label">Sub-segments for the article</span>
+            <p class="field-hint">Fixed from the confirmed fact sheet before the search: the leading category of two different splits. Each gets its own search.</p>
+            <ul class="plain-list" id="step2-subsegments"></ul>
+            <span class="kv-label">Results found per section</span>
+            <div class="section-chips" id="step2-section-hits"></div>
           </div>
         </div>
         <div class="content-card" id="step2-done-block">
@@ -378,17 +425,17 @@
           </div>
         </div>
         <div id="step2-confirm-block" class="btn-row">
-          <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 3 · Pick the Facts</button>
+          <button class="btn btn-primary" id="step2-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 4 · Pick the Facts</button>
           <button class="btn btn-ghost" id="step2-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
         </div>
       </div>
     </section>
 
-    <section class="panel" data-panel="step3" hidden>
+    <section class="panel" data-panel="facts" hidden>
       <h2 class="panel-title">Facts for the article</h2>
       <div class="spinner-block" id="step3-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
-        <span>Step 3: selecting usable facts from the gathered evidence…</span>
+        <span>Step 4: selecting usable facts from the gathered evidence…</span>
       </div>
       <div id="step3-content" hidden>
         <p class="status-note" id="step3-counts"></p>
@@ -407,6 +454,7 @@
           <div class="kv-block kv-block-last">
             <span class="kv-label">Market facts from web search</span>
             <p class="field-hint">Recent news about the confirmed market (not from the CMI report). They are used in the market half of the article. Each fact shows where it came from.</p>
+            <div id="step3-sections"></div>
             <ul class="plain-list" id="step3-evidence"></ul>
           </div>
         </div>
@@ -432,18 +480,18 @@
           </div>
         </div>
         <div id="step3-confirm-block" class="btn-row">
-          <button class="btn btn-primary" id="step3-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 4 · Write the Article</button>
+          <button class="btn btn-primary" id="step3-confirm-btn"><i data-lucide="arrow-right"></i> Continue to Step 5 · Write the Article</button>
           <button class="btn btn-ghost" id="step3-cancel-btn"><i data-lucide="x-circle"></i> Cancel run</button>
         </div>
-        <p class="status-note" id="step3-done-note" hidden><i data-lucide="check"></i> Step 3 complete — continue in the next section.</p>
+        <p class="status-note" id="step3-done-note" hidden><i data-lucide="check"></i> Step 4 complete — continue in the next section.</p>
       </div>
     </section>
 
-    <section class="panel" data-panel="step4" hidden>
+    <section class="panel" data-panel="write" hidden>
       <h2 class="panel-title">Draft article</h2>
       <div class="spinner-block" id="step4-spinner" hidden>
         <i data-lucide="loader-circle" class="spin"></i>
-        <span>Step 4: writing the article (this takes a while)…</span>
+        <span>Step 5: writing the article (this takes a while)…</span>
       </div>
       <div id="step4-content" hidden>
         <div class="kv-block">

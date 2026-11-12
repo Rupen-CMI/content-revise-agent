@@ -8,6 +8,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import trafilatura
@@ -85,6 +86,26 @@ def report_url(news_id: int, slug: str, fmt: int) -> str:
     return f"{CMI_SITE}/industry-reports/{slug}"
 
 
+_MARKET_INSIGHT_RE = re.compile(r"^/market-insight/(?P<slug>.+)-(?P<id>\d+)/?$", re.I)
+_INDUSTRY_REPORTS_RE = re.compile(r"^/industry-reports/(?P<slug>[^/]+)/?$", re.I)
+
+
+def match_report_url(url: str) -> CatalogEntry | None:
+    """The catalog report a pasted CMI link points at, or None when it is not a catalog report page. The link forms are
+    the ones report_url writes: /market-insight/<slug>-<id> (the id decides) and /industry-reports/<slug> (the slug
+    decides). Host, scheme, query string and a trailing slash do not matter."""
+    path = urlparse((url or "").strip()).path
+    m = _MARKET_INSIGHT_RE.match(path)
+    if m:
+        news_id = int(m.group("id"))
+        return next((e for e in catalog() if e.news_id == news_id), None)
+    m = _INDUSTRY_REPORTS_RE.match(path)
+    if m:
+        slug = m.group("slug").lower()
+        return next((e for e in catalog() if e.fmt != 0 and e.slug.lower() == slug), None)
+    return None
+
+
 def _sqlite():
     return closing(sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True))
 
@@ -152,6 +173,23 @@ def _catalog_tokens() -> tuple[tuple[CatalogEntry, frozenset[str]], ...]:
 _TEXT_MIN_JACCARD = 0.30
 
 
+def name_key(text: str) -> frozenset[str]:
+    """A market name reduced to what identifies it: a ', By <segment>' title suffix dropped, then the content words."""
+    return _tokens(re.split(r",\s*by\s+", text or "", maxsplit=1, flags=re.I)[0])
+
+
+def is_same_market(keyword: str, market: str) -> bool:
+    """True when a catalog report's keyword names exactly this market (same content words, 'Global' / 'Market' and
+    plurals ignored)."""
+    key = name_key(market)
+    return bool(key) and name_key(keyword) == key
+
+
+def find_named(market: str) -> list[CatalogEntry]:
+    """Every catalog report that names exactly this market, in catalog order."""
+    return [e for e in catalog() if is_same_market(e.keyword, market)]
+
+
 def match_markets(names: list[str], per_name: int = 5, limit: int = 25) -> list[CatalogEntry]:
     """Fuzzy-match proposed market names to real catalog reports (token Jaccard on report keyword)."""
     best: dict[int, tuple[float, CatalogEntry]] = {}
@@ -172,7 +210,10 @@ def match_markets_grouped(names: list[str], per_name: int = 3) -> list[list[tupl
         if not query:
             groups.append([])
             continue
-        scored = [(len(query & toks) / len(query | toks), e) for e, toks in _catalog_tokens() if query & toks]
+        # A name of 2+ content words needs 2+ of them in the report's name: one shared word is noise even when a short
+        # report name makes the Jaccard look high ("Digital Marketing" vs "Digital Health" share only "digital").
+        need = 2 if len(query) >= 2 else 1
+        scored = [(len(query & toks) / len(query | toks), e) for e, toks in _catalog_tokens() if len(query & toks) >= need]
         scored = [(s, e) for s, e in scored if s >= _TEXT_MIN_JACCARD]
         scored.sort(key=lambda x: x[0], reverse=True)
         groups.append(scored[:per_name])
@@ -453,6 +494,19 @@ def fetch_report(news_id: int, logger: logging.Logger = _null_logger) -> Report:
         sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
         segment_terms=_merge_terms(_segment_terms(segmentation), taxonomy_segment_terms(live)),
         page_faq=page_faq,
+    )
+
+
+def fetch_report_page(url: str, market: str, logger: logging.Logger = _null_logger) -> Report:
+    """A CMI page that is not in the catalog (an older or unlisted report) read as a CMI report: the live page only, the
+    way fetch_report reads one. `market` names it when the page's own first line does not ('... Market')."""
+    live, page_faq = fetch_live_page_with_faq(url, logger=logger)
+    head = re.match(r"^(.*?\bmarkets?)\b", re.sub(r"^(global|worldwide)\s+", "", live.strip().split("\n", 1)[0], flags=re.I), re.I)
+    name = head.group(1).strip() if head and 2 <= len(head.group(1).split()) <= 8 else market
+    return Report(
+        news_id=0, name=name, subject=name, url=url, source="live",
+        sections={"live_report_page": live[:_MAX_LIVE_CHARS]},
+        segment_terms=taxonomy_segment_terms(live), page_faq=page_faq,
     )
 
 

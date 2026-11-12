@@ -170,30 +170,20 @@ def normalize_brief(raw, page_text: str, paragraph_text: str) -> dict:
     }
 
 
-def run_brief(client: Client, market_name: str, logger: logging.Logger) -> dict | None:
-    """CALL: what this client's own page says it offers, set against the linked words and the post's market. Best effort: a page that
-    cannot be read, or a failed call, leaves no brief and a note for the editor; the writer then has the paragraph alone."""
-    pages = _pages(client, logger)
-    if not pages:
-        client.notes.append(
-            f"{client.host} could not be read, so the opening is written from the client's paragraph alone. "
-            "Check what the client really offers before the draft goes out.")
-        logger.info(f"[client] {client.id} {client.host}: no readable page")
-        return None
-    marked = marked_text(client)
-    links = "\n".join(f'{l["id"]}: "{l["anchor"]}" -> {l["url"]}' for l in client.links)
-    try:
-        raw = llm.chat_json(
-            prompts.CLIENT_BRIEF_SYSTEM,
-            prompts.CLIENT_BRIEF_USER.format(market_name=market_name, paragraph=marked, links=links, pages=pages),
-            temperature=0.1, call_name="client_brief", logger=logger)
-    except llm.LLMError:
-        logger.warning(f"[client] the brief call for {client.host} failed", exc_info=True)
-        client.notes.append(f"What {client.host} offers could not be worked out; the opening rests on the client's paragraph alone.")
-        return None
-    brief = normalize_brief(raw, pages, client.paragraph.text)
-    logger.info(f"[client] {client.id} {client.host}: offer={brief['offer'][:90]!r}; anchor {brief['anchor_fit']}; market {brief['market_fit']}")
-    return brief
+def _briefs_by_client(raw, clients: list[Client]) -> dict[str, dict]:
+    """{client id: that client's raw brief} from the one call's answer ({"briefs": [{"client": "C1", ...}]}). An entry that names
+    no asked-for client, or names one twice, is ignored; with a single client an entry that names none is that client's."""
+    items = raw.get("briefs") if isinstance(raw, dict) else None
+    items = [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+    ids = {c.id.upper(): c.id for c in clients}
+    out: dict[str, dict] = {}
+    for item in items:
+        cid = ids.get(_text(item.get("client")).upper())
+        if cid is None and len(clients) == 1 and not _text(item.get("client")):
+            cid = clients[0].id
+        if cid is not None and cid not in out:
+            out[cid] = item
+    return out
 
 
 def brief_notes(client: Client) -> list[str]:
@@ -210,18 +200,60 @@ def brief_notes(client: Client) -> list[str]:
 
 
 def run_briefs(clients: list[Client], market_name: str, logger: logging.Logger) -> list[Client]:
-    """The brief of every client, read in parallel. Clients keep their order; a client that fails keeps `brief = None`."""
+    """CALL: what each client's own pages say it offers, set against its linked words and the post's market: the pages are read in
+    parallel, then ONE call briefs every client whose page could be read, one entry per client, each validated on its own
+    (normalize_brief). Clients keep their order. Best effort: a page that cannot be read, a failed call or a client the answer leaves
+    out gives that client no brief and a note for the editor (the writer then has the paragraph alone)."""
     if not clients:
         return clients
     section(logger, "CALL: CLIENT BRIEFS")
+    pages: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=min(4, len(clients)), thread_name_prefix="client-brief") as pool:
-        futures = [(c, pool.submit(run_brief, c, market_name, logger)) for c in clients]
+        futures = [(c, pool.submit(_pages, c, logger)) for c in clients]
         for c, f in futures:
             try:
-                c.brief = f.result()
+                pages[c.id] = f.result()
             except Exception:           # a client page can throw anything; the run goes on without its brief
-                logger.warning(f"[client] the brief for {c.host} raised", exc_info=True)
-                c.brief = None
+                logger.warning(f"[client] reading the pages of {c.host} raised", exc_info=True)
+                pages[c.id] = ""
+    readable: list[Client] = []
+    for c in clients:
+        c.brief = None
+        if pages[c.id]:
+            readable.append(c)
+            continue
+        c.notes.append(
+            f"{c.host} could not be read, so the opening is written from the client's paragraph alone. "
+            "Check what the client really offers before the draft goes out.")
+        logger.info(f"[client] {c.id} {c.host}: no readable page")
+    if not readable:
+        return clients
+    blocks = "\n".join(
+        prompts.CLIENT_BRIEF_BLOCK.format(
+            client_id=c.id, paragraph=marked_text(c), pages=pages[c.id],
+            links="\n".join(f'{l["id"]}: "{l["anchor"]}" -> {l["url"]}' for l in c.links))
+        for c in readable)
+
+    def unresolved(c: Client) -> None:
+        c.notes.append(f"What {c.host} offers could not be worked out; the opening rests on the client's paragraph alone.")
+
+    try:
+        raw = llm.chat_json(
+            prompts.CLIENT_BRIEF_SYSTEM, prompts.CLIENT_BRIEFS_USER.format(market_name=market_name, clients_block=blocks),
+            temperature=0.1, call_name="client_briefs", logger=logger)
+    except llm.LLMError:
+        logger.warning(f"[client] the brief call for {', '.join(c.host for c in readable)} failed", exc_info=True)
+        for c in readable:
+            unresolved(c)
+        return clients
+    found = _briefs_by_client(raw, readable)
+    for c in readable:
+        if c.id not in found:
+            logger.warning(f"[client] the answer holds no brief for {c.id} {c.host}")
+            unresolved(c)
+            continue
+        c.brief = normalize_brief(found[c.id], pages[c.id], c.paragraph.text)
+        logger.info(f"[client] {c.id} {c.host}: offer={c.brief['offer'][:90]!r}; anchor {c.brief['anchor_fit']}; market {c.brief['market_fit']}")
     return clients
 
 

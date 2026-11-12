@@ -164,6 +164,7 @@ directly in the blog.
 the blog topic.
 - Tier 3 - Shared driver or end-use match: the market is a different one, but it is driven by the same underlying \
 demand driver, regulation or end-use industry as the blog topic.
+A report whose market is exactly the one the blog is about is Tier 1. \
 Place every report in tier 1, 2 or 3, except tier 0, used ONLY when the report's market has no real tie to the \
 blog topic — a report that merely shares a word with the topic is 0. Judge by what the report's market IS, not by \
 the words in its name.
@@ -187,7 +188,7 @@ SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that ma
 — and do not narrow to one product, feature or use case unless that IS the market.
 
 Write search engine queries (plain text, as you'd type into a search engine) to find REAL, RECENT news about this \
-market, covering EVERY one of these 8 categories so the evidence pool ends up varied rather than dominated by one \
+market, covering EVERY one of these 9 categories so the evidence pool ends up varied rather than dominated by one \
 kind of story — more queries means more chances a genuinely good, citable fact turns up in each category, even \
 though most results in any category will get filtered out later and only the best few will ever reach the article:
   HIGHER PRIORITY (write 3 queries for EACH of these 3 categories — 9 queries total):
@@ -207,14 +208,25 @@ though most results in any category will get filtered out later and only the bes
   3. Latest market-related news — general recent news in this space, broad enough to catch whatever a company-named \
   query below would miss, but still anchored to the market itself (same rule as above) rather than a bare generic \
   term that could belong to any industry.
-  LOWER PRIORITY (write 1 query for EACH of these 5 categories — 5 queries total):
+  LOWER PRIORITY (write 1 query for EACH of these 6 categories — 6 queries total):
   4. A new product/service launch.
   5. A new innovation (a novel technology or capability entering the market).
   6. Regulatory or rule changes affecting the market.
   7. Law changes affecting the market (legislative, not regulatory-agency, action).
-  8. Key players — built around the specific company names listed above (if any are given) paired with a concrete \
-  event word (acquisition, funding, partnership, launch, expansion).
-  That totals 14 queries. Follow these rules exactly, learned from real search failures:
+  8. Key players — built around the specific company names listed above (if any are given), one company per query, \
+the company's name plus ONE event word (acquisition, funding, partnership, launch, expansion) or the market's core \
+noun. These are the market's own newsmakers: a query on one of them is often the only search that surfaces its news \
+at all.
+  9. Segment demand — recent news on a shift in demand or adoption within one of the named segments listed above (why a \
+  category is growing or being chosen): the market's anchor phrase plus ONE segment name from that list, with a plain verb \
+  or noun about demand or adoption. When no segments are listed, ask about demand within the market's main product or \
+  service categories instead.
+  That totals 15 queries. Follow these rules exactly, learned from real search failures:
+- Each query is its ANCHOR — the market's quoted phrase, or one key player's name — plus AT MOST ONE or TWO plain \
+words after it: a verb or noun naming the kind of development ("launch", "partnership", "regulation"), or the \
+market's core noun (format only, placeholder not a real market: "\"Zzz Widget\" launch"). Never three or four extra \
+words on top of the quoted phrase: in a real run every query shaped that way returned zero results (15 of 24 Bing \
+queries found nothing), because an engine treats each extra word as a requirement that no real headline satisfies.
 - If a query names the market by a multi-word phrase, wrap that phrase in double quotes so the engine requires it \
 as one unit — an unquoted multi-word market name matches anything sharing just one of those words (e.g. unquoted \
 "digital marketing software" also matches a story about a marketing AGENCY that has nothing to do with software). \
@@ -225,7 +237,7 @@ unveils OR service" can return results matching only "service", drifting complet
 - Do not use the word "Market" as part of a quoted phrase (research firms title their own report PR pages "<X> \
 Market ... Trend/Analyst", and including it invites exactly that kind of page back as a "result").
 - Do not use explainer/definition words ("trend", "overview", "adoption drivers", "what is") in the query TEXT \
-itself — they invite glossary and how-to pages, which are not evidence that anything actually happened; the 8 \
+itself — they invite glossary and how-to pages, which are not evidence that anything actually happened; the 9 \
 categories above describe what KIND of real news to look for, not words to put in the query.
 - Do not hardcode a specific year (no "2025", "2026", etc.) into a query — TODAY'S DATE above tells you what "recent" \
 actually means right now, but a search engine treats a literal year in the query as a filter, not a recency hint, so \
@@ -259,6 +271,46 @@ Return JSON: {{"queries": ["<query 1>", "<query 2>", ...], "source_groups": ["<g
 "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
 
 
+# The Evidence step's query prompt: the same rules, source groups and topic terms as SEARCH_QUERIES_USER (sliced from it, so the
+# two can never drift), but the queries come back GROUPED BY SECTION, each built from what the confirmed fact sheet says that
+# section needs (sections.section_search_plan, rendered by sections.format_targets).
+_QUERY_RULES_FROM = SEARCH_QUERIES_USER.index("- Each query is its ANCHOR")
+_QUERY_RULES_TO = SEARCH_QUERIES_USER.index('\nReturn JSON: {{"queries"')
+_QUERY_RULES_SHARED = (SEARCH_QUERIES_USER[_QUERY_RULES_FROM:_QUERY_RULES_TO]
+                       .replace("the 9 categories above describe", "the sections above describe")
+                       .replace("For every category except key players", "For every section except key players"))
+
+SEARCH_SECTION_QUERIES_USER = """TODAY'S DATE: {today}
+CONFIRMED MARKET: {market_name}
+KNOWN COMPANIES IN THIS MARKET (from the confirmed CMI report, if any): {key_players}
+MARKET SEGMENTS (from the confirmed CMI report, if any): {segments}
+
+SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that market as a whole and for its sections below, \
+and do not narrow to one product, feature or use case unless that IS the market.
+
+The article's trends and its general market view each need their own recent, real news. For EACH section below write the queries \
+named for it, built from that section's TARGETS: the targets say what the CMI report states there, so the news you look for is \
+news that shows it happening. A target is never text to paste into a query: turn it into the market's anchor plus one or two words.
+
+The two fixed sub-segments listed under SUB-SEGMENTS are already chosen (the CMI report's own leading categories), and their \
+queries are written here too, per sub-segment: for EACH one write exactly the number of queries its block names, each built \
+from the category in the everyday words a news headline about that category would use — a common synonym, or the plain \
+product, service or activity ("banking translation services", "home EV charger installation", "CHO antibody cell line") — \
+plus at most one or two plain words for the kind of development. Never the literal "<category> <market> demand" shape: \
+queries built that way from the category's report name matched almost no real headline, because headlines do not talk like \
+a report. No double quotes around more than the category phrase itself. Return them under the "subsegment" key, one entry \
+per sub-segment keyed by the sub-segment's name exactly as its block prints it.
+{section_targets}
+
+Every query is about a concrete, recent development (a launch, an acquisition, a funding round, a partnership, a regulation, \
+an adoption), and the queries of one section look in different directions. Follow these rules exactly, learned from real \
+search failures:
+""" + _QUERY_RULES_SHARED + """
+Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": \
+{{"<sub-segment name>": ["<query>", ...]}}, "market": ["<query>", ...]}}, \
+"source_groups": ["<group id>", ...], "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
+
+
 SELECT_SYSTEM = """You are a senior market-intelligence editor at Coherent Market Insights (CMI). \
 The market/report for this article has already been confirmed by a human editor — your only job here is to select \
 reliable supporting evidence from web search results. Respond with JSON only."""
@@ -276,6 +328,10 @@ CLIENT PARAGRAPH (its backlink stays in the final article and the client is neve
 
 CONFIRMED CMI REPORT (already chosen by a human editor — not your decision):
 {report_name}
+
+CATEGORIES INSIDE THIS MARKET (the report's own segment names and this market's topic vocabulary — a result about one \
+of these belongs to THIS market, not to a related one):
+{market_categories}
 
 WEB SEARCH RESULTS:
 {hits}
@@ -306,13 +362,18 @@ SEARCH RESULTS FOR THOSE REPORT CLAIMS (each was retrieved by searching for one 
 which claim a result corroborates; the PR-number is its id):
 {report_claim_pool}
 
+{second_pass}
 Task: from the web results, select up to {max_selected} that pass ALL of these tests — a result that fails any one of them must \
 be rejected, not merely scored lower:
 1. Genuinely about THIS confirmed market specifically, not a result that merely shares a few words with it (a result \
 about a different, related, or broader market is a wrong-market result, not a weak match — reject it, do not include \
 it as "context"). A single word from the market's name taken on its own does not make a result relevant: for a market named \
 "Zzz Widget Platform" (placeholder, not a real market), a page about what a "platform" is, or what a "widget" is, is not \
-about that market.
+about that market. A result about a product category, segment, technology, vendor or use case WITHIN this market does \
+count as this market, not as a related one: marketing automation or SEO tools are part of digital marketing software; \
+Jira or sprint-planning tools are part of project management software; a CMO-level story about marketing budgets that \
+names no software is not (it is generic marketing news, not a category inside this market). Reject a different or \
+broader market; never reject a product category inside this one for being "merely related" to it.
 2. Credible: a named publication reporting news, or a named company/analyst making a specific, attributed statement — \
 not an anonymous listicle, content-farm roundup, or SEO filler page. Reject any page whose title or framing is itself \
 a market-report advertisement — "<Market> Size, Share, Growth, Trends, Forecast [to/by] <year>", "<Market> Analysis \
@@ -334,7 +395,7 @@ or industry, whoever states it — a research firm, a blog or news page quoting 
 year of the figure, including an earlier one, and for any other firm's own estimate of the same market. CMI's report is \
 the only source of market sizing in the article, and a second figure for the same market would contradict it.
 4. Actually usable in the final draft: ask yourself "would this specific fact, cited by name, strengthen the Market \
-Trends, U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
+Trends, a segment's demand (why a category is growing or being adopted), U.S. analysis, or Key Players section of the article a reader is about to receive?" — if a fact is true but \
 would not actually improve a single sentence of that article, do not select it just because it is on-topic. The article carries only favourable developments: reject a result whose finding is a restraint, challenge, risk, loss, decline, penalty, shutdown, dispute or any other setback for the market or its companies, however concrete it is.
 Reject listicles, product promotions, how-to guides, and anything about a different market. It is fine to select fewer \
 than {max_selected}, or none, if few results pass all four tests — do not pad with weak, generic, or off-topic results to reach a \
@@ -348,7 +409,9 @@ infer, or round any number: a figure that does not appear in the result's own te
 Each result above is tagged DATED (with its publish date, already checked to be recent) or UNDATED (an ordinary web \
 page with no verifiable publish date, so nothing about it is known to be current). A fact used for "trends" is a claim \
 about what is CURRENTLY happening in this market, so its source must be DATED — an UNDATED result must never include \
-"trends" in its use_for, no matter how relevant it reads; any DATED result is eligible for "trends" on date alone. An \
+"trends" in its use_for, no matter how relevant it reads; a DATED result is eligible for "trends" only when it shows a direction the market is moving in (a shift in technology, \
+demand, adoption, investment or competition), never on its date alone: an isolated dated event that points to no direction is \
+tagged "players" or "context" instead. An \
 UNDATED result is selected only if it states a concrete, citable fact about THIS market that passes all four tests \
 above (never a definition or explanation), and then only with use_for ["context"], or ["us"] when its finding is \
 specifically about the U.S. market. When in doubt about an UNDATED result, leave it out. The article's U.S. paragraph \
@@ -367,7 +430,7 @@ buyers and its rivals now face — so select such a fact under another section's
 only for a fact specifically about the U.S. market. The article needs three distinct \
 market trends, each examined in depth and so backed by two or three facts (prefer a named organisation, study, launch, policy or deal with its date and its figure; the three trends must differ from one another, so where the results allow it the trends facts span different directions, such as technology or product change, buyer demand and adoption, and investment or competitive moves), a U.S. paragraph, and a key-players section, so when the results allow it, make sure your selection \
 gives each of those a real supply of facts — do not label every fact the same way just because they all name a company.
-
+{section_rules}
 CLAIM BACKING (the second selection job, from the claim-results pool above). For each claim under CLAIMS FROM \
 THE ORIGINAL ARTICLE, judge the results tagged "(for: Cn)" and select at most TWO of them — exactly the results \
 that give the claim real, outside backing the article itself could never supply. Tag each selected result with \
@@ -401,6 +464,38 @@ Return JSON:
   "claim_backing": [{{"claim_id": "<C-number>", "id": "<P-number>", "stance": "<supports|qualifies|contradicts>", "fact": "<one factual sentence stating only what that source says>"}}],
   "question_backing": [{{"question_id": "<Q-number>", "id": "<PQ-number>", "fact": "<one factual sentence stating only what that source says>"}}],
   "report_claim_backing": [{{"claim_id": "<RC-number>", "id": "<PR-number>", "fact": "<one factual sentence stating only what that source says>"}}]}}"""
+
+
+# The Evidence step's SELECT (pipeline.run_select with sections): injected into SELECT_USER in place of {section_rules}. It
+# says that each selected result goes to exactly one named section and replaces the free "use_for" tags above it.
+SELECT_SECTION_RULES = """
+SECTIONS (replaces everything said above about use_for with several entries and about "context": there is no "context"). The \
+results above are grouped by the section whose search found them ("also found for" names other sections whose queries found the \
+same page). Assign each selected result to EXACTLY ONE section: use_for is a list with ONE entry, one of:
+- "trends": a DATED finding showing a direction the market is moving in (a shift in technology or product, buyer demand and \
+adoption, investment or competitive moves); the three trends differ, so the trends results span different directions.
+{sub_segment_lines}
+- "us": a finding specifically about the U.S. market.
+- "players": a company's own move in the market (a launch, a partnership, an acquisition, an integration, an expansion); never a \
+recognition or a personnel change.
+A result that fits two sections goes to the one it serves best; one that fits none is left out; an UNDATED result is never \
+assigned to "trends". A result about a sub-segment that is not one of the two named is left out, not filed under another \
+section. Where the results allow it, aim for at least {min_trends} results for "trends", {min_sub} for each sub-segment, {min_us} for \
+"us" and {min_players} for "players"; never pad a section with a weak result to reach a number.
+"""
+
+
+# The second SELECT pass (pipeline.run_select) injects this block into SELECT_USER in place of the
+# empty {second_pass} placeholder, over the candidates the first pass did not keep: a first pass that
+# kept very few results has usually read a product-category story inside the market (marketing
+# automation inside digital marketing software) as a merely "related" market, so this pass says
+# explicitly that such results count — while keeping every other test (credible, concrete,
+# positive-only, not sizing) in force.
+SELECT_SECOND_PASS = """SECOND PASS over the results above (only the ones the first pass did NOT keep are listed here). \
+The first pass kept only {first} results. Look again: keep each result that reports a concrete, dated development \
+about a product category, vendor or segment inside this market, even when it does not name the market itself; still \
+reject other markets, listicles, how-to pages and setbacks. Never keep directories, review or comparison listings, vendor \
+service or capability pages, guides, webinars, eBooks or advice; only dated developments."""
 
 
 REPORT_CLAIMS_SYSTEM = """You are a research assistant at Coherent Market Insights (CMI). Given the CMI market report's own \
@@ -801,8 +896,7 @@ application or end use, and region, and never one invented to reach a number), a
 number of segmentations, it is exactly that count, never a default of three. When in doubt, leave the number out of the lead-in. The lead-in is at most 18 words and the shortest grammatical lead-in beats a longer one padded with \
 connector words. Nothing else goes in the paragraph: the lead-in and the bullets are the whole 70-85 words, and there is no second paragraph.
   - subsegment: exactly TWO analyses, each its own entry in "paragraphs" (an object with "segment", "sub_segment" and \
-"paragraph", see the shape below). Each "paragraph" is 4 sentences of at most 20 words each (70-90 words) analysing ONE sub-segment, and the two come from \
-DIFFERENT major segments (for example one from "by type" and one from "by application"), covering its growth or adoption drivers, \
+"paragraph", see the shape below). Each "paragraph" is 4 sentences of at most 20 words each (70-90 words) analysing ONE sub-segment, and the two are the top two categories of ONE major segment split (a second split only when the report states no second category for the first; for example both from "by type", or one from "by type" and one from "by application"), covering its growth or adoption drivers, \
 its major applications or end uses and its contribution to the overall market. Choose the two sub-segments by the post so \
 far: take the ones that connect most directly to its subject or that it already gives the most weight to; only if it points to none, \
 take the two the CMI report lists first. Name the segment and the sub-segment in the object first, then write the paragraph about \
@@ -944,7 +1038,7 @@ be in any order you choose):
   {{"heading": "<heading>", "sop": ["segmentation"], "paragraphs": ["<lead-in sentence>\\n- <segment line 1>\\n- <segment line 2>\\n- <segment line 3>"]}},
   {{"heading": "<heading>", "sop": ["subsegment"], "paragraphs": [
     {{"segment": "<major segment A>", "sub_segment": "<a sub-segment of A>", "paragraph": "<3-sentence analysis of that sub-segment only>"}},
-    {{"segment": "<a DIFFERENT major segment B>", "sub_segment": "<a sub-segment of B>", "paragraph": "<3-sentence analysis of that sub-segment only>"}}]}},
+    {{"segment": "<major segment B (the same split as A when the report states no second category for it)>", "sub_segment": "<a sub-segment of B>", "paragraph": "<3-sentence analysis of that sub-segment only>"}}]}},
   {{"heading": "<heading>", "sop": ["country_us"], "paragraphs": ["<lead-in sentence>\\n- <factor 1>\\n- <factor 2>\\n- <factor 3>\\n- <factor 4>"]}},
   {{"heading": "<heading>", "sop": ["key_players"], "paragraphs": ["<landscape paragraph>", "<lead-in clause>\\n- <company 1>\\n- <company 2>\\n- <company 3>\\n- <company 4>"]}},
   {{"heading": "<heading>", "sop": ["conclusion"], "paragraphs": ["<the conclusion paragraph>"]}}
@@ -1165,6 +1259,25 @@ TESTS BEFORE ANSWERING
 Return JSON in exactly this shape:
 {{"name": "<company name>" or null, "offer": "<one sentence>" or null, "category": "<kind of business>", "anchor_fit": "<matches|broader|different>", "anchor_note": "<one sentence or empty>", "market_fit": "<close|adjacent|distant>", "bridge": "<one sentence or empty>"}}"""
 
+# All the clients of a post in ONE call (clients.run_briefs): the same purpose, method, tests and per-client shape as
+# CLIENT_BRIEF_USER (sliced from it, so the two can never drift), with each client's own paragraph, links and pages as one block and
+# one entry per client in the answer. CLIENT_BRIEF_BLOCK is filled once per client; CLIENT_BRIEFS_USER takes their joined text.
+_BRIEF_CLIENT_FROM = CLIENT_BRIEF_USER.index("THE CLIENT'S PARAGRAPH")
+_BRIEF_RULES_FROM = CLIENT_BRIEF_USER.index("PURPOSE")
+_BRIEF_SHAPE_FROM = CLIENT_BRIEF_USER.index("Return JSON in exactly this shape:")
+CLIENT_BRIEF_BLOCK = "CLIENT {client_id}\n" + CLIENT_BRIEF_USER[_BRIEF_CLIENT_FROM:_BRIEF_RULES_FROM].rstrip() + "\n"
+CLIENT_BRIEFS_USER = (
+    "THE MARKET OF THE POST: {market_name}\n\n"
+    "SEVERAL CLIENTS follow, each with its own paragraph, links and page text. Write one brief for each client, from that client's own "
+    "pages only: what one client's pages say never informs another client's brief.\n\n"
+    "{clients_block}\n"
+    + CLIENT_BRIEF_USER[_BRIEF_RULES_FROM:_BRIEF_SHAPE_FROM].rstrip()
+    + "\n\nThe rules above apply to each client separately. Return JSON with one entry per client, each entry the shape below for "
+    "that client with the client's id added:\n"
+    + '{{"briefs": [' + CLIENT_BRIEF_USER[_BRIEF_SHAPE_FROM:].split("\n", 1)[1].replace(
+        '{{"name"', '{{"client": "<the client id, for example C1>", "name"', 1) + ', ...]}}'
+)
+
 # The write prompt's rules for the restated client paragraph (clients.client_block fills the placeholders).
 CLIENT_BLOCK = """- THE CLIENT LINKS. The post carries the paid backlink(s) of {client_count} client(s). The client is never promoted: its name, its company, its products, its credentials, its figures and its claims about itself do not appear in the post. The only thing the client receives is the link, placed on the linked words listed below, inside sentences that belong to the opening's own explanation of the market. Its rules:
   1. The link is the only mention: write each link as [[CLIENT_LINK:<link id>|<the linked words>]], with the linked words exactly as listed, never changed, split, reordered or repeated, and every link written exactly once, in the opening. Never write the client's name or domain, never call it a company, a firm, a provider or a service ("the firm", "its offer"), never describe, recommend, rank or compare it.
@@ -1202,12 +1315,13 @@ FIELDS
 - segments: how the report splits the market. Each entry names the segment type as the page names it and lists its categories as the page lists them. Leave out a split the page only mentions in passing. Each category is an object with its "name" and, ONLY when the page states a market share or a value for that category, its "figure" as written (for example a percentage or an amount with its unit) and the "quote" that states it. A category with no stated figure has no "figure" and no "quote".
 - dominant: for each split, the category the page says leads it (dominates, holds the largest share, is the biggest or leading one). Give the split's "split" name as in segments, the category "name", and the "quote" that says it. Leave a split out when the page does not say which category leads; never choose one yourself, and never name the fastest-growing category here unless the page also says it is the largest.
 - regions: "leader" is the region the page says holds the largest share or dominates; "fastest" is the region the page says grows fastest. Each gives the region "name", the "basis" the page gives for it (a year, a share, a reason) and the "quote". Either is null when the page does not say.
+- segment_drivers: for a category of a split that the page says leads it, grows or is adopted most, the reason the page gives (the driver, the shift in demand or the adoption behind it), one entry per category. Give the split's "split" name as in segments and the category's "name". Leave a category out when the page gives no reason for it; never supply a reason yourself.
 - us: statements the page makes about the United States specifically (not about North America or the world).
 - drivers: what the page says pushes the market's growth, one entry per distinct driver.
 - opportunities: what the page presents as openings for the market, one entry per distinct opportunity.
 Record only favourable facts. Skip anything the page presents as a restraint, challenge, risk, decline or setback, and word every entry by what helps the market.
 - players: the companies the page names as key or leading players in the market, each written as the page writes the name but without a legal suffix such as Inc., Ltd or LLC.
-For us, drivers and opportunities each entry has "text" (one declarative sentence in your own words, carrying only what the quote says, with whoever acts as its subject and an active verb) and "quote".
+For us, drivers, opportunities and segment_drivers each entry has "text" (one declarative sentence in your own words, carrying only what the quote says, with whoever acts as its subject and an active verb) and "quote".
 
 TESTS BEFORE ANSWERING
 - Every "quote" appears word for word in the page text above.
@@ -1226,6 +1340,7 @@ Return JSON in exactly this shape:
  "us": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "drivers": [{{"text": "<statement>", "quote": "<sentence>"}}],
  "opportunities": [{{"text": "<statement>", "quote": "<sentence>"}}],
+ "segment_drivers": [{{"split": "<segment type>", "name": "<category>", "text": "<the reason, one sentence>", "quote": "<sentence>"}}],
  "players": ["<company>", "..."]}}"""
 
 
@@ -1344,6 +1459,35 @@ TESTS BEFORE ANSWERING
 Return JSON in exactly this shape:
 {{"intro_angle": "<one sentence>", "points": ["<point>", "..."]}}"""
 
+# ---------------------------------------------------------------- market-first chain: the one EVIDENCE PREP call
+# The three calls of the Evidence step's preparation (the publisher points, the search demand, the market search queries) as ONE
+# call: each job keeps its own system role, its own prompt (rules, tests and answer shape, verbatim, so the three can never
+# drift from the separate prompts the old chain still uses) and its own answer, under one key. Filled from
+# publisher.prompt_fields, demand.prompt_fields and pipeline.search_query_fields plus section_targets.
+EVIDENCE_PREP_SYSTEM = (
+    "You are an analyst at Coherent Market Insights (CMI) and you do three separate jobs for one confirmed market in one "
+    "answer. Each job below has its own role, its own inputs, its own rules and its own answer shape. Do each job only from "
+    "its own inputs and rules, exactly as if the other two did not exist, and put its answer under its own key. Respond with JSON only.\n\n"
+    "JOB 1 ROLE: " + PUBLISHER_POINTS_SYSTEM + "\n\n"
+    "JOB 2 ROLE: " + SEARCH_DEMAND_SYSTEM + "\n\n"
+    "JOB 3 ROLE: " + SEARCH_QUERIES_SYSTEM
+)
+
+EVIDENCE_PREP_USER = (
+    "Three jobs follow. Each one is a complete prompt of its own, ending with the JSON shape of its own answer.\n\n"
+    "======== JOB 1 of 3: PUBLISHER POINTS (its answer goes under the key \"publisher\") ========\n\n"
+    + PUBLISHER_POINTS_USER
+    + "\n\n======== JOB 2 of 3: SEARCH DEMAND (its answer goes under the key \"demand\") ========\n\n"
+    + SEARCH_DEMAND_USER
+    + "\n\n======== JOB 3 of 3: MARKET SEARCH QUERIES (its answer goes under the key \"queries\") ========\n\n"
+    + SEARCH_SECTION_QUERIES_USER
+    + "\n\n======== YOUR ANSWER ========\n\n"
+    "Return ONE JSON object with exactly these three keys. Each key holds the object that its own job describes in its own "
+    "\"Return JSON\" line above, with exactly that job's keys and shapes: "
+    "{{\"publisher\": <job 1's object>, \"demand\": <job 2's object>, \"queries\": <job 3's object: its \"queries\", "
+    "\"source_groups\" and \"topic_terms\">}}"
+)
+
 # ---------------------------------------------------------------- market-first chain: PLAN
 PLAN_SYSTEM = """You are the planning editor at Coherent Market Insights (CMI). You plan a market article before anyone writes it: which questions its headings answer, what each section tells the reader, which facts go where and which keywords sit where. A writer will turn your plan into prose and may use only what your plan assigns. Respond with JSON only."""
 
@@ -1363,6 +1507,9 @@ REPORT FACTS (from CMI's report on this market; each has an id):
 NEWS EVIDENCE (recent, vetted; each has an id and the kinds of section it suits):
 {evidence}
 
+THE TWO SUB-SEGMENTS:
+{subsegments}
+
 KEYWORDS
 Secondary keyword pool (key: the section it usually fits; listed most searched first, from real search data, so prefer the earlier ones when they fit):
 {secondary_pool}
@@ -1377,8 +1524,8 @@ THE ARTICLE'S SHAPE (fixed, you do not change it)
 An opening from the guest article's subject, a short transition into the market, then seven market sections in this order, then an FAQ that code builds from the questions you do not use as headings:
 1. report_context: the market's size and where it is heading.
 2. trends: what is changing the market, as three distinct trends, each examined in depth: what is happening, how it changes demand in this market and what it means commercially.
-3. segmentation: how the market is divided.
-4. subsegment: two sub-segments from different splits, each looked at in detail.
+3. segmentation: how the market divides and why the leading category in each split leads.
+4. subsegment: the top two sub-segments of one segment split, each looked at in detail (a second split only when the report states no second category for the first).
 5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context.
 6. key_players: who leads the market.
 7. conclusion: what it all means and where the market is heading. It adds nothing new: it pulls together points already made, so it gets no facts of its own (an opportunity fact from the report is the only exception).
@@ -1386,14 +1533,15 @@ An opening from the guest article's subject, a short transition into the market,
 HOW TO PLAN
 1. Storyline. Give every section a "point": one line stating what a reader learns there. A point states only what that section's assigned facts support; it never adds a claim, a company type or a detail of its own. Read the seven in order. Each must follow from the one before, so the article reads as one explanation with no jump. If a point does not follow, change the point.
 2. Question headings. Pick exactly 2 or 3 questions to be section headings. Choose the ones whose answers your facts make strongest and most specific, each for a different section (the one its entry says it can head). A question heading is answered directly in the first sentences of its section. When a question about the market's size or growth is among them and your facts answer it, that question is the first heading chosen: it heads the section that opens the article with the market's figures.
-3. Other headings. A section that is not headed by a question gets a short topic phrase (about three to eight words) naming what the section covers, phrased for this market: how big the market is and how fast it is growing (the first section); what trend is changing it (the second); how the market divides, one segment split at a time (the third); one sub-segment within a split, looked at closely (the fourth); the leading region, or the United States (the fifth); the companies that lead the market (the sixth); and what it all means and the outlook (the last). The heading names the market in its full form or its short form as well. It names the topic, never the findings: it is not a sentence, not a question, not a label naming the stage of the report it sits in, and it holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
+3. Other headings. A section that is not headed by a question gets a short topic phrase (about three to eight words) naming what the section covers, phrased for this market: how big the market is and how fast it is growing (the first section); what trend is changing it (the second); how the market divides and why the leading category of each split leads, one segment split at a time (the third); one sub-segment within a split, looked at closely (the fourth); the leading region, or the United States (the fifth); the companies that lead the market (the sixth); and what it all means and the outlook (the last). The heading names the market in its full form or its short form as well. It names the topic, never the findings: it is not a sentence, not a question, not a label naming the stage of the report it sits in, and it holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
 4. Facts. Four parts: what to assign, what never repeats, what is required, and what is specific to a section.
    4a. Assigning. Give each section its strongest facts, about three to five, using only the ids listed above. A trends section carries up to nine: name three distinct trends and give each its own entry in "trend_groups", two or three facts each: a report driver or opportunity where one fits, plus at least one dated, named piece of news evidence where the evidence list has one. A news item serves the one trend it illustrates best, and the three trends differ from one another. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. A section with no good fact gets none and stays short: do not stretch a fact to fill it. Report facts are CMI's; news evidence is credited to its source by the writer. A fact marked as historical is presented with its year, never as current.
    4b. No repeats. A fact appears in one section only, so a figure is stated once. This is about each piece of evidence, not about each source: one source article or one report can supply several separate facts, and each of those facts is assigned to exactly one section; the same fact is never assigned to two sections, and two facts that make the same point count as one (assign only the stronger).
    4c. Required. The report's main figures are not optional: the market size, forecast and growth rate and the leading and fastest-growing regions go to report_context, every segment split goes to segmentation, and so does the leading category of a split with its stated share, except for the two sub-segments, whose figures go to subsegment. Code adds any of these you leave out, so plan each section's point around them.
    4d. Per section.
    - key_players: name the companies together; give a company a detail only where a fact in the list supplies one, and each detail shows how that company moves the market (launches, partnerships, acquisitions, integrations, expansion), never a recognition given to it or a change in its people.
-   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category), chosen from different splits in the report facts, by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
+   - country_us: a fact tagged us (its suits list is country_us) belongs to the U.S. section and to no trend. Give the section every U.S. fact there is. With fewer than two, code builds the section from the report's own facts, so you plan it from the U.S. facts alone.
+   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category). When THE TWO SUB-SEGMENTS above are given, they were fixed before the news was searched and you do not choose them: copy exactly those two. Only when none are given, choose the top two categories of one split from the report facts (another split's leader only when that split states no second category), by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
 5. Keywords.
    - Secondary: choose 4 to 6 keys from the pool, at most one per section, each in the section where one of its facts makes the keyword fit a sentence the writer would write anyway.
    - Long-tail: choose 2 or 3, each in a different section whose facts include the fact the search rests on.
@@ -1466,7 +1614,7 @@ THE MARKET SECTIONS (in this order; each heading is given and is final)
 _WRITE_TAIL = """
 PART C: CHECKLIST AND OUTPUT
 OUTPUT CHECKLIST
-All seven market sections are present in the given order with their given headings. The opening names the market within the first 100 words, carries the report link once where the opening asks for one, and has the placeholder once. Every figure is in a listed fact. No section states a fact that is not listed. Every assigned keyword is in its section, and every section's listed long-tail phrase is used in that section. No fact is stated in two places. Every sentence is complete and follows the LANGUAGE rules.
+All seven market sections are present in the given order with their given headings; a section whose block says to write only the editor line holds that single line under its heading and nothing else. The opening names the market within the first 100 words, carries the report link once where the opening asks for one, and has the placeholder once. Every figure is in a listed fact. No section states a fact that is not listed. Every assigned keyword is in its section, and every section's listed long-tail phrase is used in that section. No fact is stated in two places. Every sentence is complete and follows the LANGUAGE rules.
 
 Return JSON in exactly this shape:
 {{"intro": {{"paragraphs": {intro_shape}}},
@@ -1514,16 +1662,15 @@ Below, every question is followed by the facts that may be used to answer it. No
 
 RULES: ANSWER SHAPE
 1. Answer the question directly in the first words of the answer. If the facts hold no figure, the answer stays qualitative rather than inventing one.
-2. Two to three sentences in all.
+2. One or two sentences, 40 to 60 words in all. No company names, product launches, dated examples or news: state the market-level answer only.
 3. The answer is about the question's own topic. A fact that is only loosely related (another technology, another region, another company's news) is never used to fill an answer: if the facts for a question do not truly answer it, leave its answer empty.
 4. Every answer stands alone. Its first sentence names its subject in full (the market, the segment, the region) and never opens on a pointing word or phrase ("This", "That", "It", "Its", "On that trajectory", "These"); every sentence is complete, with a subject and a finite verb.
 5. A rate or a size is stated by its figure, period and unit. A growth question gets the rate and its period in the first sentence; a question about which region leads names the leading region and its share first, and the fastest-growing region only after it.
 
 RULES: FACTS AND SOURCES
 1. Use only the facts listed for that question. Never write a figure, year, company detail or claim that none of them supports, and never explain what you were not given.
-2. A fact from the CMI report is stated as a plain statement about the market. Never write "according to Coherent Market Insights", "according to CMI", "the report" or the research firm's name in an answer.
-3. A fact whose source is not CMI names that source, and the month when it has one, in the same sentence, and is never credited to CMI. Every sentence that gives one of another source's figures carries the source's name again: "The same source" and "That source" are never written. A fact marked historical carries its year and is never presented as current.
-4. Put each fact in your own words: never reuse a run of eight or more words from a fact, and correct any spelling slip a fact carries.
+2. A fact from the CMI report is stated as a plain statement about the market, and a fact marked historical carries its year and is never presented as current. Never write "according to Coherent Market Insights", "according to CMI", "the report" or the research firm's name in an answer.
+3. Put each fact in your own words: never reuse a run of eight or more words from a fact, and correct any spelling slip a fact carries.
 
 RULES: NO REPEATS
 1. One piece of evidence, one answer. No fact (a figure, a company's announcement, a study, a finding) is used in more than one answer of this FAQ, and two answers never carry the same fact in different words. When two questions could use the same fact, give it to the question it answers best and answer the other from its other facts, or leave it empty.
@@ -1537,7 +1684,10 @@ TESTS BEFORE ANSWERING
 - The answer could stand alone, without the article: someone who reads only the question and this answer learns what they searched for.
 
 Return JSON in exactly this shape (the questions list holds every question above, in the same order; "answer" is empty only when the facts above truly cannot answer the question, so it is better dropped):
-{{"faq": [{{"question": "<the question, word for word as given>", "answer": "<1-3 sentences>"}}, ...]}}"""
+{{"faq": [{{"question": "<the question, word for word as given>", "answer": "<1-2 sentences, 40-60 words>"}}, ...]}}"""
+
+# The FAQ answer's word ceiling: the prompt asks for 40 to 60 words, faqs trims to it and checks flags past it.
+FAQ_ANSWER_MAX_WORDS = 60
 
 FAQ_MSQ_USER = (_FAQ_HEAD + prompt_rules.render(groups=("ANALYSIS",), only=("positive",))
-                + prompt_rules.render(groups=("LANGUAGE",), only=("voice", "grammar", "continuity", "active", "filler")) + _FAQ_TAIL)
+                + prompt_rules.render(groups=("LANGUAGE",), only=("voice", "grammar", "continuity", "active", "filler", "sentences")) + _FAQ_TAIL)

@@ -148,7 +148,7 @@ def vary_headline_entries(fs: dict, market_name: str, source: dict) -> list[dict
     (created when missing); a second call changes nothing — entries already marked varied are skipped. Returns the
     audit rows."""
     headlines = {k: fs[k] for k in ("size", "forecast", "cagr")
-                 if fs.get(k) and fs[k].get("external") and not fs[k].get("varied")}
+                 if fs.get(k) and fs[k].get("external") and not fs[k].get("varied") and not fs[k].get("edited_by_editor")}
     if not headlines or not (source or {}).get("url"):
         return []
     audit, _ = _vary_headlines(headlines, source, _rng(market_name.lower(), source["url"]))
@@ -196,7 +196,7 @@ def vary_fact_sheet(fs: dict, market_name: str) -> list[dict]:
             f["amount"] = f["amount"] * f_size
             _record(audit, f"{seg['type']}: {n}", f["original_figure"], new, source)
 
-    for key in ("us", "drivers", "opportunities"):
+    for key in ("us", "drivers", "opportunities", "segment_drivers"):
         for e in fs.get(key) or []:
             if _first_number(e["text"]):
                 original = e["text"]
