@@ -288,17 +288,16 @@ MARKET SEGMENTS (from the confirmed CMI report, if any): {segments}
 SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that market as a whole and for its sections below, \
 and do not narrow to one product, feature or use case unless that IS the market.
 
-The article has the sections below, and each needs its own recent, real news. For EACH section write the queries named for it, \
-built from that section's TARGETS: the targets say what the CMI report states there, so the news you look for is news that \
-shows it happening. A target is never text to paste into a query: turn it into the market's anchor plus one or two words.
+The article's trends and its general market view each need their own recent, real news. For EACH section below write the queries \
+named for it, built from that section's TARGETS: the targets say what the CMI report states there, so the news you look for is \
+news that shows it happening. A target is never text to paste into a query: turn it into the market's anchor plus one or two words.
 {section_targets}
 
 Every query is about a concrete, recent development (a launch, an acquisition, a funding round, a partnership, a regulation, \
 an adoption), and the queries of one section look in different directions. Follow these rules exactly, learned from real \
 search failures:
 """ + _QUERY_RULES_SHARED + """
-Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": ["<query>", ...], \
-"segmentation": ["<query>", ...], "us": ["<query>", ...], "key_players": ["<query>", ...], "market": ["<query>", ...]}}, \
+Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "market": ["<query>", ...]}}, \
 "source_groups": ["<group id>", ...], "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
 
 
@@ -466,8 +465,6 @@ same page). Assign each selected result to EXACTLY ONE section: use_for is a lis
 - "trends": a DATED finding showing a direction the market is moving in (a shift in technology or product, buyer demand and \
 adoption, investment or competitive moves); the three trends differ, so the trends results span different directions.
 {sub_segment_lines}
-- "segmentation": a finding that shows why a leading category of one of the market's splits leads or is gaining (its demand, \
-adoption or growth).
 - "us": a finding specifically about the U.S. market.
 - "players": a company's own move in the market (a launch, a partnership, an acquisition, an integration, an expansion); never a \
 recognition or a personnel change.
@@ -475,7 +472,7 @@ A result that fits two sections goes to the one it serves best; one that fits no
 assigned to "trends". A result about a sub-segment that is not one of the two named is left out, not filed under another \
 section. Where the results allow it, aim for at least {min_trends} results for "trends", {min_sub} for each sub-segment, {min_us} for \
 "us" and {min_players} for "players"; never pad a section with a weak result to reach a number.
-{only_note}"""
+"""
 
 
 # The second SELECT pass (pipeline.run_select) injects this block into SELECT_USER in place of the

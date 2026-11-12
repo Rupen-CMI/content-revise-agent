@@ -162,13 +162,23 @@ def hit(url: str, title: str = "Widget services expand", snippet: str = "", scop
     return search.SearchHit(title=title, snippet=snippet, url=url, source="Src", date=None, scope=scope)
 
 
-check("us search: every query names the U.S.", all(("U.S." in q or "United States" in q) for q in us_search.us_news_queries(MARKET) + us_search.us_web_queries(MARKET)))
+check("us search: every query names the U.S.", all(("U.S." in q or "United States" in q) for q in us_search.us_news_queries(MARKET)))
 check("us search: a page that names the U.S. in its text qualifies", us_search.names_the_us(hit("https://a.example/1", snippet="Demand in the U.S. is rising")))
 check("us search: a page that names another place only does not", not us_search.names_the_us(hit("https://a.example/2", snippet="Demand in Europe is rising")))
-general = [hit("https://a.example/1"), hit("https://a.example/3")]
-merged = us_search.merge_hits(general, [hit("https://a.example/1", scope="us"), hit("https://a.example/9", scope="us")])
-check("us search: merged pool keeps order, adds new pages, and marks a shared page as a U.S. candidate",
-      [h.url for h in merged] == ["https://a.example/1", "https://a.example/3", "https://a.example/9"] and merged[0].scope == "us")
+found_us = hit("https://a.example/1", snippet="Demand in the U.S. is rising")
+found_us.add_sections(["us"])
+other_us = hit("https://a.example/9", snippet="Demand in Europe is rising")
+other_us.add_sections(["us"])
+shared = hit("https://a.example/5", snippet="Demand in Europe is rising")
+shared.add_sections(["trends", "us"])
+plain_hit = hit("https://a.example/3")
+plain_hit.add_sections(["trends"])
+settled = us_search.mark_us_hits([found_us, other_us, shared, plain_hit])
+check("us search: a page found for 'us' that names the U.S. is marked scope 'us'", found_us in settled and found_us.scope == "us")
+check("us search: a page found only for 'us' that does not name the U.S. is dropped", other_us not in settled)
+check("us search: a page found for 'us' and another section that does not name the U.S. keeps the other section only",
+      shared in settled and shared.sections == ["trends"] and shared.scope == "market")
+check("us search: a page no 'us' query found is left as it was", plain_hit in settled and plain_hit.scope == "market")
 
 # ------------------------------------------------------------------------------------------- topic clusters
 import planning as _planning  # noqa: E402

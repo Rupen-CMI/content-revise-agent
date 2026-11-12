@@ -233,7 +233,7 @@ try:
     run = main._RUNS[TOKEN]
     flags = {"fetch": 0, "read_page": 0, "find_pages": 0, "build_sheet": 0,
              "gap_search": 0, "figure_backing": 0, "fill_web": 0,
-             "search_demand": 0, "publisher": 0, "search_queries": 0, "evidence": 0, "us": 0}
+             "search_demand": 0, "publisher": 0, "search_queries": 0, "evidence": 0}
     names = {"evidence": [], "find_pages": [], "queries": []}
 
     def cmi_report() -> reports.Report:
@@ -293,10 +293,6 @@ try:
         names["evidence"].append(market_name)
         return [hit()]
 
-    def fake_us_search(market_name, sponsor_hosts, players, logger, queries):
-        flags["us"] += 1
-        return [hit("https://us.example/rose-oil")]
-
     stubs = [
         (main, "_fetch_cmi_sheets", fake_fetch_cmi_sheets),
         (external_reports, "read_page", fake_read_page),
@@ -310,12 +306,11 @@ try:
         (publisher, "run_publisher_points", fake_publisher_point),
         (pipeline, "prepare_search_queries", fake_search_queries),
         (pipeline, "run_search_evidence", fake_search_evidence),
-        (us_search, "run_us_search", fake_us_search),
     ]
     with patched_all(*stubs):
         built = main._build_reports(run, [main._RUNS[TOKEN].candidates[0]], [], markets=[MARKET], url_markets={})
     check("_build_reports CMI: no search demand, publisher, evidence or query planning runs in the Reports step",
-          all(flags[k] == 0 for k in ("search_demand", "publisher", "search_queries", "evidence", "us")), str(flags))
+          all(flags[k] == 0 for k in ("search_demand", "publisher", "search_queries", "evidence")), str(flags))
     run.report_tabs["cmi"] = built
     main._activate_report(run, "cmi")
     refused = None
@@ -353,8 +348,8 @@ try:
           run.gap_pages == [], str(run.gap_pages))
     check("CMI run: the market-news evidence search STILL ran with the report's name",
           flags["evidence"] == 1 and names["evidence"] == [NAME], str(flags) + str(names))
-    check("CMI run: the U.S. search, search demand and publisher points still ran",
-          flags["us"] == 1 and flags["search_demand"] == 1 and flags["publisher"] == 1, str(flags))
+    check("CMI run: search demand and publisher points still ran, and no separate U.S. search exists (its queries are in the one search)",
+          flags["search_demand"] == 1 and flags["publisher"] == 1 and not hasattr(us_search, "run_us_search"), str(flags))
     check("CMI run: the search queries were planned from the CMI report's name",
           flags["search_queries"] == 1 and names["queries"] == [NAME], str(names))
     check("CMI run: the run carries the result (fact sheet, report, mode) for Step 3",

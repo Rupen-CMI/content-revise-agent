@@ -2,9 +2,10 @@
 the hits and the selected items are bookkept per section.
 
 Everything here is pure code on the confirmed fact sheet (no model, no network): the section search plan (trends from the
-report's top drivers and opportunities, the two fixed sub-segments, the reasons the leaders lead, the report's own U.S.
-statements, the key players, the market as a whole), the grouped query list, the section tags every hit and every selected
-item carries, the per-section minimums and the count that decides which section is thin.
+report's top drivers and opportunities, the two fixed sub-segments, the report's own U.S. statements, the key players, the
+market as a whole), the Bing query budget and its allotment per section, the section tags every hit and every selected
+item carries, the per-section minimums and the count that decides which section is thin. The segmentation section has no
+search: it describes the report's own splits and is written from the report's facts alone.
 
 Imports only search (never pipeline, facts or planning), so all three can import it.
 """
@@ -14,13 +15,31 @@ import re
 import search
 
 # The sections whose queries run (a hit found by none of the specific ones is "market"), and the sections SELECT may assign.
-QUERY_SECTIONS = ("trends", "subsegment", "segmentation", "us", "key_players", "market")
-EVIDENCE_SECTIONS = ("trends", "subsegment", "segmentation", "us", "key_players")
+QUERY_SECTIONS = ("trends", "subsegment", "us", "key_players", "market")
+EVIDENCE_SECTIONS = ("trends", "subsegment", "us", "key_players")
 
-# Fewest selected items a section should have; below it the section gets ONE top-up search (subsegment: per sub-segment).
+# Fewest selected items a section should have; a section below it is warned about as thin (there is no top-up search).
 MINIMUMS = {"trends": 6, "subsegment": 1, "us": 2, "key_players": 3}
 
-TREND_TARGETS = 5
+# THE BING BUDGET. One run spends about 20 Bing queries (~2.8 s each, strictly one at a time), allotted per section; the
+# extra rounds that used to follow (a broader round, a per-section top-up, a separate U.S. search) added next to nothing.
+#   trends        the model's trends queries (one per target: technology, demand, investment, and a spare)
+#   sub-segment   per fixed sub-segment: its own category name + the market's core noun + a word for demand, then for a launch
+#   us            code-built U.S. queries (the section's own search; every page kept must name the U.S. in its text)
+#   key_players   code-built, one per company (pipeline._player_news_queries)
+#   market        the model's two general queries
+# plus at most BING_SITE_QUERIES site: queries (feeds._BING_MAX_SITE_QUERIES): the three broadest news hosts.
+TREND_QUERIES = 4
+SUBSEGMENT_QUERIES = 2          # per sub-segment (see SUBSEGMENT_QUERY_WORDS)
+US_QUERIES = 3
+PLAYER_QUERIES = 4
+MARKET_QUERIES = 2
+SUBSEGMENT_QUERY_WORDS = ("demand", "launch")
+BING_SITE_QUERIES = 3
+# A zero-result QUOTED query is retried unquoted only while its section has no hit at all, and at most this often a run.
+UNQUOTED_RETRIES = search.UNQUOTED_RETRIES
+
+TREND_TARGETS = TREND_QUERIES
 _SUBSEGMENTS = 2
 _QUERIES_PER_SECTION_MAX = 8
 _TARGET_CHARS = 220
@@ -28,16 +47,14 @@ _TARGET_CHARS = 220
 _REGION_SPLIT_RE = re.compile(r"region|geograph|countr|area|location", re.I)
 _SECTION_ALIASES = {
     "trend": "trends", "trends": "trends", "subsegment": "subsegment", "subsegments": "subsegment",
-    "sub_segment": "subsegment", "sub_segments": "subsegment", "segmentation": "segmentation", "segment": "segmentation",
-    "segments": "segmentation", "us": "us", "u_s": "us", "country_us": "us", "united_states": "us",
-    "key_players": "key_players", "players": "key_players", "keyplayers": "key_players", "market": "market",
-    "general": "market",
+    "sub_segment": "subsegment", "sub_segments": "subsegment", "us": "us", "u_s": "us", "country_us": "us",
+    "united_states": "us", "key_players": "key_players", "players": "key_players", "keyplayers": "key_players",
+    "market": "market", "general": "market",
 }
 # a section SELECT may name maps to the evidence tag the rest of the chain already reads ("players" for key_players)
-_TAG_OF_SECTION = {"trends": "trends", "us": "us", "key_players": "players", "segmentation": "segmentation"}
-_SECTION_OF_TAG = {"trends": "trends", "us": "us", "players": "key_players", "key_players": "key_players",
-                   "segmentation": "segmentation"}
-_LABELS = {"trends": "Trends", "segmentation": "Segmentation", "us": "U.S.", "key_players": "Key players"}
+_TAG_OF_SECTION = {"trends": "trends", "us": "us", "key_players": "players"}
+_SECTION_OF_TAG = {"trends": "trends", "us": "us", "players": "key_players", "key_players": "key_players"}
+_LABELS = {"trends": "Trends", "us": "U.S.", "key_players": "Key players"}
 
 
 def _norm(text: str) -> str:
@@ -83,9 +100,8 @@ def _short(text: str) -> str:
 
 def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict] | None = None) -> dict[str, list[dict]]:
     """What each section's search looks for, from the confirmed fact sheet alone. Every target is {"text", ...}:
-      trends        the top drivers, then opportunities (3 to 5 targets, one query each);
+      trends        the top drivers, then opportunities (TREND_TARGETS targets, one query each);
       subsegment    the two fixed sub-segments (subsegments, or choose_subsegments);
-      segmentation  the reason each split's leader leads (the report's segment drivers) where it gives one;
       us            the report's own U.S. statements, as seeds;
       key_players   the cleaned player names;
       market        the market as a whole (general recent news)."""
@@ -94,21 +110,11 @@ def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict
     opportunities = [e for e in fs.get("opportunities") or [] if e.get("text")]
     ordered = [("drivers", e) for e in drivers[:3]] + [("opportunities", e) for e in opportunities[:2]]
     spare = [("drivers", e) for e in drivers[3:]] + [("opportunities", e) for e in opportunities[2:]]
-    ordered += spare[:max(0, TREND_TARGETS - len(ordered))]
+    ordered = (ordered + spare)[:TREND_TARGETS]
     picks = subsegments if subsegments is not None else choose_subsegments(fs)
-    reasons = [e for e in fs.get("segment_drivers") or [] if e.get("text") and e.get("split")]
-    segmentation = []
-    for seg in fs.get("segments") or []:
-        leader = (seg.get("dominant") or {}).get("name")
-        mine = [e for e in reasons if _norm(e["split"]) == _norm(seg["type"])]
-        why = next((e for e in mine if leader and _norm(e.get("name", "")) == _norm(leader)), None) or (mine[0] if mine else None)
-        if why:
-            segmentation.append({"split": seg["type"], "name": why.get("name") or leader or "",
-                                 "text": f"Why {why.get('name') or leader or 'the leading category'} leads {seg['type']}: {_short(why['text'])}"})
     return {
         "trends": [{"kind": kind, "text": _short(e["text"])} for kind, e in ordered],
         "subsegment": [{"split": p["split"], "name": p["name"], "basis": p.get("basis", ""), "text": f"{p['name']} ({p['split']})"} for p in picks],
-        "segmentation": segmentation,
         "us": [{"text": _short(e["text"])} for e in (fs.get("us") or [])[:3] if e.get("text")],
         "key_players": [{"text": n} for n in search.clean_player_names(list(key_players))],
         "market": [{"text": market}],
@@ -116,22 +122,15 @@ def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict
 
 
 def format_targets(plan: dict) -> str:
-    """The plan as the query-writing prompt reads it: one block per section, one line per target."""
+    """The plan as the query-writing prompt reads it: one block per section the model writes queries for (trends and the
+    market as a whole; the sub-segment, U.S. and key-player queries are built in code, see budgeted_queries)."""
     def lines(key: str, empty: str) -> str:
         return "\n".join(f"- {t['text']}" for t in plan.get(key) or []) or f"- {empty}"
 
     return "\n".join([
-        "TRENDS (one query per target; each target is a driver or opportunity the news should show happening):",
+        f"TRENDS ({TREND_QUERIES} queries, one per target; each target is a driver or opportunity the news should show happening):",
         lines("trends", "(no targets: ask what is changing in the market itself)"),
-        "SUB-SEGMENTS (two queries for each: the market's anchor plus the sub-segment's name, then a development in it):",
-        lines("subsegment", "(none fixed)"),
-        "SEGMENTATION (one query per target: news showing why that category leads its split):",
-        lines("segmentation", "(none: ask about demand within one named segment)"),
-        "U.S. (two queries; the targets are what the report itself says about the United States):",
-        lines("us", "(none: ask about the market in the United States)"),
-        "KEY PLAYERS (two queries about the companies' own moves; code adds one query per company):",
-        lines("key_players", "(none known)"),
-        "MARKET (two general queries on recent developments in the market as a whole):",
+        f"MARKET ({MARKET_QUERIES} general queries on recent developments in the market as a whole):",
         lines("market", "(the market)"),
     ])
 
@@ -188,15 +187,51 @@ def add_queries(grouped: dict[str, list[str]], section: str, queries: list[str])
 
 
 def fallback_queries(plan: dict, core: str, market_templates: list[str]) -> dict[str, list[str]]:
-    """The grouped queries when the model gives none: the deterministic market templates, plus short anchored queries from the
-    plan's own targets."""
+    """The grouped queries when the model gives none: the deterministic market templates, plus short anchored trends queries.
+    (The sub-segment, U.S. and key-player queries are built in code anyway: see budgeted_queries.)"""
     grouped: dict[str, list[str]] = {s: [] for s in QUERY_SECTIONS}
     grouped["market"] = list(market_templates)
-    grouped["trends"] = [f'"{core}" {w}' for w in ("adoption", "investment", "partnership")]
-    grouped["subsegment"] = [f"{core} {t['name']}" for t in plan.get("subsegment") or []]
-    grouped["segmentation"] = [f"{core} {t['name']}" for t in plan.get("segmentation") or [] if t.get("name")]
-    grouped["us"] = [f'"{core}" United States']
+    grouped["trends"] = [f'"{core}" {w}' for w in ("adoption", "investment", "partnership", "launch")]
     return grouped
+
+
+def subsegment_queries(core: str, subsegments: list[dict]) -> list[str]:
+    """The sub-segments' own queries, built in code from each category's name and the market's core noun, SUBSEGMENT_QUERIES
+    each ("<category> <market core> demand", "<category> <market core> launch")."""
+    out: list[str] = []
+    for s in subsegments:
+        name = " ".join(re.sub(r"[\"“”]", " ", str(s.get("name") or "")).split())
+        if not name:
+            continue
+        for word in SUBSEGMENT_QUERY_WORDS[:SUBSEGMENT_QUERIES]:
+            q = f"{name} {core} {word}".strip()
+            if q.lower() not in {x.lower() for x in out}:
+                out.append(q)
+    return out
+
+
+def budgeted_queries(
+    grouped: dict[str, list[str]], core: str, subsegments: list[dict], us_queries: list[str], player_queries: list[str],
+) -> dict[str, list[str]]:
+    """The one Bing budget, allotted per section (see TREND_QUERIES and its neighbours): the model's trends and market queries
+    cut to their allotment, the sub-segment queries built from the two fixed categories, the U.S. queries, and the key-player
+    queries from code (the model's own key-player queries only stand in when code knows no player). The input is not changed."""
+    def cut(values, n: int) -> list[str]:
+        return list(dict.fromkeys(" ".join(str(q).split()) for q in values or [] if str(q).strip()))[:n]
+
+    return {
+        "trends": cut(grouped.get("trends"), TREND_QUERIES),
+        "subsegment": subsegment_queries(core, subsegments),
+        "us": cut(us_queries, US_QUERIES),
+        "key_players": cut(player_queries or grouped.get("key_players"), PLAYER_QUERIES),
+        "market": cut(grouped.get("market"), MARKET_QUERIES),
+    }
+
+
+def keyword_query_budget(subsegments: list[dict]) -> int:
+    """The most keyword queries one run spends on Bing (the site: queries, BING_SITE_QUERIES, come on top)."""
+    return (TREND_QUERIES + SUBSEGMENT_QUERIES * min(len(subsegments), _SUBSEGMENTS) + US_QUERIES + PLAYER_QUERIES
+            + MARKET_QUERIES)
 
 
 # --------------------------------------------------------------------------------------------------- hits
@@ -261,7 +296,7 @@ def tag_name(name: str) -> str:
 
 
 def evidence_tag(section: str, subsegment: str = "") -> str:
-    """The single tag a selected item carries: "trends", "us", "players", "segmentation" or "subsegment:<category>"."""
+    """The single tag a selected item carries: "trends", "us", "players" or "subsegment:<category>"."""
     return f"subsegment:{tag_name(subsegment)}" if section == "subsegment" else _TAG_OF_SECTION[section]
 
 
@@ -294,12 +329,12 @@ def match_subsegment(text: str, subsegments: list[dict]) -> str | None:
 
 
 def counts(evidence: list[dict], subsegments: list[dict]) -> dict[str, int]:
-    """Selected items per section: {"trends", "subsegment:<name>" for each fixed sub-segment, "segmentation", "us",
-    "key_players"} in the article's order. Reads each item's `section` and `subsegment`."""
+    """Selected items per section: {"trends", "subsegment:<name>" for each fixed sub-segment, "us", "key_players"} in the
+    article's order. Reads each item's `section` and `subsegment`."""
     out: dict[str, int] = {"trends": 0}
     for s in subsegments:
         out[f"subsegment:{s['name']}"] = 0
-    out.update({"segmentation": 0, "us": 0, "key_players": 0})
+    out.update({"us": 0, "key_players": 0})
     for e in evidence:
         sec = e.get("section")
         key = f"subsegment:{e.get('subsegment', '')}" if sec == "subsegment" else sec

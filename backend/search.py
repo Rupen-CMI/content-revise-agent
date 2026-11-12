@@ -224,6 +224,9 @@ _QUERY_TIMEOUT_S = 20
 _QUERY_DELAY_S = 4.0  # base gap between queries (+ up to 2.5s jitter)
 _INTRA_QUERY_DELAY_S = 2.0  # base gap between the news and text calls of one query (+ jitter)
 _QUERY_RETRIES = 2
+# At most this many zero-result QUOTED queries a run are retried without their quotes (and only while their section, or for
+# the DDGS lanes the whole lane, has no hit yet): every retry is one more request on a throttled engine.
+UNQUOTED_RETRIES = 3
 
 
 @dataclass
@@ -440,15 +443,18 @@ def _ddgs_gate(kind: str):
 def _lane(kind: str, fn, queries: list[str], logger: logging.Logger) -> list[SearchHit]:
     """One kind of DDGS call (news or text) for every query, in order, each request through that kind's gate."""
     out: list[SearchHit] = []
+    retries = UNQUOTED_RETRIES
     with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
         for q in queries:
             with _ddgs_gate(kind):
                 batch = _attempt(fn, d, q, kind, logger)
-            if not batch and '"' in q and "site:" not in q:
+            if not batch and not out and retries > 0 and '"' in q and "site:" not in q:
                 # A quoted phrase plus extra words is the most over-constrained shape there is
                 # (15 of 24 Bing queries in one run found nothing): retry once unquoted, where a
                 # multi-word term is an implicit AND rather than a hard requirement. filter_hits
-                # re-checks relevance, so widening the query is safe.
+                # re-checks relevance, so widening the query is safe. Each retry is an extra request, so it is
+                # spent only while the lane has found nothing at all yet, and at most UNQUOTED_RETRIES times.
+                retries -= 1
                 unquoted = " ".join(q.replace('"', "").split())
                 logger.info(f"[search] {kind} {q!r} gave 0 result(s); retrying without the quotes: {unquoted!r}")
                 with _ddgs_gate(kind):

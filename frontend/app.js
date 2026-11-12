@@ -968,7 +968,7 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
     state.run.sectionCounts = data.sections || {};
     state.run.sectionMinimums = data.minimums || {};
     if (data.subsegments) state.run.subsegments = data.subsegments;
-    // the top-up search may have added hits (after the first search's), and its thin-section warnings join the screen's warnings
+    // the thin-section warnings (computed from the one SELECT) join the screen's warnings
     if (data.hits) state.run.hits = data.hits;
     state.run.warnings = (state.run.warnings || []).filter((w) => !w.startsWith("Thin evidence for")).concat(data.warnings || []);
     if (data.demand) state.run.demand = data.demand;   // market-first: answerability is now marked
@@ -1920,7 +1920,7 @@ function syncProgressPoll() {
 
 // The Evidence step's sections: labels for the hit chips and the fact groups, and the fewest facts a section should have (the
 // server sends its own minimums with Step 3; these cover a reloaded run).
-const SECTION_HIT_LABEL = { trends: "Trends", subsegment: "Sub-segments", segmentation: "Segmentation", us: "U.S.", key_players: "Key players", market: "General market" };
+const SECTION_HIT_LABEL = { trends: "Trends", subsegment: "Sub-segments", us: "U.S.", key_players: "Key players", market: "General market" };
 const SECTION_MIN = { trends: 6, subsegment: 1, us: 2, key_players: 3 };
 function sectionHeading(key) {
   const [head, name] = [key.split(":")[0], key.includes(":") ? key.slice(key.indexOf(":") + 1) : ""];

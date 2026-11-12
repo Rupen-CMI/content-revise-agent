@@ -20,7 +20,6 @@ import main  # noqa: E402
 import pipeline  # noqa: E402
 import publisher  # noqa: E402
 import search  # noqa: E402
-import us_search  # noqa: E402
 from docx_io import Paragraph, SourceArticle  # noqa: E402
 
 FAILURES: list[str] = []
@@ -140,7 +139,6 @@ def step2(found, page_text, usable_urls):
         (publisher, "run_publisher_points", lambda *a, **k: {"points": []}),
         (pipeline, "prepare_search_queries", lambda *a, **k: (["n"], ["w"], ["u"])),
         (pipeline, "run_search_evidence", lambda *a, **k: []),
-        (us_search, "run_us_search", lambda *a, **k: []),
     ]
     try:
         with patched_all(*stubs):

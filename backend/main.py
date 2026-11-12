@@ -87,7 +87,6 @@ import search
 import sections as ev_sections
 import sopcheck
 import telemetry
-import us_search
 import variance
 import writer
 from docx_io import OUTPUT_DIR, Link, Paragraph, SourceArticle, read_docx
@@ -339,7 +338,7 @@ class RunState:
     cmi_choice: dict = field(default_factory=dict)          # the CMI screen's pick: {report_id, cmi_report_url}
     competitor_choice: dict = field(default_factory=dict)   # the Competitor screen's picks: {market, found_url, link}
     # ---- Evidence step (v2): the section layer. The two sub-segments are fixed from the confirmed fact sheet before any news is
-    # searched; the plan, the grouped queries and the source groups stay so Step 3's one top-up search can reuse them.
+    # searched; the plan, the grouped queries and the source groups stay on the run for the log and the editor's view.
     subsegments: list[dict] = field(default_factory=list)       # [{"split", "name", "basis", "id"}]
     section_plan: dict = field(default_factory=dict)            # sections.section_search_plan
     section_queries: dict = field(default_factory=dict)         # {section: [query, ...]} as the model wrote them
@@ -1337,17 +1336,12 @@ def _step2_v2(run: RunState) -> dict:
         finally:
             prep.shutdown(wait=False)
         with timer.stage("Market web search"):
-            # The U.S. section has no other region to lean on, so its own search runs beside the general one.
-            sponsor_hosts = tuple(pipeline._host(l.url) for l in run.sponsor.links if l.is_external)
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="us-search") as us_pool:
-                us_f = us_pool.submit(
-                    us_search.run_us_search, report.name, sponsor_hosts, players, run.logger, prepared_queries[2])
-                hits = pipeline.run_search_evidence(
-                    report.name, run.sponsor, run.candidates, run.logger,
-                    key_players=players, orient=run.orient, segments=segment_terms,
-                    search_queries=prepared_queries,
-                )
-                hits = us_search.merge_hits(hits, us_f.result())
+            # One search for every section (the U.S. section's queries are part of it) within one Bing budget.
+            hits = pipeline.run_search_evidence(
+                report.name, run.sponsor, run.candidates, run.logger,
+                key_players=players, orient=run.orient, segments=segment_terms,
+                search_queries=prepared_queries, subsegments=run.subsegments,
+            )
         demand_result, publisher_result = demand_f.result(), publisher_f.result()
         if clients_f is not None:
             clients_f.result()
@@ -1670,13 +1664,11 @@ def _step3_v2(run: RunState) -> dict:
     run.logger.info("STEP 3 (market-first chain)")
     try:
         fs = run.fact_sheet
-        players = list(fs.get("players") or []) if "agent_players" in fs else (list(reports.key_players(run.report)) or list(fs.get("players") or []))
         selection, hits, section_counts, thin_warnings = pipeline.run_sectioned_select(
             run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
-            subsegments=run.subsegments, grouped_queries=run.section_queries, plan=run.section_plan, key_players=players,
-            search_groups=run.search_groups, topic_terms=(run.orient or {}).get("topic_terms") or [],
+            subsegments=run.subsegments, topic_terms=(run.orient or {}).get("topic_terms") or [],
             headline_figures=pipeline._headline_figures(fs))
-        run.hits = hits       # the top-up's new hits sit after the first search's, so every W(n) still maps to hits[n - 1]
+        run.hits = hits       # the same hits the search returned, so every W(n) still maps to hits[n - 1]
         evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
         evidence_items = [it for it in pipeline._parse_evidence(evidence) if it.get("group") != "article"]
         questions = demand.mark_answerability(

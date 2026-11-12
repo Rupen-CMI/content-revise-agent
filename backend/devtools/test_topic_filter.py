@@ -259,10 +259,10 @@ check("common-word player: the bare weekday never matches, the domain and the ma
       and any(rx.search(domain_text) for _, rx in pats)
       and any(rx.search(possessive_text) for _, rx in pats))
 
-# the in-code key-player news queries: cleaned names, market anchor, at most five
+# the in-code key-player news queries: cleaned names, market anchor, at most four (the key-players Bing allotment)
 pq = pipeline._player_news_queries("Agile Project Management Software Market", AGILE_PLAYERS + ["Pivotal Software"])
-check("player queries: one per cleaned player, capped at five, anchored to the market's core",
-      len(pq) == 5 and pq[0] == "Microsoft agile project management" and "monday.com" in " ".join(pq), str(pq))
+check("player queries: one per cleaned player, capped at four, anchored to the market's core",
+      len(pq) == 4 and pq[0] == "Microsoft agile project management" and "monday.com" in " ".join(pq), str(pq))
 
 # ---- a quoted Bing keyword query that returns 0 results is retried once unquoted
 feeds._BING_QUERY_DELAY_S = feeds._BING_JITTER_S = 0
@@ -297,6 +297,59 @@ check("bing retry: a quoted keyword query with 0 results is retried once unquote
 client2 = _FakeBingClient({'"agile project management" launch': ITEM_RSS})
 feeds._Bing(client2, LOG).run(['"agile project management" launch'])
 check("bing retry: a quoted query that answers is not retried", client2.queries == ['"agile project management" launch'], str(client2.queries))
+
+# the retry rule: only while the query's section has no hit at all yet, and at most sections.UNQUOTED_RETRIES times a run
+import sections  # noqa: E402
+
+q_trend, q_trend2, q_us = '"agile project management" adoption', '"agile project management" funding', '"agile project management" United States'
+client3 = _FakeBingClient({q_trend: ITEM_RSS})
+feeds._Bing(client3, LOG).run([q_trend, q_trend2], {q_trend.lower(): ["trends"], q_trend2.lower(): ["trends"]})
+check("bing retry: a section that already has a hit does not retry its next empty quoted query",
+      client3.queries == [q_trend, q_trend2], str(client3.queries))
+client4 = _FakeBingClient({q_trend: ITEM_RSS})
+feeds._Bing(client4, LOG).run([q_trend, q_us], {q_trend.lower(): ["trends"], q_us.lower(): ["us"]})
+check("bing retry: another section with no hit yet still gets its retry",
+      client4.queries == [q_trend, q_us, "agile project management United States"], str(client4.queries))
+many_empty = [f'"agile project management" word{i}' for i in range(6)]
+client5 = _FakeBingClient({})
+feeds._Bing(client5, LOG).run(many_empty, {q.lower(): [f"s{i}"] for i, q in enumerate(many_empty)})
+check("bing retry: at most three retries a run, whatever the number of empty quoted queries",
+      len(client5.queries) == 6 + sections.UNQUOTED_RETRIES == 9 and sum(1 for q in client5.queries if '"' not in q) == 3, str(client5.queries))
+bing5 = feeds._Bing(_FakeBingClient({}), LOG)
+bing5.run(many_empty[:2], {q.lower(): ["x"] for q in many_empty[:2]})
+check("bing retry: the queries sent are counted for the timing line (retries included)", bing5.queries == 4, str(bing5.queries))
+
+# the DDGS lanes follow the same rule: a quoted query is retried only while the lane has found nothing, at most three times
+lane_calls: list[str] = []
+
+
+class _NoDDGS:
+    def __init__(self, *a, **kw):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def fake_attempt(fn, d, query, kind, logger):
+    lane_calls.append(query)
+    return [search.SearchHit(title="Agile project management news for buyers", snippet="s", url="https://x.example/1", source="x", date=None)] \
+        if query == "agile word2" else []
+
+
+_orig_ddgs, _orig_attempt, _orig_gate = search.DDGS, search._attempt, search._ddgs_gate
+search.DDGS, search._attempt = _NoDDGS, fake_attempt
+search._ddgs_gate = lambda kind: __import__("contextlib").nullcontext()
+try:
+    search._lane("news", None, ['"agile" word0', '"agile" word1', '"agile" word2', '"agile" word3', '"agile" word4'], LOG)
+finally:
+    search.DDGS, search._attempt, search._ddgs_gate = _orig_ddgs, _orig_attempt, _orig_gate
+check("ddgs lane: retries stop once the lane has a hit",
+      lane_calls == ['"agile" word0', "agile word0", '"agile" word1', "agile word1", '"agile" word2', "agile word2", '"agile" word3', '"agile" word4'],
+      str(lane_calls))
 
 print()
 print("all topic filter tests passed" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}")
