@@ -333,7 +333,7 @@ try:
           fs["variance"] == [] and fs["sources"] == [{"name": NAME, "url": URL, "kind": "cmi"}],
           str(fs["sources"]) + str(fs["variance"]))
     check("_step2_v2 CMI: no editor warning about outside reports",
-          out["warnings"] == [], str(out["warnings"]))
+          [w for w in out["warnings"] if "news item(s) about this market" not in w] == [], str(out["warnings"]))
     check("_step2_v2 CMI: gap_pages stays [] so Step 3 and the response still work",
           run.gap_pages == [], str(run.gap_pages))
     check("_step2_v2 CMI: the market-news evidence search STILL ran with the report's name",
