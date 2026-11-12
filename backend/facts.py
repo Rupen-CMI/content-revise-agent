@@ -398,9 +398,62 @@ def _parse_figure(text: str) -> tuple[str, float] | None:
     return None
 
 
+def _flex_tokens(text: str) -> list[str]:
+    """A name's words as a quote may spell them: lowercased, each word stripped of a trailing plural ('Vehicles' ->
+    'vehicle'); short words keep their tail ('bev', 'us'). Both sides of a comparison are built with this."""
+    out = []
+    for t in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if len(t) > 3 and t.endswith("es"):
+            out.append(t[:-2])
+        elif len(t) > 3 and t.endswith("s"):
+            out.append(t[:-1])
+        else:
+            out.append(t)
+    return out
+
+
+def _name_variants(name: str) -> list[list[str]]:
+    """The token lists a quote may spell a category name with: the name as given, without its bracketed part
+    ('(BEV)' is optional in the quote) and the bracketed abbreviation alone ('BEV' names the category too)."""
+    inner = re.findall(r"\(([^)]*)\)", name or "")
+    out = [_flex_tokens(name)]
+    if inner:
+        out.append(_flex_tokens(re.sub(r"\([^)]*\)", " ", name)))
+        out.append(_flex_tokens(" ".join(inner)))
+    return [v for v in out if v]
+
+
+def _name_in_quote(name: str, quote: str) -> bool:
+    """Whether a quote names a category, beyond the literal spelling: case and singular/plural differences
+    ('Vehicles'/'vehicle', 'Chargers'/'charger'), the bracketed part optional, the abbreviation in brackets alone, and
+    a hyphenated name spelled with spaces or joined ('on-board' = 'on board' = 'onboard')."""
+    toks = _flex_tokens(quote)
+    solid = "".join(toks)
+    for variant in _name_variants(name):
+        if any(toks[i:i + len(variant)] == variant for i in range(len(toks) - len(variant) + 1)):
+            return True
+        joined = "".join(variant)
+        if len(variant) > 1 and len(joined) >= 6 and joined in solid:
+            return True
+    return False
+
+
+def _quote_share(quote: str) -> tuple[str, float] | None:
+    """The share a dominance quote states for its category ('approximately 57.0%'): ('57.0', 57.0), taken from the
+    first number the quote carries a unit for; a bare number (a year, a count) states no share."""
+    for m in _FIGURE_RE.finditer(quote or ""):
+        if (m.group(2) or "").lower() in ("%", "percent"):
+            num = m.group(1).replace(",", "")
+            try:
+                return num, float(num)
+            except ValueError:
+                continue
+    return None
+
+
 def _segment_figures(items_raw: list, names: list[str], source_norm: str, logger: logging.Logger) -> dict[str, dict]:
     """The per-category figure (share or value) the report states, kept only when its quote is a real stretch of the page
-    that names the category and carries every number of the figure. Pure."""
+    that names the category (tolerant to spellings, see _name_in_quote) and carries every number of the figure. Pure."""
     out: dict[str, dict] = {}
     for item in items_raw:
         if not isinstance(item, dict):
@@ -415,7 +468,7 @@ def _segment_figures(items_raw: list, names: list[str], source_norm: str, logger
         if not parsed or not nums or any(n not in _numbers(quote) for n in nums):
             logger.info(f"[facts] segment figure for {name!r} dropped: {figure!r} is not a share or an amount in its quote")
             continue
-        if not _quote_ok(quote, source_norm) or _norm(match) not in _norm(quote):
+        if not _quote_ok(quote, source_norm) or not _name_in_quote(match, quote):
             logger.info(f"[facts] segment figure for {name!r} dropped: its quote is not in the report text or does not name it")
             continue
         out[match] = {"figure": figure, "kind": parsed[0], "amount": parsed[1], "quote": quote}
@@ -444,7 +497,9 @@ def derive_dominant(names: list[str], figures: dict[str, dict]) -> dict | None:
 def _segments(raw_segments, raw_dominant, source_norm: str, logger: logging.Logger) -> list[dict]:
     """Segment splits with each category's stated figure and the split's dominant category. A category list entry may be
     a plain name or {name, figure, quote}. The dominant category is what the page says leads the split ('stated') or what
-    its figures prove ('derived'); a stated one wins, a disagreement between the two is logged."""
+    its figures prove ('derived'); a stated one wins, a disagreement between the two is logged. A stated claim's quote is
+    matched to the category tolerantly (see _name_in_quote), and when that quote states the category's share, the share
+    is kept as the category's figure when it has none of its own."""
     stated: dict[str, dict] = {}
     for d in raw_dominant if isinstance(raw_dominant, list) else []:
         if isinstance(d, dict):
@@ -462,17 +517,21 @@ def _segments(raw_segments, raw_dominant, source_norm: str, logger: logging.Logg
                 logger.info(f"[facts] segment {stype!r} dropped: fewer than two of its categories are in the report text")
             continue
         figures = _segment_figures(raw_items, names, source_norm, logger)
-        entry = {"id": f"fs.segments.{len(segments)}", "type": stype, "items": names, "figures": figures, "dominant": None}
-        derived = derive_dominant(names, figures)
         claim = stated.get(_norm(stype))
         said = None
         if claim:
             cname = next((n for n in names if _norm(n) == _norm(str(claim.get("name") or ""))), None)
             cquote = str(claim.get("quote") or "").strip()
-            if cname and _quote_ok(cquote, source_norm) and _norm(cname) in _norm(cquote) and _DOMINANCE_RE.search(cquote):
+            if cname and _quote_ok(cquote, source_norm) and _name_in_quote(cname, cquote) and _DOMINANCE_RE.search(cquote):
                 said = {"name": cname, "basis": "stated", "quote": cquote}
+                if cname not in figures:      # the dominant quote states the category's share: keep it as its figure
+                    num_share = _quote_share(cquote)
+                    if num_share:
+                        figures[cname] = {"figure": f"{num_share[0]}%", "kind": "share", "amount": num_share[1], "quote": cquote}
             else:
                 logger.info(f"[facts] dominant claim for {stype!r} dropped: the quote is missing, does not name the category, or does not say it leads")
+        derived = derive_dominant(names, figures)
+        entry = {"id": f"fs.segments.{len(segments)}", "type": stype, "items": names, "figures": figures, "dominant": None}
         if said and derived and said["name"] != derived["name"]:
             logger.warning(f"[facts] {stype!r}: the report states {said['name']!r} leads but its figures put {derived['name']!r} on top; the stated claim is used")
         entry["dominant"] = said or derived

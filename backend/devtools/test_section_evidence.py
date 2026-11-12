@@ -82,40 +82,83 @@ FS = {
 }
 REPORT = SimpleNamespace(name=MARKET, segment_terms=["Software", "Services"])
 
-# ------------------------------------------------------------------------------------------ the sub-segment choice
-picks = sections.choose_subsegments(FS)
-check("sub-segments: two splits, neither the region split, the stated leader first",
-      [(p["split"], p["name"], p["basis"]) for p in picks] == [("By Type", "Software", "dominant"), ("By Deployment", "Cloud", "share")],
-      str(picks))
+class _Capture(logging.Handler):
+    """Collects the messages the code under test logs, for a check to assert on."""
+    def __init__(self):
+        super().__init__()
+        self.records: list[str] = []
 
-only_first = copy.deepcopy(FS)
-only_first["segments"] = [
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record.getMessage())
+
+
+# ------------------------------------------------------------------------------------------ the sub-segment choice
+picks = sections.choose_subsegments(FS, LOG)
+check("sub-segments: the split whose stated leader has the highest share, its top two categories, leader first",
+      [(p["split"], p["name"], p["basis"]) for p in picks]
+      == [("By Type", "Software", "dominant"), ("By Type", "Services", "second_in_split")], str(picks))
+
+charging = {"segments": [{"id": "fs.segments.0", "type": "By Charging Type", "items": ["On-board Chargers", "AC Chargers"],
+                          "figures": {"On-board Chargers": share(89.0), "AC Chargers": share(8.0)},
+                          "dominant": {"name": "On-board Chargers", "basis": "stated", "quote": "q"}}]}
+check("sub-segments: a stated leader with a stated second gives both from that split",
+      [(p["split"], p["name"], p["basis"]) for p in sections.choose_subsegments(charging, LOG)]
+      == [("By Charging Type", "On-board Chargers", "dominant"), ("By Charging Type", "AC Chargers", "second_in_split")])
+
+one_figured = {"segments": [
+    {"id": "fs.segments.0", "type": "By Size", "items": ["Delta", "Epsilon"], "figures": {"Delta": share(70.0)}, "dominant": None},
+    {"id": "fs.segments.1", "type": "By Mode", "items": ["Alpha", "Beta"], "figures": {}, "dominant": {"name": "Alpha", "basis": "stated", "quote": "q"}},
+]}
+check("sub-segments: a split with only one stated figure takes another split's leader as the second",
+      [(p["split"], p["name"], p["basis"]) for p in sections.choose_subsegments(one_figured, LOG)]
+      == [("By Size", "Delta", "share"), ("By Mode", "Alpha", "other_split_leader")])
+
+region_rich = {"segments": [
+    {"id": "fs.segments.0", "type": "By Region", "items": ["Asia", "Europe"], "figures": {"Asia": share(60.0)},
+     "dominant": {"name": "Asia", "basis": "stated", "quote": "q"}},
+    {"id": "fs.segments.1", "type": "By Type", "items": ["Software", "Services"], "figures": {"Software": share(52.0), "Services": share(30.0)},
+     "dominant": {"name": "Software", "basis": "stated", "quote": "q"}},
+]}
+check("sub-segments: a region split is never the chosen split, whatever its leader's share",
+      all(p["split"] != "By Region" for p in sections.choose_subsegments(region_rich, LOG)))
+
+bare = {"segments": [
     {"id": "fs.segments.0", "type": "By Mode", "items": ["Alpha", "Beta"], "figures": {}, "dominant": None},
     {"id": "fs.segments.1", "type": "By Size", "items": ["Gamma", "Delta"], "figures": {}, "dominant": None},
-    {"id": "fs.segments.2", "type": "By Region", "items": ["Asia", "Europe"], "figures": {}, "dominant": {"name": "Asia", "basis": "stated"}},
-]
-fb = sections.choose_subsegments(only_first)
-check("sub-segments: with no leader and no share the first category of each split, never the region split with its leader",
-      [(p["split"], p["name"], p["basis"]) for p in fb] == [("By Mode", "Alpha", "first"), ("By Size", "Gamma", "first")], str(fb))
+]}
+cap = _Capture()
+LOG.addHandler(cap)
+d = sections.choose_subsegments(bare, LOG)
+LOG.removeHandler(cap)
+check("sub-segments: no leader and no share anywhere falls back to the first split's first two categories, logged",
+      [(p["split"], p["name"], p["basis"]) for p in d] == [("By Mode", "Alpha", "fallback"), ("By Mode", "Beta", "fallback")]
+      and any("no split states" in m for m in cap.records), str((d, cap.records)))
 
-one_leader = copy.deepcopy(only_first)
-one_leader["segments"][1]["figures"] = {"Delta": share(70.0)}
-check("sub-segments: a split with a stated share outranks one with nothing",
-      [(p["split"], p["name"]) for p in sections.choose_subsegments(one_leader)] == [("By Size", "Delta"), ("By Mode", "Alpha")])
-
-region_last = {"segments": only_first["segments"][2:] + only_first["segments"][:1]}
-check("sub-segments: a region split is used only when no other split exists to fill the pair",
-      [p["split"] for p in sections.choose_subsegments(region_last)] == ["By Mode", "By Region"])
-check("sub-segments: one split gives one sub-segment, no splits give none",
-      len(sections.choose_subsegments({"segments": only_first["segments"][:1]})) == 1 and sections.choose_subsegments({}) == [])
-check("sub-segments: the same sheet always gives the same pair", sections.choose_subsegments(FS) == picks)
+check("sub-segments: a region split is used only when no other split exists",
+      [(p["split"], p["name"], p["basis"]) for p in sections.choose_subsegments(
+          {"segments": [{"id": "fs.segments.0", "type": "By Region", "items": ["Asia", "Europe"], "figures": {},
+                         "dominant": {"name": "Asia", "basis": "stated", "quote": "q"}}]}, LOG)]
+      == [("By Region", "Asia", "dominant")])
+check("sub-segments: a one-category split's second is another split's leader",
+      [(p["split"], p["name"], p["basis"]) for p in sections.choose_subsegments(
+          {"segments": [{"id": "fs.segments.0", "type": "By Type", "items": ["Software"], "figures": {"Software": share(70.0)},
+                         "dominant": {"name": "Software", "basis": "stated", "quote": "q"}},
+                        {"id": "fs.segments.1", "type": "By Mode", "items": ["Cloud", "On-premise"], "figures": {"Cloud": share(60.0)},
+                         "dominant": None}]}, LOG)]
+      == [("By Type", "Software", "dominant"), ("By Mode", "Cloud", "other_split_leader")])
+check("sub-segments: with nothing to fill the pair, one sub-segment is kept",
+      [p["name"] for p in sections.choose_subsegments(
+          {"segments": [{"id": "fs.segments.0", "type": "By Size", "items": ["Delta", "Epsilon"], "figures": {"Delta": share(70.0)},
+                         "dominant": None}]}, LOG)] == ["Delta"])
+check("sub-segments: no splits give none", sections.choose_subsegments({}) == [])
+check("sub-segments: the same sheet always gives the same pair", sections.choose_subsegments(FS, LOG) == picks)
 
 # ------------------------------------------------------------------------------------------------ the search plan
 plan = pipeline.section_search_plan(FS, REPORT, FS["players"], picks)
 check("plan: trends are the top drivers then opportunities, one target each, as many as the trends allotment",
       [t["kind"] for t in plan["trends"]] == ["drivers"] * 3 + ["opportunities"] and len(plan["trends"]) == sections.TREND_QUERIES
       and plan["trends"][0]["text"].startswith("Driver 0"), str(plan["trends"]))
-check("plan: the sub-segment targets are the two fixed ones", [t["name"] for t in plan["subsegment"]] == ["Software", "Cloud"])
+check("plan: the sub-segment targets are the two fixed ones", [t["name"] for t in plan["subsegment"]] == ["Software", "Services"])
 check("plan: there is no segmentation section in the search plan (it is written from the report's facts alone)",
       "segmentation" not in plan and set(plan) == {"trends", "subsegment", "us", "key_players", "market"}, str(sorted(plan)))
 check("plan: the U.S. seeds are the report's own U.S. statements", [t["text"] for t in plan["us"]] == [s["text"] for s in FS["us"]])
@@ -155,7 +198,7 @@ check("budget: trends 4, each sub-segment 2, U.S. 3, key players 4, market 2 (17
 check("budget: the trends and market queries are the model's first ones, in order",
       budget["trends"] == ["trend 0", "trend 1", "trend 2", "trend 3"] and budget["market"] == ["market 0", "market 1"])
 check("budget: sub-segment queries come from each category's own name and the market's core noun, demand then launch",
-      budget["subsegment"] == [f"Software {core} demand", f"Software {core} launch", f"Cloud {core} demand", f"Cloud {core} launch"], str(budget["subsegment"]))
+      budget["subsegment"] == [f"Software {core} demand", f"Software {core} launch", f"Services {core} demand", f"Services {core} launch"], str(budget["subsegment"]))
 check("budget: the U.S. queries are the section's own and each names the U.S.; the key-player queries are the code's, not the model's",
       budget["us"] == us_qs[:3] and all("U.S." in q or "United States" in q for q in budget["us"]) and budget["key_players"] == player_qs[:4]
       and "model player" not in budget["key_players"], str(budget))

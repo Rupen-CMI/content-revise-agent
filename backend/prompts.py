@@ -886,8 +886,7 @@ application or end use, and region, and never one invented to reach a number), a
 number of segmentations, it is exactly that count, never a default of three. When in doubt, leave the number out of the lead-in. The lead-in is at most 18 words and the shortest grammatical lead-in beats a longer one padded with \
 connector words. Nothing else goes in the paragraph: the lead-in and the bullets are the whole 70-85 words, and there is no second paragraph.
   - subsegment: exactly TWO analyses, each its own entry in "paragraphs" (an object with "segment", "sub_segment" and \
-"paragraph", see the shape below). Each "paragraph" is 4 sentences of at most 20 words each (70-90 words) analysing ONE sub-segment, and the two come from \
-DIFFERENT major segments (for example one from "by type" and one from "by application"), covering its growth or adoption drivers, \
+"paragraph", see the shape below). Each "paragraph" is 4 sentences of at most 20 words each (70-90 words) analysing ONE sub-segment, and the two are the top two categories of ONE major segment split (a second split only when the report states no second category for the first; for example both from "by type", or one from "by type" and one from "by application"), covering its growth or adoption drivers, \
 its major applications or end uses and its contribution to the overall market. Choose the two sub-segments by the post so \
 far: take the ones that connect most directly to its subject or that it already gives the most weight to; only if it points to none, \
 take the two the CMI report lists first. Name the segment and the sub-segment in the object first, then write the paragraph about \
@@ -1029,7 +1028,7 @@ be in any order you choose):
   {{"heading": "<heading>", "sop": ["segmentation"], "paragraphs": ["<lead-in sentence>\\n- <segment line 1>\\n- <segment line 2>\\n- <segment line 3>"]}},
   {{"heading": "<heading>", "sop": ["subsegment"], "paragraphs": [
     {{"segment": "<major segment A>", "sub_segment": "<a sub-segment of A>", "paragraph": "<3-sentence analysis of that sub-segment only>"}},
-    {{"segment": "<a DIFFERENT major segment B>", "sub_segment": "<a sub-segment of B>", "paragraph": "<3-sentence analysis of that sub-segment only>"}}]}},
+    {{"segment": "<major segment B (the same split as A when the report states no second category for it)>", "sub_segment": "<a sub-segment of B>", "paragraph": "<3-sentence analysis of that sub-segment only>"}}]}},
   {{"heading": "<heading>", "sop": ["country_us"], "paragraphs": ["<lead-in sentence>\\n- <factor 1>\\n- <factor 2>\\n- <factor 3>\\n- <factor 4>"]}},
   {{"heading": "<heading>", "sop": ["key_players"], "paragraphs": ["<landscape paragraph>", "<lead-in clause>\\n- <company 1>\\n- <company 2>\\n- <company 3>\\n- <company 4>"]}},
   {{"heading": "<heading>", "sop": ["conclusion"], "paragraphs": ["<the conclusion paragraph>"]}}
@@ -1516,7 +1515,7 @@ An opening from the guest article's subject, a short transition into the market,
 1. report_context: the market's size and where it is heading.
 2. trends: what is changing the market, as three distinct trends, each examined in depth: what is happening, how it changes demand in this market and what it means commercially.
 3. segmentation: how the market divides and why the leading category in each split leads.
-4. subsegment: two sub-segments from different splits, each looked at in detail.
+4. subsegment: the top two sub-segments of one segment split, each looked at in detail (a second split only when the report states no second category for the first).
 5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context.
 6. key_players: who leads the market.
 7. conclusion: what it all means and where the market is heading. It adds nothing new: it pulls together points already made, so it gets no facts of its own (an opportunity fact from the report is the only exception).
@@ -1532,7 +1531,7 @@ HOW TO PLAN
    4d. Per section.
    - key_players: name the companies together; give a company a detail only where a fact in the list supplies one, and each detail shows how that company moves the market (launches, partnerships, acquisitions, integrations, expansion), never a recognition given to it or a change in its people.
    - country_us: a fact tagged us (its suits list is country_us) belongs to the U.S. section and to no trend. Give the section every U.S. fact there is. With fewer than two, code builds the section from the report's own facts, so you plan it from the U.S. facts alone.
-   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category). When THE TWO SUB-SEGMENTS above are given, they were fixed before the news was searched and you do not choose them: copy exactly those two. Only when none are given, choose them from different splits in the report facts, by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
+   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category). When THE TWO SUB-SEGMENTS above are given, they were fixed before the news was searched and you do not choose them: copy exactly those two. Only when none are given, choose the top two categories of one split from the report facts (another split's leader only when that split states no second category), by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
 5. Keywords.
    - Secondary: choose 4 to 6 keys from the pool, at most one per section, each in the section where one of its facts makes the keyword fit a sentence the writer would write anyway.
    - Long-tail: choose 2 or 3, each in a different section whose facts include the fact the search rests on.

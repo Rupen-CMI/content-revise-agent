@@ -1303,7 +1303,7 @@ def _step2_v2(run: RunState) -> dict:
         segment_terms = _search_segment_terms(run, report, fs)
         # The section search plan, in code, from the confirmed facts: the two sub-segments are fixed HERE (the planner no longer
         # chooses them), and every section's queries are written from its own targets.
-        run.subsegments = ev_sections.choose_subsegments(fs)
+        run.subsegments = ev_sections.choose_subsegments(fs, run.logger)
         run.section_plan = pipeline.section_search_plan(fs, report, players, run.subsegments)
         run.logger.info(f"[sections] sub-segments fixed: {[(s['name'], s['split'], s['basis']) for s in run.subsegments]}")
         prep = ThreadPoolExecutor(max_workers=4, thread_name_prefix="step2-v2")

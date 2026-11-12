@@ -10,6 +10,7 @@ search: it describes the report's own splits and is written from the report's fa
 Imports only search (never pipeline, facts or planning), so all three can import it.
 """
 import hashlib
+import logging
 import re
 
 import search
@@ -74,21 +75,75 @@ def _share_leader(seg: dict) -> str | None:
     return max(shares, key=lambda x: x[1])[0] if shares else None
 
 
-def choose_subsegments(fs: dict) -> list[dict]:
-    """The two sub-segments, fixed before any news is searched: the leading category of two different splits. Splits that are
-    not regions come first (regions are not sub-segments); among them a split whose leader the report states, or its figures
-    prove, comes before one where only the largest stated share shows a leader, and that before one with no leader at all
-    (its first category). [{"split", "name", "basis": "dominant"|"share"|"first", "id"}], at most two, fewer when the
-    report has fewer splits."""
+def _leader_share(seg: dict) -> float | None:
+    """The stated share of the split's confirmed leader, when it states one."""
+    dom = (seg.get("dominant") or {}).get("name")
+    f = (seg.get("figures") or {}).get(dom) if dom else None
+    return f["amount"] if f and f.get("kind") == "share" else None
+
+
+def _best_share(seg: dict) -> float | None:
+    """The largest stated share among the split's categories, when it states any."""
+    shares = [f["amount"] for f in (seg.get("figures") or {}).values() if f.get("kind") == "share"]
+    return max(shares) if shares else None
+
+
+def _other_leader(seg: dict) -> str | None:
+    """The category a second split's sub-segment names: its confirmed leader, else its largest stated share."""
+    return (seg.get("dominant") or {}).get("name") or _share_leader(seg)
+
+
+def _top_two(seg: dict) -> list[dict]:
+    """The split's top two categories by what the report states: the confirmed leader first (or its largest stated share
+    when the page does not name a leader), then the highest stated figure of the same kind among the rest. Fewer when
+    the split names fewer than two such categories."""
+    dom = (seg.get("dominant") or {}).get("name")
+    first = dom or _share_leader(seg)
+    if not first:
+        return []
+    picks = [{"split": seg["type"], "name": first, "basis": "dominant" if dom else "share", "id": seg.get("id", "")}]
+    figures = {n: f for n, f in (seg.get("figures") or {}).items() if n in seg["items"] and n != first}
+    for kind in ("share", "value"):
+        rest = sorted((n, f["amount"]) for n, f in figures.items() if f.get("kind") == kind)
+        if rest:
+            picks.append({"split": seg["type"], "name": rest[-1][0], "basis": "second_in_split", "id": seg.get("id", "")})
+            break
+    return picks
+
+
+def choose_subsegments(fs: dict, logger: logging.Logger | None = None) -> list[dict]:
+    """The two sub-segments, fixed before any news is searched: the top two categories of ONE split, ranked by the
+    report's stated figures with the split's confirmed leader first. The split is the one whose confirmed leader has the
+    highest stated share; never a region split; a split with a stated share ranks before one with only a textual leader;
+    when the chosen split gives a share or a dominance for only one of its categories, the second sub-segment is the
+    leader of another split instead. When no split states a leader or a share, the first non-region split's first two
+    categories are used, logged. [{"split", "name", "basis": "dominant"|"share"|"second_in_split"|"other_split_leader"|
+    "fallback", "id"}], at most two, fewer when the report has fewer categories to name."""
+    log = logger or logging.getLogger(__name__)
+    segments = [s for s in (fs.get("segments") or []) if s.get("items")]
+    if not segments:
+        return []
     ranked = []
-    for idx, seg in enumerate(fs.get("segments") or []):
-        if not seg.get("items"):
-            continue
-        dom = (seg.get("dominant") or {}).get("name")
-        share = _share_leader(seg)
-        name, basis, rank = (dom, "dominant", 0) if dom else (share, "share", 1) if share else (seg["items"][0], "first", 2)
-        ranked.append(((is_region_split(seg["type"]), rank, idx), {"split": seg["type"], "name": name, "basis": basis, "id": seg.get("id", "")}))
-    return [pick for _, pick in sorted(ranked, key=lambda r: r[0])[:_SUBSEGMENTS]]
+    for idx, seg in enumerate(segments):
+        leader_share, best_share = _leader_share(seg), _best_share(seg)
+        key = (0, -leader_share) if leader_share is not None else (1, -best_share) if best_share is not None \
+            else (2, 0) if seg.get("dominant") else (3, 0)
+        ranked.append((is_region_split(seg["type"]), key, idx, seg))
+    pool = sorted((r for r in ranked if not r[0]), key=lambda r: (r[0], r[1], r[2])) \
+        or sorted(ranked, key=lambda r: (r[0], r[1], r[2]))      # a region split only when no other split exists
+    seg = pool[0][3]
+    picks = _top_two(seg)
+    if len(picks) < 2:
+        other = next((r[3] for r in pool[1:] if _other_leader(r[3])), None)
+        if other:
+            picks.append({"split": other["type"], "name": _other_leader(other), "basis": "other_split_leader", "id": other.get("id", "")})
+    if not picks:
+        first = next((r[3] for r in sorted(pool, key=lambda r: r[2]) if not is_region_split(r[3]["type"])), None) or pool[0][3]
+        picks = [{"split": first["type"], "name": n, "basis": "fallback", "id": first.get("id", "")}
+                 for n in first["items"][:_SUBSEGMENTS]]
+        log.info(f"[sections] no split states a leading category or a share; the first split's first two categories "
+                 f"({first['type']!r}: {', '.join(first['items'][:_SUBSEGMENTS])}) are used as the sub-segments")
+    return picks
 
 
 # ------------------------------------------------------------------------------------------- the search plan

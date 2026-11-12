@@ -387,6 +387,72 @@ _enc = search.SearchHit(title="t", snippet="s", url="https://x.example/a", sourc
 check("hit: a percent-encoded publisher name is decoded", _enc.source == "Morningstar, Inc." and
       search.SearchHit(title="t", snippet="s", url="https://x.example/b", source="Search Engine Land", date=None).source == "Search Engine Land")
 
+# ------------------------------------------------------------------ the dominant claim's quote may name its category in any spelling
+EV_PAGE = (
+    "The Global EV Charger Market is estimated to be valued at USD 14.0 billion in 2026. "
+    "On the basis of vehicle type, the market is segmented into: Battery Electric Vehicles (BEV), Plug-in Hybrid Electric Vehicles (PHEV). "
+    "The battery electric vehicle (BEV) segment is likely to dominate the market with approximately 57.0% in 2026. "
+    "The plug-in hybrid electric vehicle (PHEV) segment is likely to lead the hybrid vehicle part with approximately 30.0% in 2026. "
+    "On the basis of charging type, the market is segmented into: On-board Chargers, Off-board Chargers. "
+    "The on-board charger segment is set to lead with approximately 89.0% in 2026. "
+    "The off board charger segment held approximately 11.0% in 2026. "
+    "Key players operating in the market include Acme Corp."
+)
+
+
+def ev_raw() -> dict:
+    return {
+        "segments": [
+            {"type": "By Vehicle Type", "items": ["Battery Electric Vehicles (BEV)", "Plug-in Hybrid Electric Vehicles (PHEV)"]},
+            {"type": "By Charging Type", "items": ["On-board Chargers", "Off-board Chargers"]},
+        ],
+        "dominant": [
+            {"split": "By Vehicle Type", "name": "Battery Electric Vehicles (BEV)",
+             "quote": "The battery electric vehicle (BEV) segment is likely to dominate the market with approximately 57.0% in 2026"},
+            {"split": "By Charging Type", "name": "On-board Chargers",
+             "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+        ],
+    }
+
+
+def ev_segment(sheet: dict, kind: str) -> dict:
+    return next(s for s in sheet["segments"] if s["type"] == kind)
+
+
+ev = facts.validate_fact_sheet(ev_raw(), EV_PAGE, "EV Charger Market", LOG, TODAY)
+by_vehicle, by_charging = ev_segment(ev, "By Vehicle Type"), ev_segment(ev, "By Charging Type")
+check("dominant: a quote naming the category in another spelling is kept (singular, bracketed abbreviation)",
+      by_vehicle["dominant"] and by_vehicle["dominant"]["name"] == "Battery Electric Vehicles (BEV)", str(by_vehicle["dominant"]))
+check("dominant: a hyphenated category's quote is kept (hyphen, space and plural variants)",
+      by_charging["dominant"] and by_charging["dominant"]["name"] == "On-board Chargers", str(by_charging["dominant"]))
+check("dominant: the share the dominant quote states becomes the category's figure when it has none",
+      by_vehicle["figures"].get("Battery Electric Vehicles (BEV)", {}).get("amount") == 57.0, str(by_vehicle["figures"]))
+check("dominant: the same for the other split's stated leader (89.0%)",
+      by_charging["figures"].get("On-board Chargers", {}).get("figure") == "89.0%", str(by_charging["figures"]))
+
+raw = ev_raw()
+raw["dominant"][0]["quote"] = "The plug-in hybrid electric vehicle (PHEV) segment is likely to lead the hybrid vehicle part with approximately 30.0% in 2026"
+check("dominant: a quote that names another category is still refused",
+      ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Vehicle Type")["dominant"] is None)
+
+raw = ev_raw()
+raw["segments"][1]["items"] = [
+    {"name": "On-board Chargers", "figure": "89.0%", "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+    {"name": "Off-board Chargers", "figure": "11.0%", "quote": "The off board charger segment held approximately 11.0% in 2026"},
+]
+check("figures: a figure quote naming its category in another spelling is kept",
+      set(ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Charging Type")["figures"])
+      == {"On-board Chargers", "Off-board Chargers"})
+
+raw = ev_raw()
+raw["segments"][1]["items"] = [
+    {"name": "On-board Chargers", "figure": "89.0%", "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+    {"name": "Off-board Chargers", "figure": "89.0%", "quote": "The on-board charger segment is set to lead with approximately 89.0% in 2026"},
+]
+check("figures: a quote naming another category is still refused",
+      set(ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Charging Type")["figures"])
+      == {"On-board Chargers"})
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

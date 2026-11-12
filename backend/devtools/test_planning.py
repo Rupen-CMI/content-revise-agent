@@ -522,7 +522,16 @@ raw = good_plan()
 raw["sections"][3]["sub_segments"] = [{"split": "By Type", "name": "Browser Extension"}, {"split": "By Type", "name": "Cloud Based"}]
 p = plan_of(raw)
 splits = [x["split"] for x in S(p, "subsegment")["sub_segments"]]
-check("sub-segments: two from the same split are replaced by two from different splits", len(set(splits)) == 2, str(S(p, "subsegment")["sub_segments"]))
+check("sub-segments: two from the same split are accepted (the top two of one split)", splits == ["By Type", "By Type"],
+      str(S(p, "subsegment")["sub_segments"]))
+raw = good_plan()
+raw["sections"][3]["sub_segments"] = [{"split": "By Type", "name": "Cloud Based"}, {"split": "By Type", "name": "Browser Extension"}]
+inp_same_split = make_inputs()
+inp_same_split.subsegments = [{"split": "By Type", "name": "Cloud Based"}, {"split": "By Type", "name": "Browser Extension"}]
+p = plan_of(raw, inp_same_split)
+check("sub-segments: a fixed same-split pair stands and is not repaired",
+      [(v["split"], v["name"]) for v in S(p, "subsegment")["sub_segments"]] == [("By Type", "Cloud Based"), ("By Type", "Browser Extension")]
+      and all("sub-segment" not in r for r in p["repairs"]), str(p["repairs"]))
 raw = good_plan()
 raw["sections"][3]["sub_segments"] = [{"split": "Segmentation type", "name": "cloud based"}, {"split": "segmentation application", "name": "Market Research"}]
 check("sub-segments: split names as the fact list prints them ('Segmentation type') are accepted",
