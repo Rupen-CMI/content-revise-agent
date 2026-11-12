@@ -682,38 +682,39 @@ document.getElementById("step1-add-url-btn").addEventListener("click", () => {
   renderStep1UrlInputs();
 });
 
+// The CMI report link box's input and its last check message, without a re-render (typing must not lose focus).
+function clearCmiUrlInput() {
+  const input = document.getElementById("reports-cmi-url");
+  const status = document.getElementById("reports-cmi-url-status");
+  if (input) input.value = "";
+  if (status) { status.hidden = true; status.textContent = ""; status.className = "url-check-result"; }
+}
+
 function clearCmiPick() {
   if (!state.run) return;
   state.run.pickedCmi = null;
   state.run.cmiUrl = "";
-  clearStep1CmiUrlInput();
+  clearCmiUrlInput();
   renderReportsPickers();
 }
 
-// The CMI report link box's input and its last check message, without a re-render (typing must not lose focus).
-function clearStep1CmiUrlInput() {
-  const input = document.getElementById("step1-cmi-url");
-  const status = document.getElementById("step1-cmi-url-status");
-  if (input) input.value = "";
-  if (status) { status.hidden = true; status.textContent = ""; status.className = "url-check-result"; }
-}
-document.getElementById("step1-cmi-clear").addEventListener("click", clearCmiPick);
+document.getElementById("reports-cmi-clear").addEventListener("click", clearCmiPick);
 
 // The CMI report link box: typing there is a CMI pick of its own, so it clears the picked CMI report from the list;
 // picking from the list clears the link again.
-document.getElementById("step1-cmi-url").addEventListener("input", (e) => {
+document.getElementById("reports-cmi-url").addEventListener("input", (e) => {
   if (!state.run) return;
   state.run.cmiUrl = e.target.value;
   if (e.target.value.trim()) {
     state.run.pickedCmi = null;
-    document.querySelectorAll("#step1-cmi .market-option").forEach((el) => {
+    document.querySelectorAll("#reports-cmi-list .market-option").forEach((el) => {
       el.classList.remove("selected");
       el.querySelector("input").checked = false;
     });
   }
   updateReportsControls();
 });
-document.getElementById("step1-cmi-url-check").addEventListener("click", () => checkReportUrl(document.getElementById("step1-cmi-url-block"), true));
+document.getElementById("reports-cmi-url-check").addEventListener("click", () => checkReportUrl(document.getElementById("reports-cmi-url-block"), true));
 
 document.getElementById("step1-agent-clear").addEventListener("click", () => {
   if (!state.run) return;
@@ -1181,7 +1182,7 @@ function updateReportsControls() {
   const busy = _runBusy() || !!run.finding;
   const hasCmi = !!(run.pickedCmi || (run.cmiUrl || "").trim());
   const hasMarket = (run.pickedMarkets || []).length > 0;
-  document.getElementById("step1-cmi-clear").hidden = !hasCmi;
+  document.getElementById("reports-cmi-clear").hidden = !hasCmi;
   document.getElementById("step1-agent-clear").hidden = !hasMarket;
   document.getElementById("reports-find-btn").disabled = busy || !hasMarket;
   document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
@@ -1377,7 +1378,7 @@ function renderReportsPickers() {
   const run = state.run;
   if (!run) return;
   if (!Array.isArray(run.pickedMarkets)) run.pickedMarkets = [];
-  const cmiInput = document.getElementById("step1-cmi-url");
+  const cmiInput = document.getElementById("reports-cmi-url");
   if (cmiInput.value !== (run.cmiUrl || "")) cmiInput.value = run.cmiUrl || "";
 
   // Agent-suggested markets: radio buttons, ONE market at most, none pre-selected. Picking one means "find competitor reports for it".
@@ -1398,7 +1399,7 @@ function renderReportsPickers() {
   }, "The agent has no market names to suggest for this article. Paste a competitor report link below.");
 
   // CMI markets: radio buttons, one report at most (its link goes into the article).
-  renderTierGroups(document.getElementById("step1-cmi"), cmiGroups(), (c) => {
+  renderTierGroups(document.getElementById("reports-cmi-list"), cmiGroups(), (c) => {
     const label = document.createElement("label");
     const on = !!run.pickedCmi && run.pickedCmi.news_id === c.news_id;
     label.className = "market-option" + (on ? " selected" : "");
@@ -1407,8 +1408,8 @@ function renderReportsPickers() {
     label.querySelector("input").addEventListener("change", () => {
       run.pickedCmi = c;
       run.cmiUrl = "";                 // picking from the list clears the pasted CMI report link
-      clearStep1CmiUrlInput();
-      document.querySelectorAll("#step1-cmi .market-option").forEach((el) => el.classList.remove("selected"));
+      clearCmiUrlInput();
+      document.querySelectorAll("#reports-cmi-list .market-option").forEach((el) => el.classList.remove("selected"));
       label.classList.add("selected");
       updateReportsControls();
     });
@@ -1420,7 +1421,7 @@ function renderReportsPickers() {
       const note = document.createElement("p");
       note.className = "market-empty";
       note.textContent = w;
-      document.getElementById("step1-cmi").prepend(note);
+      document.getElementById("reports-cmi-list").prepend(note);
     });
 
   renderFoundReports();

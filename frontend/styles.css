@@ -1526,8 +1526,9 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 #step1-links-section.is-off { opacity: 0.45; filter: grayscale(0.6); pointer-events: none; }
 
 #step1-confirm-block .selection-summary { margin-top: 6px; }
-/* the CMI report link box sits inside the CMI column, under its list, with the list's own side padding */
-#step1-cmi-url-block { padding: 14px 20px 20px; border-top: 1px solid var(--border); }
+/* the CMI report link box and its note sit inside the CMI tab, under its list, with the list's own side padding */
+#reports-cmi-url-block { padding: 14px 20px 6px; border-top: 1px solid var(--border); }
+#reports-cmi-note { padding: 0 20px 18px; margin: 0; }
 
 /* ---------- A trend's own heading inside the Trends section ---------- */
 .trend-head { margin: 22px 0 6px; font-size: 1rem; font-weight: 650; line-height: 1.35; color: inherit; }
