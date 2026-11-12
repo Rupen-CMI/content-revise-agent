@@ -931,6 +931,10 @@ def run_search_evidence(
     )
     logger.info(f"[search] queries ({len(queries)}): {queries}")
     logger.info(f"[search] source groups chosen: {groups or '(none — general business + funding only)'}")
+    # The topic vocabulary rides on orient so later steps (SELECT's "categories inside this market"
+    # block) can see it without changing run_search_evidence's return shape.
+    if isinstance(orient, dict):
+        orient["topic_terms"] = list(topic_terms)
     # The in-code key-player news queries run beside the LLM's own queries (Bing's keyword cap may
     # cut the tail; the thin-evidence round below re-runs any that were cut).
     player_queries = _player_news_queries(market_name, list(key_players))
@@ -1460,13 +1464,36 @@ def _format_report_claim_pool_for_select(pool: list[tuple[str, str, search.Searc
     return "\n".join(lines) or "(no report claims were extracted, so there are no report-claim results)"
 
 
+def _market_category_terms(report: reports.Report, orient: dict | None, topic_terms: list[str] = ()) -> str:
+    """The SELECT prompt's "categories inside this market" line: the confirmed report's own segment
+    names plus the run's topic vocabulary (run_search_evidence stores the search-query planner's
+    topic terms on orient). Test 1 of SELECT_USER counts a result about any of these as being about
+    the market itself, so a category-inside-the-market story (marketing automation inside digital
+    marketing software) is not read as a merely related market."""
+    seen: set[str] = set()
+    terms: list[str] = []
+    for raw in ([str(s).strip() for s in (report.segment_terms or []) if str(s).strip()]
+                + [str(t).strip().lower() for t in (list(topic_terms) or ((orient or {}).get("topic_terms") or []))
+                   if str(t).strip()]):
+        if raw and raw.lower() not in seen:
+            seen.add(raw.lower())
+            terms.append(raw)
+    return ", ".join(terms[:32]) or "(none listed)"
+
+
+# The second SELECT pass runs only when the first kept very little market evidence out of a healthy
+# pool: fewer than this many items, from at least this many candidates.
+_SELECT_SECOND_PASS_MIN = 5
+_SELECT_SECOND_PASS_POOL = 8
+
+
 def run_select(
     article: SourceArticle, orient: dict, sponsor: Paragraph,
     report: reports.Report, hits: list[search.SearchHit],
     logger: logging.Logger, claim_hits: dict[str, list[search.SearchHit]] | None = None,
     questions: list[dict] = (), question_hits: dict[str, list[search.SearchHit]] | None = None,
     report_claims: list[dict] = (), report_claim_hits: dict[str, list[search.SearchHit]] | None = None,
-    headline_figures: dict | None = None,
+    headline_figures: dict | None = None, topic_terms: list[str] = (),
 ) -> dict:
     """CALL 2: select evidence for the human-confirmed report. Returns the parsed JSON.
     Report choice is no longer this call's job — the human picked the market/report in Step 1
@@ -1490,7 +1517,19 @@ def run_select(
     headline_figures (optional; pipeline._headline_figures(run.fact_sheet)): the fact sheet's own
     size/forecast/CAGR values. When given, the post-SELECT backstop _drop_market_sizing_facts also
     drops an item whose fact names a market and carries nothing but restatements of those figures,
-    so a second source for the headline numbers cannot reach the draft even in words the regexes miss."""
+    so a second source for the headline numbers cannot reach the draft even in words the regexes miss.
+
+    topic_terms (optional; overrides orient["topic_terms"], which run_search_evidence stores): the
+    market's topic vocabulary, listed beside the report's own segment names in the prompt as
+    "categories inside this market" (SELECT_USER, test 1).
+
+    When the first pass keeps fewer than _SELECT_SECOND_PASS_MIN market evidence items out of at
+    least _SELECT_SECOND_PASS_POOL candidates, ONE more SELECT call runs over the candidates it did
+    not keep (prompts.SELECT_SECOND_PASS tells it a product category, vendor or segment inside the
+    market counts even when it does not name the market). The second pass's evidence is merged after
+    the first's, its W-ids remapped onto the original hits list so they stay unique and valid, and
+    the total stays within config.SEARCH_MAX_SELECTED. Only the market evidence is merged: the
+    first pass's claim/question/report-claim backing already covers those pools."""
     section(logger, "CALL 2: SELECT EVIDENCE")
     claims = orient_claims(orient)
     claim_flat = _flatten_claim_pool(claims, claim_hits or {})
@@ -1498,12 +1537,14 @@ def run_select(
     question_flat = _flatten_question_pool(questions, question_hits or {})
     report_claims = list(report_claims or [])
     report_claim_flat = _flatten_report_claim_pool(report_claims, report_claim_hits or {})
+    categories = _market_category_terms(report, orient, topic_terms)
     selection = llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
         title=article.title,
         topic_summary=orient.get("topic_summary", ""),
         bridge_angle=orient.get("bridge_angle", ""),
         sponsor=sponsor.text,
         report_name=report.name,
+        market_categories=categories,
         hits=_format_hits(hits),
         claims_block=_format_claims_for_select(claims),
         claim_pool=_format_pool_for_select(claim_flat, claims),
@@ -1512,6 +1553,7 @@ def run_select(
         report_claims_block=_format_report_claims_for_select(report_claims),
         report_claim_pool=_format_report_claim_pool_for_select(report_claim_flat, report_claims),
         max_selected=config.SEARCH_MAX_SELECTED,
+        second_pass="",
     ), call_name="select", logger=logger, max_tokens=8000)
     _normalize_selection_tags(selection, hits, logger)
     _strip_players_tag(selection, logger)
@@ -1522,6 +1564,56 @@ def run_select(
     _normalize_claim_backing(selection, claims, claim_flat, logger)
     _normalize_question_backing(selection, questions, question_flat, logger)
     _normalize_report_claim_backing(selection, report_claims, report_claim_flat, logger)
+    # SECOND PASS: a strict first pass on a broad market (the live run for "Digital Marketing
+    # Software Market" returned no evidence from 50 candidates) gets one more look at what it
+    # rejected, told explicitly that a category inside the market counts.
+    first_kept = len(selection.get("evidence") or [])
+    kept_idx = {int(m.group(1)) for e in selection.get("evidence") or []
+                if (m := re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip()))}
+    rest = [(i, h) for i, h in enumerate(hits, 1) if i not in kept_idx]
+    if first_kept < _SELECT_SECOND_PASS_MIN and len(hits) >= _SELECT_SECOND_PASS_POOL and rest \
+            and first_kept < config.SEARCH_MAX_SELECTED:
+        second = llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
+            title=article.title,
+            topic_summary=orient.get("topic_summary", ""),
+            bridge_angle=orient.get("bridge_angle", ""),
+            sponsor=sponsor.text,
+            report_name=report.name,
+            market_categories=categories,
+            hits=_format_hits([h for _, h in rest]),
+            claims_block=_format_claims_for_select(claims),
+            claim_pool=_format_pool_for_select(claim_flat, claims),
+            questions_block=_format_questions_for_select(questions),
+            question_pool=_format_question_pool_for_select(question_flat, questions),
+            report_claims_block=_format_report_claims_for_select(report_claims),
+            report_claim_pool=_format_report_claim_pool_for_select(report_claim_flat, report_claims),
+            max_selected=config.SEARCH_MAX_SELECTED,
+            second_pass=prompts.SELECT_SECOND_PASS.format(first=first_kept),
+        ), call_name="select", logger=logger, max_tokens=8000)
+        # Remap the second pass's W-ids (indices into the reduced list) onto the original hits list,
+        # so they stay unique against the first pass's and every W(n) still maps to hits[n - 1].
+        for e in second.get("evidence") or []:
+            m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
+            if m and 1 <= int(m.group(1)) <= len(rest):
+                e["id"] = f"W{rest[int(m.group(1)) - 1][0]}"
+        # The same post-SELECT backstops police the second pass's facts before anything is merged;
+        # its claim/question/report-claim backing is discarded (the first pass already covered those).
+        _normalize_selection_tags(second, hits, logger)
+        _strip_players_tag(second, logger)
+        _drop_stale_facts(second, logger)
+        _drop_negative_facts(second, logger, report.name)
+        _drop_market_sizing_facts(second, logger, headline_figures)
+        _verify_selection_figures(second, hits, logger)
+        seen = {str(e.get("id", "")).strip().upper() for e in selection.get("evidence") or []}
+        budget = config.SEARCH_MAX_SELECTED - len(selection.get("evidence") or [])
+        added = []
+        for e in second.get("evidence") or []:
+            if str(e.get("id", "")).strip().upper() in seen or len(added) >= max(0, budget):
+                continue
+            added.append(e)
+        if added:
+            selection["evidence"] = list(selection.get("evidence") or []) + added
+        logger.info(f"[select] second pass: first kept {first_kept}, second added {len(added)}")
     return selection
 
 

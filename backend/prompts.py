@@ -289,6 +289,10 @@ CLIENT PARAGRAPH (its backlink stays in the final article and the client is neve
 CONFIRMED CMI REPORT (already chosen by a human editor — not your decision):
 {report_name}
 
+CATEGORIES INSIDE THIS MARKET (the report's own segment names and this market's topic vocabulary — a result about one \
+of these belongs to THIS market, not to a related one):
+{market_categories}
+
 WEB SEARCH RESULTS:
 {hits}
 
@@ -318,13 +322,18 @@ SEARCH RESULTS FOR THOSE REPORT CLAIMS (each was retrieved by searching for one 
 which claim a result corroborates; the PR-number is its id):
 {report_claim_pool}
 
+{second_pass}
 Task: from the web results, select up to {max_selected} that pass ALL of these tests — a result that fails any one of them must \
 be rejected, not merely scored lower:
 1. Genuinely about THIS confirmed market specifically, not a result that merely shares a few words with it (a result \
 about a different, related, or broader market is a wrong-market result, not a weak match — reject it, do not include \
 it as "context"). A single word from the market's name taken on its own does not make a result relevant: for a market named \
 "Zzz Widget Platform" (placeholder, not a real market), a page about what a "platform" is, or what a "widget" is, is not \
-about that market.
+about that market. A result about a product category, segment, technology, vendor or use case WITHIN this market does \
+count as this market, not as a related one: marketing automation or SEO tools are part of digital marketing software; \
+Jira or sprint-planning tools are part of project management software; a CMO-level story about marketing budgets that \
+names no software is not (it is generic marketing news, not a category inside this market). Reject a different or \
+broader market; never reject a product category inside this one for being "merely related" to it.
 2. Credible: a named publication reporting news, or a named company/analyst making a specific, attributed statement — \
 not an anonymous listicle, content-farm roundup, or SEO filler page. Reject any page whose title or framing is itself \
 a market-report advertisement — "<Market> Size, Share, Growth, Trends, Forecast [to/by] <year>", "<Market> Analysis \
@@ -415,6 +424,18 @@ Return JSON:
   "claim_backing": [{{"claim_id": "<C-number>", "id": "<P-number>", "stance": "<supports|qualifies|contradicts>", "fact": "<one factual sentence stating only what that source says>"}}],
   "question_backing": [{{"question_id": "<Q-number>", "id": "<PQ-number>", "fact": "<one factual sentence stating only what that source says>"}}],
   "report_claim_backing": [{{"claim_id": "<RC-number>", "id": "<PR-number>", "fact": "<one factual sentence stating only what that source says>"}}]}}"""
+
+
+# The second SELECT pass (pipeline.run_select) injects this block into SELECT_USER in place of the
+# empty {second_pass} placeholder, over the candidates the first pass did not keep: a first pass that
+# kept very few results has usually read a product-category story inside the market (marketing
+# automation inside digital marketing software) as a merely "related" market, so this pass says
+# explicitly that such results count — while keeping every other test (credible, concrete,
+# positive-only, not sizing) in force.
+SELECT_SECOND_PASS = """SECOND PASS over the results above (only the ones the first pass did NOT keep are listed here). \
+The first pass kept only {first} results. Look again: keep each result that reports a concrete, dated development \
+about a product category, vendor or segment inside this market, even when it does not name the market itself; still \
+reject other markets, listicles, how-to pages and setbacks."""
 
 
 REPORT_CLAIMS_SYSTEM = """You are a research assistant at Coherent Market Insights (CMI). Given the CMI market report's own \
