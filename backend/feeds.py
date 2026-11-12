@@ -328,7 +328,7 @@ def _topical_filter(phrases: list[str], key_players: list[str], topic_terms: lis
         return (
             any(search.stem_hit(w, s) for w in words for s in stems)
             or any(rx.search(text) for _, rx in players)
-            or any(rx.search(text) for rx in topics)
+            or any(rx.search(text) for _, rx in topics)
         )
 
     return ok

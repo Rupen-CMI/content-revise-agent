@@ -19,6 +19,7 @@ from ddgs.exceptions import DDGSException, TimeoutException
 
 import sources
 import config
+import freshness
 from config import CMI_HOST
 
 _null_logger = logging.getLogger("revamp.null")
@@ -176,10 +177,12 @@ _STOPWORDS = frozenset({
 })
 
 # Deterministic cutoff for DDGS NEWS evidence, enforced here before SELECT sees the hit so no LLM
-# judges freshness. Six months, not weeks: the articles aren't time-sensitive analysis, and a
-# 14-day window was discarding most otherwise-useful evidence. The writer still has to state each
+# judges freshness. One year — the same 365-day rule freshness.STALE_AFTER applies to the report's
+# facts, so nothing the filter keeps is older than the window the rest of the pipeline enforces.
+# (The old 6-month window discarded relevant items such as a BARDA cell-line project agreement or
+# an EV-charging partnership from four to seven months back.) The writer still has to state each
 # dated fact's month and year, so an older item is never passed off as "this week's" news.
-_MAX_NEWS_AGE = timedelta(days=180)
+_MAX_NEWS_AGE = freshness.STALE_AFTER
 # Ordinary web-search (non-news) hits are not held to the news window, since they carry only
 # a snippet date at best — but a hit with a visible date older than the pipeline's 12-month
 # freshness window (freshness.STALE_AFTER) must not reach SELECT either, or a stale event can end
@@ -362,8 +365,8 @@ def _snippet_date(snippet: str) -> datetime | None:
 
 
 def _news(d: DDGS, query: str) -> list[SearchHit]:
-    # DDGS only offers d/w/m/y, so "y" is the narrowest limit that covers the 6-month window;
-    # _MAX_NEWS_AGE then trims it to 180 days. Without any limit the engines return
+    # DDGS only offers d/w/m/y, so "y" is the narrowest limit that covers the 12-month window;
+    # _MAX_NEWS_AGE then trims it to 365 days. Without any limit the engines return
     # relevance-ranked news from any time and most per-query slots go to years-old items.
     return [
         SearchHit(r["title"], r.get("body", ""), r["url"], r.get("source", ""), _parse_date(r.get("date")), is_news=True)
@@ -600,13 +603,24 @@ def _word_plural_or_compound(token: str, hit_tokens: set[str]) -> bool:
     )
 
 
-def compile_topic_terms(terms: list[str]) -> list[re.Pattern]:
-    """Whole-word/phrase patterns (plural allowed) for the topic vocabulary the query-writing step produced."""
-    out = []
+def compile_topic_terms(terms: list[str]) -> list[tuple[str, re.Pattern]]:
+    """(term, pattern) pairs for the topic vocabulary the query-writing step produced. A pattern
+    matches the term as a whole word/phrase (plural allowed). A TWO-word term also gets proximity
+    patterns, both word orders, with at most two words between them: "EV smart charging" must
+    count for the topic term "EV charging", whose words appear one word apart, and a plain
+    phrase match misses that word order."""
+    out: list[tuple[str, re.Pattern]] = []
     for t in terms:
         t = re.sub(r"\s+", " ", str(t).strip().lower())
-        if len(t) >= 3:
-            out.append(re.compile(r"\b" + re.escape(t) + r"s?\b", re.IGNORECASE))
+        if len(t) < 3:
+            continue
+        out.append((t, re.compile(r"\b" + re.escape(t) + r"s?\b", re.IGNORECASE)))
+        words = t.split()
+        if len(words) == 2:
+            gap = r"(?:\W+\w+){0,2}\W+"
+            w1, w2 = (re.escape(w) for w in words)
+            out.append((t, re.compile(r"\b" + w1 + r"s?\b" + gap + r"\b" + w2 + r"s?\b", re.IGNORECASE)))
+            out.append((t, re.compile(r"\b" + w2 + r"s?\b" + gap + r"\b" + w1 + r"s?\b", re.IGNORECASE)))
     return out
 
 
@@ -639,14 +653,32 @@ _GENERIC_NAME_WORDS = frozenset({
     "cloud", "labs", "data", "digital", "network", "networks", "security", "analytics",
     "global", "international", "partners", "consulting", "industries", "media", "ai",
 })
+# A single word taken out of a multi-word player name ("The Body Shop International" -> "Body",
+# "Shop", "International") is a matcher only when it is DISTINCTIVE: a word that ordinary
+# headlines carry anyway ("body", "shop", "beauty", "health", "energy") matched "The Booming
+# Business of Beauty on TikTok Shop" and "Appleton-area shoppers can now experience Target Beauty
+# Studio" for a Body Shop market. A word on this list — a dictionary-common word, a generic
+# business word, or a function word — never becomes a standalone variant; the full name still
+# matches, and distinctive single words keep working ("Atlassian JIRA" -> "Atlassian", "JIRA").
+_PLAYER_NON_DISTINCTIVE_WORDS = frozenset({
+    "body", "shop", "international", "global", "group", "line", "health", "energy", "power",
+    "care", "beauty", "life", "home", "first", "general", "united", "american", "national",
+    "digital", "smart", "data", "cloud", "software", "systems", "solutions", "services",
+    "technologies", "products", "industries", "the", "of", "and",
+})
 
 
 def player_name_variants(player: str) -> list[str]:
     """Every form one key player's name may be matched by, cleaned: corporate suffixes are dropped
     and a multi-word name also matches by its significant words alone ("Atlassian JIRA" ->
     "Atlassian JIRA", "Atlassian", "JIRA"), so coverage naming the vendor or its product counts
-    either way. A name that is also an ordinary English word gains its unambiguous domain form
-    ("Monday" -> also "monday.com"). Both the hit filter and the query builder start here."""
+    either way — but only words that are DISTINCTIVE: a dictionary-common or generic-business word
+    ("body", "shop", "health" out of "The Body Shop Health & Beauty International") is never a
+    variant on its own, or it matches every headline that merely carries the word. A trailing
+    non-distinctive word is instead trimmed from the full name into a phrase variant ("The Body
+    Shop International" -> also "The Body Shop" — how coverage actually writes it). A name that is
+    also an ordinary English word gains its unambiguous domain form ("Monday" -> also
+    "monday.com"). Both the hit filter and the query builder start here."""
     name = " ".join(str(player).split()).rstrip(",.")
     words = name.split()
     while len(words) > 1 and words[-1].lower().rstrip(".,") in _PLAYER_CORP_SUFFIXES:
@@ -660,10 +692,21 @@ def player_name_variants(player: str) -> list[str]:
         variants.append(name[:-4].rstrip(",."))
     elif lowered in _COMMON_PLAYER_WORDS:
         variants.append(lowered + ".com")
+    # the trimmed phrase: the full name without a trailing non-distinctive word ("The Body Shop
+    # International" -> "The Body Shop"). A phrase pattern can't match unrelated headlines the way
+    # the bare words ("Body", "Shop") did, and a distinctively-named brand ("Atlassian JIRA")
+    # gains nothing here because no trailing word qualifies. One word only — the remaining phrase
+    # must keep at least two words, or a generic name ("Body Group") would shed down to the very
+    # bare word this rule exists to exclude.
+    trimmed = words[:-1]
+    if len(trimmed) >= 2 and words[-1].lower().strip(".,") in (
+            _PLAYER_CORP_SUFFIXES | _GENERIC_NAME_WORDS | _COMMON_PLAYER_WORDS
+            | _PLAYER_NON_DISTINCTIVE_WORDS):
+        variants.append(" ".join(trimmed))
     for w in words:
         wl = w.lower().strip(".,")
         if (len(wl) >= 4 and wl not in _PLAYER_CORP_SUFFIXES and wl not in _GENERIC_NAME_WORDS
-                and wl not in _COMMON_PLAYER_WORDS):
+                and wl not in _COMMON_PLAYER_WORDS and wl not in _PLAYER_NON_DISTINCTIVE_WORDS):
             variants.append(w.strip(".,"))
     return list(dict.fromkeys(variants))
 
@@ -758,7 +801,7 @@ def filter_hits(
         t for _, (head, required, generic, non_head) in gates for t in (head, *non_head)
     })
     topic_res = compile_topic_terms(list(topic_terms))
-    logger.info(f"[filter] topic terms ({len(topic_res)}): {list(topic_terms)}")
+    logger.info(f"[filter] topic terms ({len(topic_terms)}): {list(topic_terms)}")
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
     web_cutoff = datetime.now(timezone.utc) - _MAX_WEB_AGE
     blocked = _BLOCKED_HOSTS + tuple(h.lower() for h in blocked_hosts)
@@ -831,7 +874,10 @@ def filter_hits(
             for _, (head, required, _, _) in gates
         )
         named_player = next((p for p, rx in player_res if rx.search(text)), None)
-        topic_hit = next((rx.pattern for rx in topic_res if rx.search(text)), None)
+        # Each DISTINCT topic term the hit uses (a two-word term carries an exact and a proximity
+        # pattern — see compile_topic_terms — so the terms are counted, not the patterns).
+        matched_topic_terms = {t for t, rx in topic_res if rx.search(text)}
+        topic_hit = next(iter(matched_topic_terms), None)
         # With a topic vocabulary, one market-identity word is not enough on its own either: a market named by a
         # generic word plus a specific one ("web" + "scraping") would otherwise pass every story that merely
         # contains the generic word ("web shells", "web apps"). The item must also use the market's head noun
@@ -873,7 +919,18 @@ def filter_hits(
         sector_ok = hit.is_news and any(hit.host == h or hit.host.endswith("." + h) for h in sector_hosts) and (
             topic_hit is not None or not topic_res
         )
-        topic_ok = hit.is_news and topic_hit is not None
+        # A hit kept ONLY by the topic_terms rule (no market token, no full phrase, no player, not a
+        # trusted-source keep) must show a SECOND signal that it is this market's story, or a single
+        # common word carries it: "CRISPR cuts at wheat centromeres rewrite the karyotype" matched
+        # only "crispr" and was kept for a cell line development market. The second signal is
+        # another distinct topic term, a market-identity token, or the topic term itself being a
+        # multi-word phrase ("EV charging" — the EV keeps below pass on it).
+        topic_second_signal = (
+            len(matched_topic_terms) >= 2
+            or bool(matched_tokens)
+            or any(" " in t for t in matched_topic_terms)
+        )
+        topic_ok = hit.is_news and topic_hit is not None and topic_second_signal
         rules = "|".join(
             r for ok, r in (
                 (matched_phrase, "phrase"), (token_ok, "tokens"), (player_ok, "key_player"), (trusted_ok, "trusted_source"),
