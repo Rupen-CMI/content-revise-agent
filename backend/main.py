@@ -9,6 +9,7 @@ Serves the JSON API consumed by ``../frontend`` (also served statically from
                   search yet, since the human hasn't confirmed a market to search for.
     POST /reports/fetch   { run_token, kind: "cmi"|"competitor", ... } -> { kind, report, fact_sheet, report_mode, warnings, confirmed }
                   Step 2 (Reports): read one tab's chosen report into a fact sheet.
+    POST /reports/cmi_choice { run_token, report_id, cmi_report_url } -> the stored choice (restored by GET /run)
     POST /reports/competitor_choice { run_token, market, found_url, link } -> the stored choice (restored by GET /run)
     POST /reports/confirm { run_token, kind?, fact_sheet_edits } -> same shape, confirmed: true
                   Step 2 (Reports): apply the editor's edits to the fact sheet and confirm it.
@@ -335,6 +336,7 @@ class RunState:
     report_tabs: dict[str, dict] = field(default_factory=dict)
     report_warnings: list[str] = field(default_factory=list)   # the active tab's warnings (shown above its fact sheet)
     fact_sheet_confirmed: bool = False
+    cmi_choice: dict = field(default_factory=dict)          # the CMI screen's pick: {report_id, cmi_report_url}
     competitor_choice: dict = field(default_factory=dict)   # the Competitor screen's picks: {market, found_url, link}
     # ---- Evidence step (v2): the section layer. The two sub-segments are fixed from the confirmed fact sheet before any news is
     # searched; the plan, the grouped queries and the source groups stay so Step 3's one top-up search can reuse them.
@@ -1110,11 +1112,13 @@ def _outside_report(market: str, sheet: dict, texts: dict[str, str]) -> reports.
 
 def _use_outside_pages(
     market: str, pages: list[tuple[str, str, str]], titles: dict[str, str], warnings: list[str], logger: logging.Logger,
+    covered_out: list[str] | None = None,
 ) -> tuple[dict, list[dict], dict[str, str]]:
     """Read outside report pages `(url, text, market)` into one fact sheet. A page counts when it states a figure for its
     market exactly. When none does, the editor's own choice is respected rather than refused: each page is read again
     for the market its own title names (a report on 'Translation Services' ticked for 'Human Translation Services'), and the
-    editor is told in plain words that a related market's figures stand in. Returns (sheet, sources, {url: text})."""
+    editor is told in plain words that a related market's figures stand in (those markets are also appended to `covered_out`).
+    Returns (sheet, sources, {url: text})."""
     if not pages:
         return {}, [], {}
     sheet, sources, texts = external_reports.build_external_sheet(market, pages, logger)
@@ -1132,6 +1136,8 @@ def _use_outside_pages(
         sheet, sources, texts = external_reports.build_external_sheet(market, standin, logger)
         if sources:
             covered = sorted({own for u, _, own in standin if u in texts})
+            if covered_out is not None:
+                covered_out += covered
             warnings.append(
                 f"No page states figures for {market} exactly. The report(s) used cover {', '.join(covered)}, a related "
                 f"market, so those figures stand in for {market}. Check that they fit the article.")
@@ -1177,6 +1183,7 @@ def _build_reports(
     if not market:
         raise PipelineError("The agent could not name this article's market. Pick a matched report and try again.")
     outside_texts: dict[str, str] = {}
+    covered: list[str] = []      # related markets whose figures stand in for `market` (see _use_outside_pages)
     # A link the editor pasted names its own report: nothing else is searched or substituted for it (a suggested market,
     # by contrast, may fall back to other reports found for it and, last, to the web).
     pasted = bool(urls) and not markets
@@ -1201,14 +1208,14 @@ def _build_reports(
                         pages += [(u, t, m) for u, t in external_reports.find_pages(m, hosts, run.logger)]
                 else:
                     pages = [(u, t, market) for u, t in external_reports.find_pages(market, hosts, run.logger)]
-            ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, pages, titles, warnings, run.logger)
+            ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, pages, titles, warnings, run.logger, covered)
             if not ext_sources and urls and not pasted:
                 # Nothing the editor chose could be used: try the other reports from the same list rather than stop.
                 spare = [(r["url"], external_reports.read_page(r["url"], run.logger), r.get("market") or market)
                          for r in run.found_reports if r.get("url") and r["url"] not in urls][:3]
                 spare = [p for p in spare if p[1]]
                 if spare:
-                    ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, spare, titles, warnings, run.logger)
+                    ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, spare, titles, warnings, run.logger, covered)
                     if ext_sources:
                         warnings.append(
                             "None of the reports you ticked could be used, so the agent used other reports from the same "
@@ -1270,7 +1277,9 @@ def _build_reports(
     # R3: a CMI report is the only source — no figure gap search, no figure backing. A headline figure the
     # report itself does not state stays a gap (the article states no figure for it). Only the non-CMI web
     # fill above (fill_headline_from_web) may add outside figures.
-    return {"report": report, "fact_sheet": fs, "report_mode": mode, "warnings": warnings}
+    hosts_used = sorted({external_reports.host_of(s["url"]) for s in fs.get("sources") or [] if s.get("kind") != "cmi" and s.get("url")})
+    return {"report": report, "fact_sheet": fs, "report_mode": mode, "warnings": warnings,
+            "covers_market": ", ".join(covered) if covered else market, "host": ", ".join(hosts_used)}
 
 
 def _search_segment_terms(run: RunState, report: reports.Report, fs: dict) -> list[str]:
@@ -1470,7 +1479,9 @@ def _activate_report(run: RunState, kind: str) -> None:
 
 
 def _reports_payload(run: RunState) -> dict:
-    return {"kind": run.report_kind, "report": _report_dict(run.report), "fact_sheet": run.fact_sheet,
+    tab = run.report_tabs.get(run.report_kind) or {}
+    report = {**_report_dict(run.report), "covers_market": tab.get("covers_market", ""), "host": tab.get("host", "")}
+    return {"kind": run.report_kind, "report": report, "fact_sheet": run.fact_sheet,
             "report_mode": run.report_mode, "warnings": run.report_warnings, "confirmed": run.fact_sheet_confirmed}
 
 
@@ -1506,6 +1517,21 @@ class CompetitorChoiceRequest(BaseModel):
     market: str = ""
     found_url: str = ""
     link: str = ""
+
+
+class CmiChoiceRequest(BaseModel):
+    """POST /reports/cmi_choice: what the CMI screen currently holds (a picked report or a pasted CMI link, never both)."""
+    run_token: str | None = None
+    report_id: int | None = None
+    cmi_report_url: str = ""
+
+
+@app.post("/reports/cmi_choice")
+def reports_cmi_choice(req: CmiChoiceRequest) -> dict:
+    run = _get_run(req.run_token)
+    link = (req.cmi_report_url or "").strip()
+    run.cmi_choice = {"report_id": None if link else req.report_id, "cmi_report_url": link}
+    return run.cmi_choice
 
 
 @app.post("/reports/competitor_choice")
@@ -1799,7 +1825,8 @@ def get_run(run_token: str) -> dict:
         "evidence_done": run.hits is not None,      # the Evidence step has run (hits may still be empty)
         "fact_sheet_confirmed": run.fact_sheet_confirmed,
         "report_kind": run.report_kind,
-        "report_tabs": {k: {"report": {"news_id": t["report"].news_id, "name": t["report"].name, "url": t["report"].url},
+        "report_tabs": {k: {"report": {"news_id": t["report"].news_id, "name": t["report"].name, "url": t["report"].url,
+                                       "covers_market": t.get("covers_market", ""), "host": t.get("host", "")},
                             "fact_sheet": t["fact_sheet"], "report_mode": t["report_mode"], "warnings": t["warnings"]}
                         for k, t in run.report_tabs.items()},
         "publisher": run.publisher,
@@ -1820,6 +1847,7 @@ def get_run(run_token: str) -> dict:
         "picked_markets": run.picked_markets,
         "picked_report_ids": run.picked_report_ids,
         "picked_urls": run.picked_urls,
+        "cmi_choice": run.cmi_choice,
         "competitor_choice": run.competitor_choice,
         "sources": (run.fact_sheet or {}).get("sources", []),
     }

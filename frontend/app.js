@@ -153,6 +153,10 @@ async function resumeRunIfAny() {
       run.foundSearched = !!choice.market && (data.picked_markets || [])[0] === choice.market;
       run.foundPick = run.foundReports.some((r) => r.url === choice.found_url) ? choice.found_url : "";
     }
+    // The CMI screen's own pick (a listed report or a pasted link), saved before any fetch, comes back as it was left.
+    const cmiChoice = data.cmi_choice || {};
+    if (cmiChoice.report_id) run.pickedCmi = (data.candidates || []).find((c) => c.news_id === cmiChoice.report_id) || run.pickedCmi;
+    if (cmiChoice.cmi_report_url) { run.cmiUrl = cmiChoice.cmi_report_url; run.pickedCmi = null; }
     // Both Reports tabs' fact sheets come back from the server, so a reload loses neither.
     Object.entries(data.report_tabs || {}).forEach(([kind, t]) => {
       run.sheets[kind] = { report: t.report, factSheet: t.fact_sheet, reportMode: t.report_mode, warnings: t.warnings || [], confirmed: false };
@@ -181,8 +185,8 @@ async function resumeRunIfAny() {
     } else {
       run.stage = "orient_done";
     }
-    // A pasted CMI report link survives a reload too: the run records it among the picked urls.
-    run.cmiUrl = (data.picked_urls || []).find((u) => isCmiLink(u)) || "";
+    // A pasted CMI report link survives a reload too: the run records it among the picked urls (a saved choice wins).
+    run.cmiUrl = run.cmiUrl || (data.picked_urls || []).find((u) => isCmiLink(u)) || "";
     state.run = run;
     // a pointer saved before the Reports step existed holds an old key ("step2"...): start from the run's own stage instead
     const stageNav = { orient_done: "step1", reports_ready: "reports", search_done: "evidence", select_done: "facts", write_done: "write" };
@@ -704,7 +708,20 @@ function clearCmiPick() {
   renderReportsPickers();
 }
 
-document.getElementById("reports-cmi-clear").addEventListener("click", clearCmiPick);
+document.getElementById("reports-cmi-clear").addEventListener("click", () => { clearCmiPick(); saveCmiChoice(); });
+
+// Remembers the CMI screen's pick on the server (POST /reports/cmi_choice) so a reload before Fetch restores it.
+let cmiChoiceTimer = null;
+function saveCmiChoice() {
+  const run = state.run;
+  if (!run || !run.token) return;
+  clearTimeout(cmiChoiceTimer);
+  cmiChoiceTimer = setTimeout(() => {
+    apiPost("/reports/cmi_choice", {
+      run_token: run.token, report_id: run.pickedCmi ? run.pickedCmi.news_id : null, cmi_report_url: (run.cmiUrl || "").trim(),
+    }).catch(() => {});
+  }, 300);
+}
 
 // The CMI report link box: typing there is a CMI pick of its own, so it clears the picked CMI report from the list;
 // picking from the list clears the link again.
@@ -719,6 +736,7 @@ document.getElementById("reports-cmi-url").addEventListener("input", (e) => {
     });
   }
   updateReportsControls();
+  saveCmiChoice();
 });
 document.getElementById("reports-cmi-url-check").addEventListener("click", () => checkReportUrl(document.getElementById("reports-cmi-url-block"), true));
 
@@ -1100,6 +1118,7 @@ function renderStepNav() {
   const done = stepDoneFlags();
   const started = !!state.run;
   const stage = state.run ? state.run.stage : null;
+  const hasConfirmedSheet = !!state.run && REPORT_KINDS.some((k) => state.run.sheets && state.run.sheets[k] && state.run.sheets[k].confirmed);
 
   // "unlocked" (can be navigated to) and "actively running" (its own API call is in flight)
   // are different things — a step becomes unlocked the instant the previous one finishes,
@@ -1108,8 +1127,9 @@ function renderStepNav() {
   const specs = {
     article: { always: true },
     step1: { unlocked: started, done: done.step1, pending: stage === "pending" },
-    reports: { unlocked: done.step1, done: done.reports, pending: stage === "reports_pending" },
-    evidence: { unlocked: done.reports, done: done.evidence, pending: stage === "search_pending" },
+    // Reports opens as soon as Step 1 is confirmed (stage orient_done); Evidence once a fact sheet is confirmed
+    reports: { unlocked: done.step1 || stage === "orient_done", done: done.reports, pending: stage === "reports_pending" },
+    evidence: { unlocked: done.reports || hasConfirmedSheet, done: done.evidence, pending: stage === "search_pending" },
     facts: { unlocked: done.evidence, done: done.facts, pending: stage === "select_pending" },
     write: { unlocked: done.facts, done: done.write, pending: stage === "write_pending" },
     final: { unlocked: done.write, done: done.final, pending: stage === "finalize_pending" },
@@ -1459,6 +1479,7 @@ function renderReportsPickers() {
       document.querySelectorAll("#reports-cmi-list .market-option").forEach((el) => el.classList.remove("selected"));
       label.classList.add("selected");
       updateReportsControls();
+      saveCmiChoice();
     });
     return label;
   }, "No CMI report fits this article closely enough to suggest. Paste a CMI report link below, or use the Competitor reports tab.");
@@ -1799,8 +1820,13 @@ function fsRender(container) {
   const warnings = (opts.warnings || []).length
     ? `<div class="warning-box"><p class="warning-box-title"><i data-lucide="alert-triangle"></i> <span>Please verify before continuing</span></p>`
       + `<div class="warning-box-list">${opts.warnings.map((w) => `<p>${escapeHtml(w)}</p>`).join("")}</div></div>` : "";
-  const report = opts.report
-    ? `<p class="fs-report">Read from: ${opts.report.url ? `<a href="${escapeHtml(opts.report.url)}" target="_blank" rel="noopener">${escapeHtml(opts.report.name)}</a>` : escapeHtml(opts.report.name)}</p>` : "";
+  // An outside report may cover a related market that stands in for the picked one (report.covers_market, from report.host).
+  const covers = opts.report && opts.report.covers_market && opts.report.covers_market !== opts.report.name ? opts.report.covers_market : "";
+  const readFrom = !opts.report ? ""
+    : covers ? `${escapeHtml(covers)} report${opts.report.host ? ` (${escapeHtml(opts.report.host)})` : ""}, standing in for ${escapeHtml(opts.report.name)}`
+    : opts.report.url ? `<a href="${escapeHtml(opts.report.url)}" target="_blank" rel="noopener">${escapeHtml(opts.report.name)}</a>${opts.report.host ? ` (${escapeHtml(opts.report.host)})` : ""}`
+    : `${escapeHtml(opts.report.name)}${opts.report.host ? ` (${escapeHtml(opts.report.host)})` : ""}`;
+  const report = readFrom ? `<p class="fs-report">Read from: ${readFrom}</p>` : "";
   container.innerHTML = `${warnings}<div class="fs-toolbar"><div class="fs-title">${label}`
     + `${opts.confirmed ? ' <span class="fs-badge fs-badge-ok">confirmed</span>' : ""}</div><div class="fs-tools">${tools}</div></div>${report}`
     + (st.editing
