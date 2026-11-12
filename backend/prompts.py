@@ -435,7 +435,8 @@ Return JSON:
 SELECT_SECOND_PASS = """SECOND PASS over the results above (only the ones the first pass did NOT keep are listed here). \
 The first pass kept only {first} results. Look again: keep each result that reports a concrete, dated development \
 about a product category, vendor or segment inside this market, even when it does not name the market itself; still \
-reject other markets, listicles, how-to pages and setbacks."""
+reject other markets, listicles, how-to pages and setbacks. Never keep directories, review or comparison listings, vendor \
+service or capability pages, guides, webinars, eBooks or advice; only dated developments."""
 
 
 REPORT_CLAIMS_SYSTEM = """You are a research assistant at Coherent Market Insights (CMI). Given the CMI market report's own \

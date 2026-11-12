@@ -101,21 +101,39 @@ def report_page_reason(hit: "SearchHit") -> str | None:
     return "a market-report page" if pattern.search(hit.title) else None
 
 
+def listing_page_reason(hit: "SearchHit") -> str | None:
+    """Why this hit is a directory, review aggregator, listicle, guide or webinar page (so not evidence), or None."""
+    if sources.is_listing(hit.host):
+        return "a directory or review listing site"
+    return "a listicle, ranking, guide or webinar title" if _LISTING_TITLE_RE.search(hit.title) else None
+
+
 # Section/landing pages and profile pages ("Newsroom", "Nasdaq Watch", "United States", "Ross Allardice")
 # are 1-3 words; real headlines carrying a fact are longer.
 _MIN_TITLE_WORDS = 4
 
-# Titles of definition/how-to/explainer/directory pages — reference material, not a reported
-# event. Applied to text (background) hits only; news hits are dated articles about events and
-# don't need it. "Market Size, Share, Growth" is the report-PR SEO pattern itself (a page titled
-# exactly that is a rival firm's own report landing page even when its own domain isn't blocklisted
-# yet — found live on markwideresearch.com, techsciresearch.com, etc.). Also catches product-roundup/listicle pages ("10 Best X Reviewed for 2026", "Top 10 Best X (2026 Review)", "32 Best X Tools") — a buying-guide comparison page, not a reported event, confirmed live: 7 of 19 kept hits for one run were exactly this pattern and all were still correctly rejected by SELECT, but they crowded out the real candidates and wasted the match budget.
+# Titles of definition/explainer/directory pages — reference material, not a reported event. Applied to
+# text (background) hits only; news hits are dated articles about events and don't need it. "Market Size,
+# Share, Growth" is the report-PR SEO pattern itself (a page titled exactly that is a rival firm's own
+# report landing page even when its own domain isn't blocklisted yet — found live on markwideresearch.com,
+# techsciresearch.com, etc.). The listicle, guide and webinar titles are in _LISTING_TITLE_RE instead.
 _DEFINITIONAL_TITLE_RE = re.compile(
-    r"\b(meaning|definitions?|glossary)\b|\bwhat (is|are)\b|\bhow to\b|\b(guide|introduction|intro) to\b"
-    r"|\bexplained\b|\bfor beginners\b|\b(types|examples|benefits|advantages) of\b|\bvs\.?\b"
+    r"\b(meaning|definitions?|glossary)\b|\b(introduction|intro) to\b"
+    r"|\bexplained\b|\bfor beginners\b|\b(types|examples|benefits|advantages) of\b"
     r"|\bmarket (size|share),?\s*(share,?\s*)?growth\b|\blist of\b|\b(news|articles?) (archive|index|hub)\b"
-    r"|^\s*[\w\s&]+\s(articles|news)\s*$"
-    r"|\b(top|best)\s+\d+\b|\b\d+\+?\s+(best|tools|apps|platforms|solutions)\b|\(\d{4}\s*review\)",
+    r"|^\s*[\w\s&]+\s(articles|news)\s*$",
+    re.IGNORECASE,
+)
+# Titles of listicles, rankings, directories, comparisons, guides and webinar/eBook promotions — never a reported development
+# ("Top 10 Best X Reviewed for 2026", "Top 10 Best X (2026 Review)", "32 Best X Tools", "100 top skin care companies",
+# "Best X of 2026"). Applied to every hit, news included, because a dated headline that is itself a roundup or a "vs." piece is
+# not a development either. Confirmed live: 7 of 19 kept hits for one run were product roundups, all still rejected by SELECT,
+# but they crowded out the real candidates and wasted the match budget.
+_LISTING_TITLE_RE = re.compile(
+    r"\btop\s+\d+\b|\b\d+\+?\s+(?:top|best|tools|apps|platforms|solutions)\b|\bbest\b.{0,60}?\b(?:of|in|for) 20\d\d\b"
+    r"|\bhow to\b|\bguide to\b|\bwhat (?:is|are)\b|\bultimate guide\b|\beverything you need to know\b"
+    r"|\bvs\b|\bcomparisons?\b|\balternatives?\b|^\s*reviews?:|\(\d{4}\s*review\)"
+    r"|\bwebinars?\b|\be-?books?\b|\bwhite ?papers?\b",
     re.IGNORECASE,
 )
 
@@ -734,7 +752,7 @@ def filter_hits(
             dropped += 1
             logger.info(f"[filter] DROP (blocked host {hit.host}): {hit.title!r}")
             continue
-        reason = report_page_reason(hit)
+        reason = report_page_reason(hit) or listing_page_reason(hit)
         if reason:
             dropped += 1
             logger.info(f"[filter] DROP ({reason}) [{hit.host}] {hit.title!r}")

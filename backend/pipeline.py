@@ -1560,6 +1560,7 @@ def run_select(
     _drop_stale_facts(selection, logger)
     _drop_negative_facts(selection, logger, report.name)
     _drop_market_sizing_facts(selection, logger, headline_figures)
+    _drop_non_event_facts(selection, hits, logger)
     _verify_selection_figures(selection, hits, logger)
     _normalize_claim_backing(selection, claims, claim_flat, logger)
     _normalize_question_backing(selection, questions, question_flat, logger)
@@ -1603,6 +1604,7 @@ def run_select(
         _drop_stale_facts(second, logger)
         _drop_negative_facts(second, logger, report.name)
         _drop_market_sizing_facts(second, logger, headline_figures)
+        _drop_non_event_facts(second, hits, logger)
         _verify_selection_figures(second, hits, logger)
         seen = {str(e.get("id", "")).strip().upper() for e in selection.get("evidence") or []}
         budget = config.SEARCH_MAX_SELECTED - len(selection.get("evidence") or [])
@@ -1954,6 +1956,87 @@ def _drop_market_sizing_facts(
         if _is_market_sizing(str(e.get("detail", ""))):
             logger.info(f"[select] blanked the detail of {e.get('id')}: it states market sizing or cites a rival research firm")
             e["detail"] = ""
+        kept.append(e)
+    selection["evidence"] = kept
+
+
+# Non-event backstop (_drop_non_event_facts): the words that decide whether a selected fact reports a dated development. One
+# place for every list; the EVENT words keep a fact, the NON-EVENT words drop it only when no EVENT word is present.
+_EVENT_RE = re.compile(
+    # a product or service reaches the market
+    r"\b(?:launch(?:es|ed|ing)?|introduc(?:es|ed|ing)|unveil(?:s|ed|ing)?|releas(?:es|ed|ing)|rolls? out|rolled out)\b"
+    # a deal: an acquisition, an agreed purchase
+    r"|\b(?:acquir(?:es|ed|ing)|acquisitions?|agreed to (?:acquire|buy)|agrees to (?:acquire|buy)|buys?|bought)\b"
+    # a completed acquisition, inspection or funding round, or a closed round or investment
+    r"|\bcompleted (?:an? |the )?(?:acquisition|inspection|funding|round|deal|investment)\b"
+    r"|\bclosed (?:an? |the )?(?:round|investment|financing|deal|acquisition)\b"
+    # money raised or invested
+    r"|\b(?:raised|raises|invested|invests)\b"
+    # a partnership
+    r"|\b(?:partnered|partners? with|partnership with|partnership (?:agreement|deal))\b"
+    # a signing, an opening, an expansion
+    r"|\b(?:signed|signs (?:a|an|its|new)|opened|opens (?:a|an|its|new)|expands?|expanded)\b"
+    # an approval or a contract won
+    r"|\b(?:approved|approves|awarded|wins? (?:a|an|the) (?:contract|tender|bid|award)|won (?:a|an|the) (?:contract|tender|bid|award))\b"
+    # a reported result: revenue or sales, a figure that rose, fell or reached a number
+    r"|\breported (?:revenue|sales|earnings|profit)\b"
+    r"|\b(?:grew|grows|rose|rises|fell|falls|declined|jumped|climbed|surged|increased|decreased)\b[^.;]{0,30}\d"
+    r"|\breached\b[^.;]{0,20}\d"
+    # a survey, study or dataset that found or showed something
+    r"|\b(?:survey|study|data|research|poll)\b[^.;]{0,40}\b(?:found|finds|show|shows|showed|reveal|reveals|revealed)\b",
+    re.IGNORECASE,
+)
+# A figure with a period ("in the third quarter of 2026", "in 2025") and a measurement verb also reports a development.
+_PERIOD_RE = re.compile(r"\b(?:quarter|half|q[1-4]|(?:19|20)\d\d)\b", re.IGNORECASE)
+_MEASURE_RE = re.compile(
+    r"\b(?:sales|revenue|volumes?|shipments?|spending|rose|fell|grew|increased|decreased|declined|totall?ed|climbed|jumped|surged)\b",
+    re.IGNORECASE,
+)
+_NON_EVENT_RE = re.compile(
+    # "<Org> states / offers / publishes (a|its) resource, guide, service, ranking, comparison, capabilities ..."
+    r"\b(?:states?|describes?|describing|offers?|provides?|lists?|publish(?:es|ed)?|compares?|ranks?|ranked|summari[sz]es|explains?|reports? that)\b"
+    r"\s+(?:and\s+\w+\s+)?(?:(?:a|an|its|her|his|their|the|user|top|various|key|detailed|new)\s+)?(?:[\w'&.-]+\s+){0,6}?"
+    r"(?:resources?|guidance|guides?|services?|e-?books?|webinars?|listings?|lists?|directory|directories|rankings?|comparisons?"
+    r"|capabilit(?:y|ies)|reviews?|collections?|books?|phases)\b"
+    # "compiled a list", "compiles a ranking"
+    r"|\bcompil(?:ed|es|e)\b[^.;]{0,20}\b(?:list|ranking|directory|roundup)\b"
+    # advice sources: dermatologists, estheticians, guidance that states something
+    r"|\bdermatologists?\b|\bestheticians?\b|\bguidance states\b"
+    # an author's book, an announced webinar or eBook
+    r"|\bpublished (?:her|his|their|its|a|an) (?:[\w-]+ ){0,4}?(?:book|guide|e-?book|webinar)\b"
+    r"|\bannounced (?:a|an|its) (?:[\w-]+ ){0,3}?(?:webinar|e-?book|whitepaper|white paper|guide)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_event(fact: str) -> bool:
+    return bool(_EVENT_RE.search(fact) or (_PERIOD_RE.search(fact) and _MEASURE_RE.search(fact) and re.search(r"\d", fact)))
+
+
+def _drop_non_event_facts(
+    selection: dict, hits: list[search.SearchHit], logger: logging.Logger, today: date | None = None,
+) -> None:
+    """Remove selected market facts that report no dated development: a directory, review or comparison listing, a vendor's
+    service or capability page, a guide, webinar, eBook or advice piece, or an old event re-dated by its page. Deterministic, so
+    no model can keep one. An item is judged by its fact (the event words) and, for the old-event rule, by its hit's title,
+    snippet and excerpt, since the page can carry the old year when the fact sentence does not. Article evidence (C-ids) is not
+    judged here: it backs the article's own claims."""
+    kept = []
+    for e in selection.get("evidence") or []:
+        m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
+        if not m or not 1 <= int(m.group(1)) <= len(hits):
+            kept.append(e)
+            continue
+        hit = hits[int(m.group(1)) - 1]
+        fact = str(e.get("fact", ""))
+        page = " ".join(part for part in (hit.title, hit.snippet, hit.excerpt) if part)
+        if freshness.names_old_event(f"{fact} {page}", today):
+            logger.info(f"[select] dropped {e.get('id')}: it dates the event two or more years back ({fact[:80]!r})")
+            continue
+        listing = _NON_EVENT_RE.search(fact)
+        if listing and not _is_event(fact):
+            logger.info(f"[select] dropped {e.get('id')}: its fact reports no dated development ({listing.group(0)!r}, {fact[:80]!r})")
+            continue
         kept.append(e)
     selection["evidence"] = kept
 

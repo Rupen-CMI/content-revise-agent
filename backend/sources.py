@@ -7,6 +7,8 @@ trade publication:
   JUNK      — hosts that never yield a citable market fact (stock-quote and earnings-transcript sites,
               code/note/game/search-result pages, content farms, more rival research-report mills).
               Dropped outright; merged into search._BLOCKED_HOSTS.
+  LISTING   — directory and review-aggregator sites (Capterra, GetApp, SourceForge): they rank or compare
+              vendors and never report a development. Dropped in search.listing_page_reason.
   anything else — unknown host: still allowed, but must pass the strict topical gate as before.
 """
 
@@ -355,6 +357,15 @@ JUNK_HOSTS = JUNK_HOSTS | frozenset({
     "reliancedigital.in", "scrb.bihar.gov.in", "shs.bihar.gov.in", "digitalindia.gov.in", "aljazeera.com", "ijr.com",
 })
 
+# Directory, review-aggregator and "top companies" listing sites. They rank or compare vendors and list reviews, so a hit
+# from them is never a dated development. Kept apart from JUNK_HOSTS so the drop logs its own reason (search.listing_page_reason).
+# g2.com is already in JUNK_HOSTS and is dropped there.
+LISTING_HOSTS = frozenset({
+    "capterra.com", "getapp.com", "sourceforge.net", "softwareadvice.com", "trustradius.com", "toolradar.com",
+    "saasworthy.com", "goodfirms.co", "clutch.co", "featuredcustomers.com", "f6s.com", "alternativeto.net",
+    "slashdot.org", "selecthub.com", "crowdreviews.com", "peerspot.com", "expertise.com", "trustpilot.com", "yelp.com",
+})
+
 
 # Junk always wins: a domain listed as both is treated as junk.
 TRUSTED_HOSTS = TRUSTED_HOSTS - JUNK_HOSTS
@@ -367,6 +378,10 @@ def _host_matches(host: str, domains) -> bool:
 def is_trusted(host: str) -> bool:
     host = host.lower()
     return _host_matches(host, TRUSTED_HOSTS) or any(host.endswith(s) for s in TRUSTED_SUFFIXES)
+
+
+def is_listing(host: str) -> bool:
+    return _host_matches(host.lower(), LISTING_HOSTS)
 
 
 # ---------------------------------------------------------------------------------------------------
