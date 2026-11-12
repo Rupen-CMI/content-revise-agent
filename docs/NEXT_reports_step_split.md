@@ -17,10 +17,13 @@ this worktree (the user's own server is port 8000; never touch it).
     missing.
 - The Evidence step then searches using these facts (see "Evidence layer" below).
 
-## Open decisions (ask the user before building)
-1. Competitor fact sheet: show original and adjusted values side by side, or adjusted only?
-2. Editor-entered missing values: used as entered, no variance, marked "added by editor"? (recommended)
-3. May the editor edit values the report did state, or only fill gaps? (default: gaps only)
+## Decisions (answered by the user 2026-11-12)
+1. Competitor fact sheet shows the original value and the adjusted (3-5%) value side by side.
+2. Values the editor enters are used exactly as entered: no variance, marked "added/edited by editor".
+3. An **Edit** button at the top of each fact sheet switches the whole sheet to edit mode: the editor may change EVERY value,
+   both the agent's prefilled ones and the missing ones (full independence). An edited value is used as entered and
+   replaces the agent's; keep the agent's original for reference (and the competitor original/adjusted pair) so the change
+   is visible.
 
 ## Agreed agent plan
 1. Foundation (Sonnet medium): step split in sidebar/run state; backend endpoints for fetch-report + fact sheet and for
