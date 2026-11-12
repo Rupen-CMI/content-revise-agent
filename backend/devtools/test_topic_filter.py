@@ -236,6 +236,30 @@ check("keep rules: the kept hits record the rules that kept them",
 check("strong hits: a key-player-only keep is weak, a token or topic-term keep is strong",
       search.strong_hit_count(kept3) == 2, str(rules))
 
+# the live recall regression this round fixes: with the market "Agile Project Management Software Market"
+# the search found only 1 strong hit and the key-player stories below were lost (2 of 3 dropped, and the
+# monday.com query never ran under the old 4-query cap).
+AGILE_PLAYERS = ["Asana", "Atlassian JIRA", "Microsoft", "Monday", "Pivotal Software"]
+AGILE_TERMS = ["agile project management", "agile planning", "scrum board", "sprint planning", "kanban board",
+               "backlog management", "work management software", "project tracking", "team collaboration"]
+player_stories = [
+    hit("Asana completes acquisition of StackAI, a no-code AI workflow platform", "https://www.reuters.com/agp1"),
+    hit("monday.com brings voice and AI agents into its work management platform", "https://www.reuters.com/agp2"),
+]
+dash_story = hit("Asana launches Dash, a personal AI chief of staff", "https://www.reuters.com/agp3")
+player_stories.append(dash_story)
+kept_stories = kept_hits(player_stories, key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)
+check("key player: a player story naming a product word (platform, AI, workflow) is kept for a software market",
+      sorted(h.title for h in kept_stories) == sorted(h.title for h in player_stories), str([h.title for h in kept_stories]))
+check("key player: the product-word rule keeps the Patch Tuesday and the weekday drops in force",
+      kept_hits([patch, monday], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) == [],
+      str(kept_hits([patch, monday], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS)))
+non_software = search.filter_hits(
+    [hit("Acme launches Dash, a personal AI chief of staff", "https://www.reuters.com/agp4")],
+    ["Widget Consulting Services Market"], logger=LOG, key_players=["Acme"], topic_terms=["widget consulting", "advisory services"])
+check("key player: a product word is a market signal for a software market only (a services market keeps nothing)",
+      kept_hits([dash_story], key_players=AGILE_PLAYERS, topic_terms=AGILE_TERMS) != [] and non_software == [], str(non_software))
+
 # the player-name cleaner: one helper feeds both the filter and the query builder
 check("player cleaner: a multi-word name matches the vendor and the product separately",
       set(search.player_name_variants("Atlassian JIRA")) >= {"Atlassian JIRA", "Atlassian", "JIRA"},
@@ -259,10 +283,16 @@ check("common-word player: the bare weekday never matches, the domain and the ma
       and any(rx.search(domain_text) for _, rx in pats)
       and any(rx.search(possessive_text) for _, rx in pats))
 
-# the in-code key-player news queries: cleaned names, market anchor, at most four (the key-players Bing allotment)
+# the in-code key-player news queries: cleaned names, market anchor, at most six (the key-players Bing allotment) —
+# with the cap raised, the Asana, Atlassian/Jira and monday.com news queries all fit one run
 pq = pipeline._player_news_queries("Agile Project Management Software Market", AGILE_PLAYERS + ["Pivotal Software"])
-check("player queries: one per cleaned player, capped at four, anchored to the market's core",
-      len(pq) == 4 and pq[0] == "Microsoft agile project management" and "monday.com" in " ".join(pq), str(pq))
+check("player queries: one per cleaned player, capped at six, anchored to the market's core, with the Asana, Atlassian and monday.com news queries in",
+      len(pq) == 5 and pq[0] == "Asana agile project management"
+      and any(q.startswith("Atlassian JIRA ") for q in pq) and any(q.startswith("monday.com ") for q in pq)
+      and any(q.startswith("Pivotal Software ") for q in pq) and "Microsoft agile project management" in pq, str(pq))
+capped = pipeline._player_news_queries("Agile Project Management Software Market",
+                                       ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta", "Eta BV"])
+check("player queries: seven players are cut to the six-query allotment", len(capped) == 6, str(capped))
 
 # ---- a quoted Bing keyword query that returns 0 results is retried once unquoted
 feeds._BING_QUERY_DELAY_S = feeds._BING_JITTER_S = 0

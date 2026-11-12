@@ -291,13 +291,23 @@ and do not narrow to one product, feature or use case unless that IS the market.
 The article's trends and its general market view each need their own recent, real news. For EACH section below write the queries \
 named for it, built from that section's TARGETS: the targets say what the CMI report states there, so the news you look for is \
 news that shows it happening. A target is never text to paste into a query: turn it into the market's anchor plus one or two words.
+
+The two fixed sub-segments listed under SUB-SEGMENTS are already chosen (the CMI report's own leading categories), and their \
+queries are written here too, per sub-segment: for EACH one write exactly the number of queries its block names, each built \
+from the category in the everyday words a news headline about that category would use — a common synonym, or the plain \
+product, service or activity ("banking translation services", "home EV charger installation", "CHO antibody cell line") — \
+plus at most one or two plain words for the kind of development. Never the literal "<category> <market> demand" shape: \
+queries built that way from the category's report name matched almost no real headline, because headlines do not talk like \
+a report. No double quotes around more than the category phrase itself. Return them under the "subsegment" key, one entry \
+per sub-segment keyed by the sub-segment's name exactly as its block prints it.
 {section_targets}
 
 Every query is about a concrete, recent development (a launch, an acquisition, a funding round, a partnership, a regulation, \
 an adoption), and the queries of one section look in different directions. Follow these rules exactly, learned from real \
 search failures:
 """ + _QUERY_RULES_SHARED + """
-Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "market": ["<query>", ...]}}, \
+Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": \
+{{"<sub-segment name>": ["<query>", ...]}}, "market": ["<query>", ...]}}, \
 "source_groups": ["<group id>", ...], "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
 
 

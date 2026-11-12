@@ -913,6 +913,12 @@ def search_queries_from_result(
     if isinstance(result, dict):
         if plan is not None:
             queries = sections.parse_grouped_queries(result.get("queries"))
+            # the model's own sub-segment queries (parsed per fixed sub-segment, sections.parse_subsegment_queries) ride
+            # under "subsegment" as {sub-segment: [queries]}; sections.budgeted_queries reads them there and keeps the
+            # code-built shape for a sub-segment the model wrote none for
+            subs = sections.parse_subsegment_queries(result.get("queries") or {}, plan.get("subsegment") or [])
+            if subs:
+                queries = dict(queries, subsegment=subs)
             has_queries = any(queries.values())
         else:
             queries = [str(q).strip() for q in result.get("queries") or [] if str(q).strip()]
@@ -952,8 +958,9 @@ def run_search_evidence(
     queries are built from the confirmed market name itself, so this never searches for a
     market the human ultimately rejected.
 
-    subsegments (the Evidence step's two fixed sub-segments): their queries are built from each category's own name (section
-    search only; see sections.budgeted_queries).
+    subsegments (the Evidence step's two fixed sub-segments): the evidence-prep call wrote their queries, three per
+    sub-segment in the category's everyday words (sections.parse_subsegment_queries), and the code-built shape stands in
+    for a sub-segment the model wrote none for (section search only; see sections.budgeted_queries).
 
     search_queries: pre-generated (queries, groups, topic_terms) from prepare_search_queries, so
     the stepwise API can overlap that LLM call with the other Step 2 prep. None (CLI / callers that

@@ -45,7 +45,16 @@ SPONSOR = ARTICLE.paragraphs[1]
 FS = facts._empty_fact_sheet()
 FS["drivers"] = [{"id": "fs.drivers.0", "text": "Demand for widget automation grows", "quote": "q", "historical": False}]
 FS["players"] = ["Acme Corp"]
-PLAN = sections.section_search_plan(FS, SimpleNamespace(name=MARKET), ["Acme Corp"], [])
+# the two fixed sub-segments are known before the call: their split and the report's own reason the category leads
+# (the segment driver, else the dominance quote) ride into the prompt with them
+FS["segments"] = [{"id": "fs.segments.0", "type": "By Type", "items": ["Software", "Services"],
+                   "figures": {"Software": {"figure": "52%", "kind": "share", "amount": 52.0, "quote": "q"},
+                               "Services": {"figure": "30%", "kind": "share", "amount": 30.0, "quote": "q"}},
+                   "dominant": {"name": "Software", "basis": "stated", "quote": "Software leads with a 52% share"}}]
+FS["segment_drivers"] = [{"id": "fs.segment_drivers.0", "text": "Banks want audited workflows", "quote": "q",
+                          "historical": False, "split": "By Type", "name": "Software"}]
+PICKS = sections.choose_subsegments(FS)
+PLAN = sections.section_search_plan(FS, SimpleNamespace(name=MARKET), ["Acme Corp"], PICKS)
 
 PUBLISHER_PART = {"intro_angle": "The article explains how reading messy web pages the way a person does helps stores and their shoppers connect.",
                   "points": ["A typical online store sells about 40 products in its first month, so early wins matter a lot.",
@@ -56,6 +65,8 @@ DEMAND_PART = {"questions": [{"intent": "growth", "question": f"How fast is the 
                "long_tail": [{"keyword": "widget automation for cloud based teams", "fact": "fs.drivers.0", "why": "x"},
                              {"keyword": "widget automation for cloud based teams", "fact": "fs.nothing", "why": "x"}]}
 QUERIES_PART = {"queries": {"trends": ['"zzz widget services" automation', '"zzz widget services" adoption'], "market": ['"zzz widget services" news'],
+                            "subsegment": {"Software": ["audited workflow software for banks launch", "banking audit software news", "Software zzz widget services demand"],
+                                           "Services": ["widget services rollout"], "Extra": ["ignored"]},
                             "segmentation": ["ignored"]},
                 "source_groups": ["not-a-pack"], "topic_terms": ["Widget Maker", "widget maker"]}
 ANSWER = {"publisher": PUBLISHER_PART, "demand": DEMAND_PART, "queries": QUERIES_PART}
@@ -92,6 +103,9 @@ check("call: ONE model call, named evidence_prep, with room for three answers", 
 check("call: the prompt shows the article and the sponsor paragraph, the report facts and the real searches, and the section targets",
       "40 products" in user and "Teams can ask Acme Corp." in user and "fs.drivers.0" in user and "best widget services" in user
       and "Demand for widget automation grows" in user and "Acme" in user and "SOURCE GROUPS" in user, user[:200])
+check("call: the prompt carries the fixed sub-segments with their split and the report's own reason the category leads, and the per-sub-segment query rules",
+      "SUB-SEGMENTS" in user and "Software (split By Type) — the report's reason it leads: Banks want audited workflows" in user
+      and "Services (split By Type)" in user and "Never the literal" in user and '"subsegment"' in user, user[:400])
 check("call: no placeholder is left unfilled in the prompt", "{market_name}" not in user and "{section_targets}" not in user and "{facts}" not in user)
 
 # ----------------------------------------------------- each part is what the separate call's own validation makes of it
@@ -108,6 +122,9 @@ exp_queries = pipeline.search_queries_from_result(QUERIES_PART, MARKET, LOG, PLA
 check("queries part: equals what prepare_search_queries makes of the same answer (grouped by section, topic terms cleaned, unknown group dropped)",
       res["queries"] == exp_queries and isinstance(res["queries"][0], dict) and res["queries"][0]["trends"] == QUERIES_PART["queries"]["trends"]
       and res["queries"][1] == [] and res["queries"][2] == ["widget maker"] and set(res["queries"][0]) == set(sections.QUERY_SECTIONS), str(res["queries"]))
+check("queries part: the sub-segment queries are parsed per fixed sub-segment (three for Software, one for Services, an unmatched key dropped)",
+      res["queries"][0]["subsegment"] == {"Software": ["audited workflow software for banks launch", "banking audit software news", "Software zzz widget services demand"],
+                                          "Services": ["widget services rollout"]}, str(res["queries"][0]["subsegment"]))
 
 # ------------------------------------------------------------------------------------------------ degradation
 def boom(*a, **k):

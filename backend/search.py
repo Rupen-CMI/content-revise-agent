@@ -511,6 +511,17 @@ _TECH_HEAD_SYNONYMS = frozenset({
     "martech", "adtech", "cloud", "automation", "agentic",
 })
 
+# Product words that mark a software market's own story beyond the market's tokens and topic terms: a
+# headline naming a key player together with one of these ("monday.com brings voice and AI agents into
+# its work management platform", "Asana completes acquisition of StackAI, a no-code AI workflow
+# platform", "Asana launches Dash, a personal AI chief of staff") is this market's news even when it
+# holds no market token and no topic term — one live run kept only 1 of 3 such player stories for an
+# Agile project management market and the sub-segments went unbacked. Chosen so a Patch Tuesday /
+# Windows-update story ("fixes for Windows enterprise users") still carries none of them, and so a
+# non-software market (a "services" head, say) gains nothing.
+_PLAYER_PRODUCT_RE = re.compile(
+    r"\b(?:platforms?|apps?|applications?|software|suites?|workflows?|saas|ai|productivity)\b", re.IGNORECASE)
+
 # A market-name modifier seen in this share of catalog keywords or more is too common to
 # identify one market, so the gate doesn't require it. Kept at 0.5%: at 1% "digital"
 # (71 of 9,564 catalog names, 0.74%) counted as specific and became required, which
@@ -838,10 +849,16 @@ def filter_hits(
         # (one real run kept 70 items by that rule alone, and 46 of its 47 kept hits were noise),
         # and the weekday-named player "Monday" matched the weekday in unrelated headlines. The
         # name must come with a MARKET signal in the title+snippet: a topic term, or the market's
-        # head noun / a required market token as a whole word. ("Atlassian launches Jira AI sprint
-        # planning" passes for an agile project management market; "Microsoft rolls out Patch
-        # Tuesday fixes" and "… by $42M … Monday …" do not.)
-        market_signal = topic_hit is not None or any(
+        # head noun / a required market token as a whole word — or, for a software market
+        # (_TECH_HEAD_SYNONYMS head), a product word the headline itself carries
+        # (_PLAYER_PRODUCT_RE): "Asana completes acquisition of StackAI, a no-code AI workflow
+        # platform" and "Asana launches Dash, a personal AI chief of staff" are this market's news
+        # though they hold no market token and no topic term, while "Microsoft rolls out November
+        # Patch Tuesday fixes for Windows enterprise users" still carries no product word, and the
+        # weekday-name rule below is untouched.
+        product_ok = any(h in _TECH_HEAD_SYNONYMS for _, (h, _, _, _) in gates) \
+            and bool(_PLAYER_PRODUCT_RE.search(text))
+        market_signal = topic_hit is not None or product_ok or any(
             _head_matched(head, hit_tokens) or any(t in hit_tokens for t in required)
             for _, (head, required, _, _) in gates
         )
