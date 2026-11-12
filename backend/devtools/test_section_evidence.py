@@ -815,7 +815,7 @@ started: list[bool] = []
 step1_stubs = [
     (main, "_start_claim_search", lambda orient, logger: started.append(True)),
     (main, "new_run_logger", lambda: (LOG, Path("never_written.log"))),
-    (pipeline, "run_orient", lambda article, sponsor, logger: {"suggested_markets": {"tier1": [], "tier2": [], "tier3": []}}),
+    (pipeline, "run_orient", lambda article, sponsor, logger: {"own_market": "Widget Market", "suggested_markets": {"tier1": [], "tier2": [], "tier3": []}}),
     (pipeline, "run_match_catalog", lambda orient, logger: []),
     (pipeline, "run_tier_catalog", lambda orient, article, candidates, logger: candidates),
     (pipeline, "own_market_report_note", lambda orient, candidates, logger: ""),
@@ -830,12 +830,15 @@ try:
     with patched(*step1_stubs):
         out = main.step1(req)
     check("claim search: not started by Step 1 in the market-first chain", started == [] and main._RUNS[out["run_token"]].claim_future is None, str(started))
+    check("step1: the response carries own_market, the agent's identified market for the merged Market & Reports screen",
+          out["own_market"] == "Widget Market", str(out.get("own_market")))
     config.CMI_CHAIN_V2 = False
     with patched(*step1_stubs):
         main.step1(req)
     check("claim search: the old chain still starts it", started == [True])
 finally:
     config.CMI_CHAIN_V2 = old_v2
+main._RUNS.pop(out["run_token"], None)
 
 print()
 if FAILURES:

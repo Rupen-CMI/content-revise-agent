@@ -4,9 +4,11 @@ Serves the JSON API consumed by ``../frontend`` (also served statically from
 ``/`` when the frontend directory is present):
 
     POST /upload            multipart .docx  -> { filename, article }
-    POST /step1   { filename, article, sponsor_index } -> { token, run_token, orient, candidates }
+    POST /step1   { filename, article, sponsor_index } -> { token, run_token, orient, candidates, own_market }
                   Step 1: identify the market. Orient (LLM) + CMI catalog match only — no web
                   search yet, since the human hasn't confirmed a market to search for.
+                  own_market is the market the article itself is about (external_reports.
+                  own_market), shown on the merged Market & Reports screen.
     POST /reports/fetch   { run_token, kind: "cmi"|"competitor", ... } -> { kind, report, fact_sheet, report_mode, warnings, confirmed }
                   Step 2 (Reports): read one tab's chosen report into a fact sheet.
     POST /reports/cmi_choice { run_token, report_id, cmi_report_url } -> the stored choice (restored by GET /run)
@@ -1083,6 +1085,7 @@ def step1(req: Step1Request) -> dict:
         "orient": orient,
         "suggested_markets": orient.get("suggested_markets") or {"tier1": [], "tier2": [], "tier3": []},
         "candidates": [_candidate_dict(c) for c in candidates],
+        "own_market": external_reports.own_market(orient),
         "warnings": [own_note] if own_note else [],
     }
 
@@ -1813,6 +1816,7 @@ def get_run(run_token: str) -> dict:
         "sponsor_indexes": [c.paragraph.index for c in run.clients] or [run.sponsor.index],
         "clients": _client_dicts(run),
         "orient": run.orient,
+        "own_market": external_reports.own_market(run.orient),
         "candidates": [_candidate_dict(c) for c in run.candidates],
         "hits": [_hit_dict(h) for h in run.hits] if run.hits is not None else [],
         "claim_hits": _claim_hits_dict(run.claim_pool),
