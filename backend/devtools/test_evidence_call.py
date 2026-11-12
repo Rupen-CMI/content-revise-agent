@@ -198,3 +198,15 @@ if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
     sys.exit(1)
 print("all evidence-call tests passed")
+
+
+# ---- the model flattens job 3: section queries straight under "queries", source_groups/topic_terms at the top level
+import logging as _logging
+_flat = {"queries": {"trends": ["home wallbox charger launch"], "market": ["EV charging network funding round"]},
+         "source_groups": [], "topic_terms": ["home charging", "wallbox"]}
+_part = evidence_call._queries_part(_flat)
+check("a flattened queries part is read like the nested one",
+      _part["queries"]["trends"] == ["home wallbox charger launch"] and _part["topic_terms"] == ["home charging", "wallbox"], str(_part))
+_nested = {"queries": {"queries": {"trends": ["x"]}, "source_groups": [], "topic_terms": []}}
+check("the nested shape is passed through unchanged", evidence_call._queries_part(_nested) is _nested["queries"])
+print("all flattened-shape checks passed")

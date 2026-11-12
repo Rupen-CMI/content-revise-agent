@@ -63,5 +63,14 @@ def parts_from_raw(
     return {
         "publisher": publisher.points_from_raw(raw.get("publisher"), body, sponsor, logger),
         "demand": demand.demand_from_raw(raw.get("demand"), market_name, fs, logger),
-        "queries": pipeline.search_queries_from_result(raw.get("queries"), market_name, logger, plan),
+        "queries": pipeline.search_queries_from_result(_queries_part(raw), market_name, logger, plan),
     }
+
+
+def _queries_part(raw: dict):
+    """Job 3's object, {"queries", "source_groups", "topic_terms"}. The model sometimes flattens it: the section queries
+    straight under "queries" and the two lists beside it at the top level; both shapes read the same."""
+    part = raw.get("queries")
+    if isinstance(part, dict) and "queries" not in part:
+        return {"queries": part, "source_groups": raw.get("source_groups"), "topic_terms": raw.get("topic_terms")}
+    return part
