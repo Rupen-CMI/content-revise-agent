@@ -121,14 +121,60 @@ clients.run_briefs(c1, "Widget Market", LOG)
 check("brief: a page that cannot be read leaves no brief and a note for the editor", c1[0].brief is None and c1[0].notes and "could not be read" in c1[0].notes[0])
 external_reports.read_page = lambda url, logger: page
 seen_prompts = []
-llm.chat_json = lambda system, user, **kw: (seen_prompts.append(user), {"name": "Aldwych Writing Studio", "offer": "Drafting and editing of research papers for graduate students.",
-                                                                       "category": "academic writing", "anchor_fit": "matches", "market_fit": "distant", "bridge": "Both serve people who write reports."})[1]
+calls = []
+BRIEF = {"name": "Aldwych Writing Studio", "offer": "Drafting and editing of research papers for graduate students.",
+         "category": "academic writing", "anchor_fit": "matches", "market_fit": "distant", "bridge": "Both serve people who write reports."}
+
+
+def batched(system, user, **kw):
+    calls.append(kw.get("call_name"))
+    seen_prompts.append(user)
+    return {"briefs": [{"client": "C1", **BRIEF}, {"client": "C2", **BRIEF, "name": "Invented Corp", "market_fit": "close", "bridge": ""}]}
+
+
+llm.chat_json = batched
 c2, _ = clients.build_clients(art, [0, 2])
 clients.run_briefs(c2, "Widget Market", LOG)
-check("brief: each client is read and given its own brief", all(c.brief and c.brief["offer"] for c in c2) and len(seen_prompts) == 2)
-check("brief: the prompt carries the market, the paragraph with its marked links and the page text",
-      "Widget Market" in seen_prompts[0] and "<<L1: research paper help>>" in seen_prompts[0] and "graduate students" in seen_prompts[0], seen_prompts[0][:200])
+check("brief: ONE call briefs every client, each given its own brief", all(c.brief and c.brief["offer"] for c in c2) and len(seen_prompts) == 1 and calls == ["client_briefs"],
+      f"{len(seen_prompts)} {calls}")
+check("brief: each client's entry is validated on its own (a name the page never wrote is dropped for that client only)",
+      c2[0].brief["name"] == "Aldwych Writing Studio" and c2[1].brief["name"] == "" and c2[1].brief["market_fit"] == "close")
+check("brief: the prompt carries the market, every client's paragraph with its marked links and page text, and asks for one entry per client",
+      "Widget Market" in seen_prompts[0] and "<<L1: research paper help>>" in seen_prompts[0] and "<<L2: thesis editing>>" in seen_prompts[0]
+      and "CLIENT C1" in seen_prompts[0] and "CLIENT C2" in seen_prompts[0] and "graduate students" in seen_prompts[0]
+      and '"briefs"' in seen_prompts[0] and '"client"' in seen_prompts[0] and "TESTS BEFORE ANSWERING" in seen_prompts[0], seen_prompts[0][:300])
 check("brief: a distant offer is reported to the editor with its bridge", any("far from this blog's market" in n for n in clients.brief_notes(c2[0])), str(clients.brief_notes(c2[0])))
+
+llm.chat_json = lambda system, user, **kw: {"briefs": [{"client": "C2", **BRIEF}, {"client": "C2", **BRIEF}, {"client": "C9", **BRIEF}, "junk"]}
+c3, _ = clients.build_clients(art, [0, 2])
+clients.run_briefs(c3, "Widget Market", LOG)
+check("brief: a client the answer leaves out gets no brief and a note; an unknown or repeated client entry is ignored",
+      c3[0].brief is None and any("could not be worked out" in n for n in c3[0].notes) and c3[1].brief and not c3[1].notes, str([c.notes for c in c3]))
+llm.chat_json = lambda system, user, **kw: dict(BRIEF)
+c4, _ = clients.build_clients(art, [0])
+clients.run_briefs(c4, "Widget Market", LOG)
+check("brief: an old-shape answer (no 'briefs' list) leaves the client without a brief, with a note", c4[0].brief is None and c4[0].notes)
+llm.chat_json = lambda system, user, **kw: {"briefs": [dict(BRIEF)]}
+c5, _ = clients.build_clients(art, [0])
+clients.run_briefs(c5, "Widget Market", LOG)
+check("brief: with one client an entry that names no client is that client's", c5[0].brief and c5[0].brief["offer"])
+
+
+def failing(system, user, **kw):
+    raise llm.LLMError("down")
+
+
+llm.chat_json = failing
+c6, _ = clients.build_clients(art, [0, 2])
+clients.run_briefs(c6, "Widget Market", LOG)
+check("brief: a failed call leaves every client without a brief and each with a note, and never raises",
+      all(c.brief is None and any("could not be worked out" in n for n in c.notes) for c in c6))
+no_call = []
+llm.chat_json = lambda system, user, **kw: no_call.append(1) or {}
+external_reports.read_page = lambda url, logger: ""
+c7, _ = clients.build_clients(art, [0, 2])
+clients.run_briefs(c7, "Widget Market", LOG)
+check("brief: when no client's page can be read no call is made at all", not no_call and all(c.brief is None and c.notes for c in c7))
 llm.chat_json, external_reports.read_page = orig_chat, orig_read
 
 # ------------------------------------------------------------------ the write prompt

@@ -880,22 +880,41 @@ def _llm_search_queries(
     plan (the Evidence step's sections.section_search_plan): one call, the same cost, but the queries come back GROUPED BY
     SECTION ({"trends": [...], "subsegment": [...], "segmentation": [...], "us": [...], "key_players": [...], "market":
     [...]}), each built from that section's targets. Without a plan the queries are the flat list the old chain reads."""
-    players = ", ".join(search.clean_player_names(key_players)) if key_players else "(none known)"
     try:
-        # The players as cleaned query subjects ("Monday" -> "monday.com"): the LLM copies the names it is given straight
-        # into its queries, and a bare weekday or common noun in a query finds everything but the company.
-        fields = dict(
-            today=date.today().isoformat(), market_name=market_name, key_players=players,
-            segments=", ".join(segments[:14]) if segments else "(none listed)", source_group_menu=sources.pack_menu(),
-        )
+        fields = search_query_fields(market_name, key_players, segments)
         if plan is not None:
             result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_SECTION_QUERIES_USER.format(
                 section_targets=sections.format_targets(plan), **fields), call_name="search_queries", logger=logger)
-            queries = sections.parse_grouped_queries(result.get("queries"))
-            has_queries = any(queries.values())
         else:
             result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_QUERIES_USER.format(**fields),
                                    call_name="search_queries", logger=logger)
+    except llm.LLMError:
+        logger.warning("[search] LLM query generation failed, falling back to deterministic templates", exc_info=True)
+        result = None
+    return search_queries_from_result(result, market_name, logger, plan)
+
+
+def search_query_fields(market_name: str, key_players: list[str], segments: list[str] = ()) -> dict:
+    """The values SEARCH_QUERIES_USER and SEARCH_SECTION_QUERIES_USER are filled with (the section prompt also takes
+    section_targets). The players are the cleaned query subjects ("Monday" -> "monday.com"): the LLM copies the names it is
+    given straight into its queries, and a bare weekday or common noun in a query finds everything but the company."""
+    players = ", ".join(search.clean_player_names(key_players)) if key_players else "(none known)"
+    return dict(
+        today=date.today().isoformat(), market_name=market_name, key_players=players,
+        segments=", ".join(segments[:14]) if segments else "(none listed)", source_group_menu=sources.pack_menu(),
+    )
+
+
+def search_queries_from_result(
+    result, market_name: str, logger: logging.Logger, plan: dict | None = None,
+) -> tuple[list[str] | dict[str, list[str]], list[str], list[str]]:
+    """(queries, source_groups, topic_terms) from the model's answer (None or unusable: the deterministic templates, grouped
+    by section when a plan is given)."""
+    if isinstance(result, dict):
+        if plan is not None:
+            queries = sections.parse_grouped_queries(result.get("queries"))
+            has_queries = any(queries.values())
+        else:
             queries = [str(q).strip() for q in result.get("queries") or [] if str(q).strip()]
             has_queries = bool(queries)
         groups = [str(g).strip() for g in result.get("source_groups") or [] if str(g).strip() in sources.PACKS]
@@ -905,8 +924,6 @@ def _llm_search_queries(
         if has_queries:
             return queries, groups, topic_terms
         logger.warning("[search] LLM returned no usable queries, falling back to deterministic templates")
-    except llm.LLMError:
-        logger.warning("[search] LLM query generation failed, falling back to deterministic templates", exc_info=True)
     if plan is not None:
         return sections.fallback_queries(plan, _market_core(market_name), _market_search_queries(market_name)), [], []
     return _market_search_queries(market_name), [], []

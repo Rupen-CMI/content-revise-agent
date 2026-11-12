@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import demand  # noqa: E402
+import evidence_call  # noqa: E402
 import external_reports  # noqa: E402
 import facts  # noqa: E402
 import keyword_research  # noqa: E402
@@ -138,6 +139,8 @@ def step2(found, page_text, usable_urls):
         (keyword_research, "research", lambda m, l: {"suggestions": [], "pool": [], "ranking_terms": [], "method": ""}),
         (publisher, "run_publisher_points", lambda *a, **k: {"points": []}),
         (pipeline, "prepare_search_queries", lambda *a, **k: (["n"], ["w"], ["u"])),
+        (evidence_call, "run_evidence_prep", lambda *a, **k: {"publisher": {"points": []}, "demand": {"questions": []},
+                                                              "queries": (["n"], ["w"], ["u"])}),
         (pipeline, "run_search_evidence", lambda *a, **k: []),
     ]
     try:

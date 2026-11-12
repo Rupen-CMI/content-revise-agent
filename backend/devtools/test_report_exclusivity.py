@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
 import demand  # noqa: E402
+import evidence_call  # noqa: E402
 import external_reports  # noqa: E402
 import facts  # noqa: E402
 import keyword_research  # noqa: E402
@@ -233,7 +234,7 @@ try:
     run = main._RUNS[TOKEN]
     flags = {"fetch": 0, "read_page": 0, "find_pages": 0, "build_sheet": 0,
              "gap_search": 0, "figure_backing": 0, "fill_web": 0,
-             "search_demand": 0, "publisher": 0, "search_queries": 0, "evidence": 0}
+             "search_demand": 0, "publisher": 0, "search_queries": 0, "evidence": 0, "evidence_prep": 0}
     names = {"evidence": [], "find_pages": [], "queries": []}
 
     def cmi_report() -> reports.Report:
@@ -288,6 +289,12 @@ try:
         names["queries"].append(market_name)
         return (["news query"], ["web query"], ["us query"])
 
+    def fake_evidence_prep(article, sponsor, market_name, fs, players, segments, plan, real_queries, logger):
+        flags["evidence_prep"] += 1
+        names["queries"].append(market_name)
+        return {"publisher": {"points": []}, "demand": {"questions": [{"id": "Q1", "question": "How fast is the market growing?"}]},
+                "queries": (["news query"], ["web query"], ["us query"])}
+
     def fake_search_evidence(market_name, sponsor, candidates, logger, **kw):
         flags["evidence"] += 1
         names["evidence"].append(market_name)
@@ -305,12 +312,13 @@ try:
         (keyword_research, "research", lambda m, l: {"suggestions": [], "pool": [], "ranking_terms": [], "method": ""}),
         (publisher, "run_publisher_points", fake_publisher_point),
         (pipeline, "prepare_search_queries", fake_search_queries),
+        (evidence_call, "run_evidence_prep", fake_evidence_prep),
         (pipeline, "run_search_evidence", fake_search_evidence),
     ]
     with patched_all(*stubs):
         built = main._build_reports(run, [main._RUNS[TOKEN].candidates[0]], [], markets=[MARKET], url_markets={})
     check("_build_reports CMI: no search demand, publisher, evidence or query planning runs in the Reports step",
-          all(flags[k] == 0 for k in ("search_demand", "publisher", "search_queries", "evidence")), str(flags))
+          all(flags[k] == 0 for k in ("search_demand", "publisher", "search_queries", "evidence", "evidence_prep")), str(flags))
     run.report_tabs["cmi"] = built
     main._activate_report(run, "cmi")
     refused = None
@@ -348,10 +356,23 @@ try:
           run.gap_pages == [], str(run.gap_pages))
     check("CMI run: the market-news evidence search STILL ran with the report's name",
           flags["evidence"] == 1 and names["evidence"] == [NAME], str(flags) + str(names))
-    check("CMI run: search demand and publisher points still ran, and no separate U.S. search exists (its queries are in the one search)",
-          flags["search_demand"] == 1 and flags["publisher"] == 1 and not hasattr(us_search, "run_us_search"), str(flags))
+    check("CMI run: search demand, publisher points and the search queries ran as ONE call, not three, and no separate U.S. search exists",
+          flags["evidence_prep"] == 1 and flags["search_demand"] == 0 and flags["publisher"] == 0 and flags["search_queries"] == 0
+          and not hasattr(us_search, "run_us_search"), str(flags))
+    check("CMI run: the one call's parts reach the response (the MSQs, with the keyword research beside them)",
+          out["demand"]["questions"][0]["id"] == "Q1" and "keyword_research" in out["demand"], str(out["demand"]))
     check("CMI run: the search queries were planned from the CMI report's name",
-          flags["search_queries"] == 1 and names["queries"] == [NAME], str(names))
+          flags["evidence_prep"] == 1 and names["queries"] == [NAME], str(names))
+    old_switch = config.EVIDENCE_ONE_CALL
+    config.EVIDENCE_ONE_CALL = False
+    try:
+        with patched_all(*stubs):
+            out_old = main.step2(main.Step2Request(run_token=TOKEN))
+    finally:
+        config.EVIDENCE_ONE_CALL = old_switch
+    check("EVIDENCE_ONE_CALL=false: the three separate calls are back (search demand, publisher points, search queries), the one call is not made",
+          flags["evidence_prep"] == 1 and flags["search_demand"] == 1 and flags["publisher"] == 1 and flags["search_queries"] == 1
+          and out_old["demand"]["questions"][0]["id"] == "Q1", str(flags))
     check("CMI run: the run carries the result (fact sheet, report, mode) for Step 3",
           run.report is not None and run.report.url == URL and run.fact_sheet is fs
           and run.report_mode == "cmi", "run state")

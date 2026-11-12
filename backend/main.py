@@ -71,6 +71,7 @@ import checks
 import clients as clients_mod
 import config
 import demand
+import evidence_call
 import external_reports
 import facts
 import faqs
@@ -1314,23 +1315,36 @@ def _step2_v2(run: RunState) -> dict:
             # Real searches first (a few seconds): they ground the long-tail list and order the secondary-keyword pool.
             keywords_f = prep.submit(timed, "Keyword research", keyword_research.research, report.name, run.logger)
 
-            def demand_with_keywords():
-                keywords = keywords_f.result()
-                result = demand.run_search_demand(
-                    report.name, fs, run.logger, real_queries=[s["query"] for s in keywords["suggestions"]])
-                result["keyword_research"] = keywords
-                return result
+            def real_queries() -> list[str]:
+                return [s["query"] for s in keywords_f.result()["suggestions"]]
 
-            demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
             clients_f = (prep.submit(timed, "Client check", clients_mod.run_briefs, run.clients, report.name, run.logger)
                          if run.clients and config.CLIENT_REWRITE else None)
-            publisher_f = prep.submit(
-                timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
-            search_queries_f = prep.submit(
-                timed, "Plan market search queries", pipeline.prepare_search_queries, report.name,
-                players, run.logger, segment_terms, run.section_plan,
-            )
-            prepared_queries = search_queries_f.result()
+            demand_f = publisher_f = None
+            if config.EVIDENCE_ONE_CALL:
+                # The publisher points, the search demand and the search queries are ONE call (evidence_call.py).
+                def prep_call() -> dict:
+                    result = evidence_call.run_evidence_prep(
+                        run.article, run.sponsor, report.name, fs, players, segment_terms, run.section_plan, real_queries(), run.logger)
+                    result["demand"]["keyword_research"] = keywords_f.result()
+                    return result
+
+                prepared = prep.submit(timed, "Evidence prep call", prep_call).result()
+                demand_result, publisher_result, prepared_queries = prepared["demand"], prepared["publisher"], prepared["queries"]
+            else:
+                def demand_with_keywords():
+                    result = demand.run_search_demand(report.name, fs, run.logger, real_queries=real_queries())
+                    result["keyword_research"] = keywords_f.result()
+                    return result
+
+                demand_f = prep.submit(timed, "Search demand", demand_with_keywords)
+                publisher_f = prep.submit(
+                    timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
+                search_queries_f = prep.submit(
+                    timed, "Plan market search queries", pipeline.prepare_search_queries, report.name,
+                    players, run.logger, segment_terms, run.section_plan,
+                )
+                prepared_queries = search_queries_f.result()
             run.section_queries = prepared_queries[0] if isinstance(prepared_queries[0], dict) else {}
             run.search_groups = list(prepared_queries[1])
         finally:
@@ -1342,7 +1356,8 @@ def _step2_v2(run: RunState) -> dict:
                 key_players=players, orient=run.orient, segments=segment_terms,
                 search_queries=prepared_queries, subsegments=run.subsegments,
             )
-        demand_result, publisher_result = demand_f.result(), publisher_f.result()
+        if demand_f is not None:
+            demand_result, publisher_result = demand_f.result(), publisher_f.result()
         if clients_f is not None:
             clients_f.result()
             for c in run.clients:

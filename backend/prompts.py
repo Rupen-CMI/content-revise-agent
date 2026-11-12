@@ -1250,6 +1250,25 @@ TESTS BEFORE ANSWERING
 Return JSON in exactly this shape:
 {{"name": "<company name>" or null, "offer": "<one sentence>" or null, "category": "<kind of business>", "anchor_fit": "<matches|broader|different>", "anchor_note": "<one sentence or empty>", "market_fit": "<close|adjacent|distant>", "bridge": "<one sentence or empty>"}}"""
 
+# All the clients of a post in ONE call (clients.run_briefs): the same purpose, method, tests and per-client shape as
+# CLIENT_BRIEF_USER (sliced from it, so the two can never drift), with each client's own paragraph, links and pages as one block and
+# one entry per client in the answer. CLIENT_BRIEF_BLOCK is filled once per client; CLIENT_BRIEFS_USER takes their joined text.
+_BRIEF_CLIENT_FROM = CLIENT_BRIEF_USER.index("THE CLIENT'S PARAGRAPH")
+_BRIEF_RULES_FROM = CLIENT_BRIEF_USER.index("PURPOSE")
+_BRIEF_SHAPE_FROM = CLIENT_BRIEF_USER.index("Return JSON in exactly this shape:")
+CLIENT_BRIEF_BLOCK = "CLIENT {client_id}\n" + CLIENT_BRIEF_USER[_BRIEF_CLIENT_FROM:_BRIEF_RULES_FROM].rstrip() + "\n"
+CLIENT_BRIEFS_USER = (
+    "THE MARKET OF THE POST: {market_name}\n\n"
+    "SEVERAL CLIENTS follow, each with its own paragraph, links and page text. Write one brief for each client, from that client's own "
+    "pages only: what one client's pages say never informs another client's brief.\n\n"
+    "{clients_block}\n"
+    + CLIENT_BRIEF_USER[_BRIEF_RULES_FROM:_BRIEF_SHAPE_FROM].rstrip()
+    + "\n\nThe rules above apply to each client separately. Return JSON with one entry per client, each entry the shape below for "
+    "that client with the client's id added:\n"
+    + '{{"briefs": [' + CLIENT_BRIEF_USER[_BRIEF_SHAPE_FROM:].split("\n", 1)[1].replace(
+        '{{"name"', '{{"client": "<the client id, for example C1>", "name"', 1) + ', ...]}}'
+)
+
 # The write prompt's rules for the restated client paragraph (clients.client_block fills the placeholders).
 CLIENT_BLOCK = """- THE CLIENT LINKS. The post carries the paid backlink(s) of {client_count} client(s). The client is never promoted: its name, its company, its products, its credentials, its figures and its claims about itself do not appear in the post. The only thing the client receives is the link, placed on the linked words listed below, inside sentences that belong to the opening's own explanation of the market. Its rules:
   1. The link is the only mention: write each link as [[CLIENT_LINK:<link id>|<the linked words>]], with the linked words exactly as listed, never changed, split, reordered or repeated, and every link written exactly once, in the opening. Never write the client's name or domain, never call it a company, a firm, a provider or a service ("the firm", "its offer"), never describe, recommend, rank or compare it.
@@ -1430,6 +1449,35 @@ TESTS BEFORE ANSWERING
 
 Return JSON in exactly this shape:
 {{"intro_angle": "<one sentence>", "points": ["<point>", "..."]}}"""
+
+# ---------------------------------------------------------------- market-first chain: the one EVIDENCE PREP call
+# The three calls of the Evidence step's preparation (the publisher points, the search demand, the market search queries) as ONE
+# call: each job keeps its own system role, its own prompt (rules, tests and answer shape, verbatim, so the three can never
+# drift from the separate prompts the old chain still uses) and its own answer, under one key. Filled from
+# publisher.prompt_fields, demand.prompt_fields and pipeline.search_query_fields plus section_targets.
+EVIDENCE_PREP_SYSTEM = (
+    "You are an analyst at Coherent Market Insights (CMI) and you do three separate jobs for one confirmed market in one "
+    "answer. Each job below has its own role, its own inputs, its own rules and its own answer shape. Do each job only from "
+    "its own inputs and rules, exactly as if the other two did not exist, and put its answer under its own key. Respond with JSON only.\n\n"
+    "JOB 1 ROLE: " + PUBLISHER_POINTS_SYSTEM + "\n\n"
+    "JOB 2 ROLE: " + SEARCH_DEMAND_SYSTEM + "\n\n"
+    "JOB 3 ROLE: " + SEARCH_QUERIES_SYSTEM
+)
+
+EVIDENCE_PREP_USER = (
+    "Three jobs follow. Each one is a complete prompt of its own, ending with the JSON shape of its own answer.\n\n"
+    "======== JOB 1 of 3: PUBLISHER POINTS (its answer goes under the key \"publisher\") ========\n\n"
+    + PUBLISHER_POINTS_USER
+    + "\n\n======== JOB 2 of 3: SEARCH DEMAND (its answer goes under the key \"demand\") ========\n\n"
+    + SEARCH_DEMAND_USER
+    + "\n\n======== JOB 3 of 3: MARKET SEARCH QUERIES (its answer goes under the key \"queries\") ========\n\n"
+    + SEARCH_SECTION_QUERIES_USER
+    + "\n\n======== YOUR ANSWER ========\n\n"
+    "Return ONE JSON object with exactly these three keys. Each key holds the object that its own job describes in its own "
+    "\"Return JSON\" line above, with exactly that job's keys and shapes: "
+    "{{\"publisher\": <job 1's object>, \"demand\": <job 2's object>, \"queries\": <job 3's object: its \"queries\", "
+    "\"source_groups\" and \"topic_terms\">}}"
+)
 
 # ---------------------------------------------------------------- market-first chain: PLAN
 PLAN_SYSTEM = """You are the planning editor at Coherent Market Insights (CMI). You plan a market article before anyone writes it: which questions its headings answer, what each section tells the reader, which facts go where and which keywords sit where. A writer will turn your plan into prose and may use only what your plan assigns. Respond with JSON only."""

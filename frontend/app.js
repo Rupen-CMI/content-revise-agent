@@ -1876,6 +1876,7 @@ const STEP2_STAGE_LABELS = {
   "Client check": "Reading each client's own site",
   "Publisher points": "Reading the article's own points",
   "Plan market search queries": "Planning the evidence searches",
+  "Evidence prep call": "Writing the questions, article points and evidence searches",
   "Market web search": "Searching the web for evidence",
 };
 

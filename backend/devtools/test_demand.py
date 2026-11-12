@@ -219,6 +219,22 @@ try:
 finally:
     llm.chat_json = orig
 
+# the parts of the call, which the one evidence call (evidence_call.py) shares with it
+raw_answer = fake_chat(None, None)
+llm.chat_json = fake_chat
+try:
+    called = demand.run_search_demand(MARKET, fs, LOG)
+finally:
+    llm.chat_json = orig
+check("parts: demand_from_raw of the model's answer is what run_search_demand returns",
+      demand.demand_from_raw(raw_answer, MARKET, fs, LOG) == called and len(called["questions"]) == 5, str(called))
+check("parts: demand_from_raw of an answer that is no object gives empty pools",
+      demand.demand_from_raw(None, MARKET, fs, LOG) == {"questions": [], "terms": [], "long_tail": []})
+pf = demand.prompt_fields(MARKET, fs, ["real phrase"])
+check("parts: prompt_fields fills the prompt (market, facts, real searches)",
+      set(pf) == {"market_name", "facts", "real_queries"} and "- real phrase" in prompts.SEARCH_DEMAND_USER.format(**pf)
+      and demand.prompt_fields(MARKET, fs)["real_queries"] == "(none found)")
+
 # ------------------------------------------------------------------ the prompt carries framing, not samples
 formatted = prompts.SEARCH_DEMAND_USER.format(market_name=MARKET, facts="- fs.size: x", real_queries="- real phrase")
 check("prompt: formats and names the market", MARKET in formatted)

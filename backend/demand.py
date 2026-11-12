@@ -220,22 +220,17 @@ def normalize_longtails(raw, flat_facts: list[dict], market_name: str, logger: l
     return out
 
 
-def run_search_demand(market_name: str, fs: dict, logger: logging.Logger, real_queries: list[str] = ()) -> dict:
-    """CALL: what people search about this market. Best-effort: a failure returns empty pools, logged, never fatal.
-    Returns {"questions": [...], "terms": [...], "long_tail": [...]}."""
-    section(logger, "CALL: SEARCH DEMAND")
+def prompt_fields(market_name: str, fs: dict, real_queries: list[str] = ()) -> dict:
+    """The values SEARCH_DEMAND_USER is filled with (also the demand part of the one evidence call)."""
+    return dict(
+        market_name=market_name, facts=_format_facts(facts.flatten_fact_sheet(fs)),
+        real_queries="\n".join(f"- {q}" for q in list(real_queries)[:25]) or "(none found)")
+
+
+def demand_from_raw(raw, market_name: str, fs: dict, logger: logging.Logger) -> dict:
+    """The model's answer as {"questions": [...], "terms": [...], "long_tail": [...]}, every part validated."""
+    raw = raw if isinstance(raw, dict) else {}
     flat = facts.flatten_fact_sheet(fs)
-    try:
-        raw = llm.chat_json(
-            prompts.SEARCH_DEMAND_SYSTEM,
-            prompts.SEARCH_DEMAND_USER.format(
-                market_name=market_name, facts=_format_facts(flat),
-                real_queries="\n".join(f"- {q}" for q in list(real_queries)[:25]) or "(none found)"),
-            temperature=0.3, call_name="search_demand", logger=logger,
-        )
-    except llm.LLMError:
-        logger.warning("[demand] the search demand call failed; no questions or keywords were produced", exc_info=True)
-        return {"questions": [], "terms": [], "long_tail": []}
     questions = normalize_questions(raw.get("questions"), market_name, logger)
     logger.info(f"[demand] {len(questions)} most-searched question(s): "
                 + "; ".join(f"{q['id']}[{q['intent']}]={q['question']}" for q in questions))
@@ -244,6 +239,22 @@ def run_search_demand(market_name: str, fs: dict, logger: logging.Logger, real_q
         "terms": normalize_terms(raw.get("terms"), market_name, logger),
         "long_tail": normalize_longtails(raw.get("long_tail"), flat, market_name, logger, market_core=market_name),
     }
+
+
+def run_search_demand(market_name: str, fs: dict, logger: logging.Logger, real_queries: list[str] = ()) -> dict:
+    """CALL: what people search about this market. Best-effort: a failure returns empty pools, logged, never fatal.
+    Returns {"questions": [...], "terms": [...], "long_tail": [...]}."""
+    section(logger, "CALL: SEARCH DEMAND")
+    try:
+        raw = llm.chat_json(
+            prompts.SEARCH_DEMAND_SYSTEM,
+            prompts.SEARCH_DEMAND_USER.format(**prompt_fields(market_name, fs, real_queries)),
+            temperature=0.3, call_name="search_demand", logger=logger,
+        )
+    except llm.LLMError:
+        logger.warning("[demand] the search demand call failed; no questions or keywords were produced", exc_info=True)
+        return {"questions": [], "terms": [], "long_tail": []}
+    return demand_from_raw(raw, market_name, fs, logger)
 
 
 # --------------------------------------------------------------------------------------------- answerability

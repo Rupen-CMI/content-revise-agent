@@ -93,24 +93,38 @@ def normalize_points(raw: dict, article_body: str, brand_terms: list[str], logge
     return {"intro_angle": angle, "points": points}
 
 
+def article_text(article: SourceArticle, logger: logging.Logger) -> str:
+    """The guest article's body without its stale dated developments: the text the call reads and the numbers are checked against."""
+    body, removed = freshness.strip_stale_developments(article.body)
+    if removed:
+        logger.info(f"[publisher] dropped {len(removed)} stale dated development(s) from the article text")
+    return body
+
+
+def prompt_fields(article: SourceArticle, sponsor: Paragraph, market_name: str, body: str) -> dict:
+    """The values PUBLISHER_POINTS_USER is filled with (also the publisher part of the one evidence call)."""
+    return dict(market_name=market_name, title=article.title, body=body[:_BODY_CHARS], sponsor=sponsor.text)
+
+
+def points_from_raw(raw, body: str, sponsor: Paragraph, logger: logging.Logger) -> dict:
+    """The model's answer as the points the planner may use (normalize_points with the sponsor's brand terms)."""
+    return normalize_points(raw, body, _brand_terms(sponsor), logger)
+
+
 def run_publisher_points(
     article: SourceArticle, sponsor: Paragraph, market_name: str, logger: logging.Logger,
 ) -> dict:
     """CALL: boil the guest article down to a few points. Best-effort: a failure returns no points, and the planner then
     builds the intro from the article's title and subject alone."""
     section(logger, "CALL: PUBLISHER POINTS")
-    body, removed = freshness.strip_stale_developments(article.body)
-    if removed:
-        logger.info(f"[publisher] dropped {len(removed)} stale dated development(s) from the article text")
+    body = article_text(article, logger)
     try:
         raw = llm.chat_json(
             prompts.PUBLISHER_POINTS_SYSTEM,
-            prompts.PUBLISHER_POINTS_USER.format(
-                market_name=market_name, title=article.title, body=body[:_BODY_CHARS], sponsor=sponsor.text,
-            ),
+            prompts.PUBLISHER_POINTS_USER.format(**prompt_fields(article, sponsor, market_name, body)),
             temperature=0.2, call_name="publisher_points", logger=logger,
         )
     except llm.LLMError:
         logger.warning("[publisher] the publisher points call failed; the intro will rest on the title alone", exc_info=True)
         return {"intro_angle": "", "points": []}
-    return normalize_points(raw, body, _brand_terms(sponsor), logger)
+    return points_from_raw(raw, body, sponsor, logger)

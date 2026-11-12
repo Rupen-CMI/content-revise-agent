@@ -49,6 +49,11 @@ SEARCH_CLAIMS_ENABLED = os.getenv("SEARCH_CLAIMS_ENABLED", "false").strip().lowe
 # (old Step 2 prep, old write + revise, old FAQ, old checks) — this only flips which Step 2/3/4 branches run.
 CMI_CHAIN_V2 = os.getenv("CMI_CHAIN_V2", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# The Evidence step's three preparation calls (publisher points, search demand, market search queries) as ONE call
+# (evidence_call.py). EVIDENCE_ONE_CALL=false brings back the three separate parallel calls: the one call is longer, and the
+# web search waits for all of it, where the separate queries call used to finish first.
+EVIDENCE_ONE_CALL = os.getenv("EVIDENCE_ONE_CALL", "true").strip().lower() not in ("0", "false", "no", "off")
+
 # Style anchors: when on, the write prompt carries four short passages from the content team's reference article as a register
 # guide (prompts.STYLE_ANCHORS). On by default (devtools/ab_voice.py compared the writer with and without them: shorter sentences,
 # every trend anchored); WRITE_STYLE_ANCHORS=false turns them off.

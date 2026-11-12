@@ -111,6 +111,15 @@ try:
 finally:
     llm.chat_json = orig
 
+# the parts of the call, which the one evidence call (evidence_call.py) shares with it
+body_text = publisher.article_text(article, LOG)
+check("parts: points_from_raw of the model's answer is what run_publisher_points returns",
+      publisher.points_from_raw(good, body_text, sponsor, LOG) == res and len(res["points"]) == 2)
+check("parts: points_from_raw of an answer that is no object gives no points", publisher.points_from_raw(None, body_text, sponsor, LOG) == {"intro_angle": "", "points": []})
+fields = publisher.prompt_fields(article, sponsor, "Widget Market", body_text)
+check("parts: prompt_fields fills the prompt (market, title, body, sponsor)",
+      set(fields) == {"market_name", "title", "body", "sponsor"} and "GUEST ARTICLE (title: Tools)" in prompts.PUBLISHER_POINTS_USER.format(**fields))
+
 formatted = prompts.PUBLISHER_POINTS_USER.format(market_name="M", title="T", body="B", sponsor="S")
 check("prompt: formats", "GUEST ARTICLE" in formatted)
 
