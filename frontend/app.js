@@ -162,6 +162,10 @@ async function resumeRunIfAny() {
       run.sheets[data.report_kind].confirmed = !!data.fact_sheet_confirmed;
     }
     if (data.report) run.report = data.report;
+    // the Evidence step's section layer (the two fixed sub-segments, hits found and facts kept per section)
+    run.subsegments = data.subsegments || [];
+    run.sectionHits = (data.evidence_sections && data.evidence_sections.hits) || {};
+    run.sectionCounts = (data.evidence_sections && data.evidence_sections.selected) || {};
     if (data.sections && data.sections.length) {
       run.stage = "write_done";
       run.selection = data.selection;
@@ -920,6 +924,9 @@ async function runEvidence(kind) {
     run.reportMode = data.report_mode || null;
     run.warnings = data.warnings || [];
     run.clients = data.clients || [];
+    run.subsegments = data.subsegments || [];
+    run.sectionHits = data.sections || {};
+    run.sectionCounts = {};
   } catch (e) {
     showError("Step 3 (fetch market evidence)", e);
     run.stage = "reports_ready";
@@ -940,6 +947,12 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
     state.run.stage = "select_done";
     state.run.selection = data.selection;
     state.run.questions = data.questions || {};
+    state.run.sectionCounts = data.sections || {};
+    state.run.sectionMinimums = data.minimums || {};
+    if (data.subsegments) state.run.subsegments = data.subsegments;
+    // the top-up search may have added hits (after the first search's), and its thin-section warnings join the screen's warnings
+    if (data.hits) state.run.hits = data.hits;
+    state.run.warnings = (state.run.warnings || []).filter((w) => !w.startsWith("Thin evidence for")).concat(data.warnings || []);
     if (data.demand) state.run.demand = data.demand;   // market-first: answerability is now marked
     if (data.long_tail_keywords) state.run.longtails = data.long_tail_keywords;   // market-first: they arrive with the picked facts, not at the evidence search
   } catch (e) {
@@ -1879,6 +1892,15 @@ function syncProgressPoll() {
   if (PROGRESS_LISTS[stage]) pollStepProgress(); else stopProgressPoll();
 }
 
+// The Evidence step's sections: labels for the hit chips and the fact groups, and the fewest facts a section should have (the
+// server sends its own minimums with Step 3; these cover a reloaded run).
+const SECTION_HIT_LABEL = { trends: "Trends", subsegment: "Sub-segments", segmentation: "Segmentation", us: "U.S.", key_players: "Key players", market: "General market" };
+const SECTION_MIN = { trends: 6, subsegment: 1, us: 2, key_players: 3 };
+function sectionHeading(key) {
+  const [head, name] = [key.split(":")[0], key.includes(":") ? key.slice(key.indexOf(":") + 1) : ""];
+  return head === "subsegment" ? `Sub-segment: ${name}` : (SECTION_HIT_LABEL[head] || head);
+}
+
 function renderEvidencePanel() {
   const spinner = document.getElementById("step2-spinner");
   const content = document.getElementById("step2-content");
@@ -1915,6 +1937,14 @@ function renderEvidencePanel() {
 
   const hits = state.run.hits || [];
   document.getElementById("step2-hits-count").textContent = hits.length;
+  const subs = state.run.subsegments || [];
+  const sectionHits = state.run.sectionHits || {};
+  document.getElementById("step2-sections-block").hidden = !subs.length && !Object.keys(sectionHits).length;
+  document.getElementById("step2-subsegments").innerHTML = subs.length
+    ? subs.map((s) => `<li><strong>${escapeHtml(s.name)}</strong> <span class="option-caption">${escapeHtml(s.split)}</span></li>`).join("")
+    : `<li class="empty-note">The report names no segment split, so there is no sub-segment to search.</li>`;
+  document.getElementById("step2-section-hits").innerHTML = Object.entries(sectionHits).map(([k, n]) =>
+    `<span class="section-chip">${escapeHtml(SECTION_HIT_LABEL[k] || k)} <strong>${n}</strong></span>`).join("");
   const timings = state.run.timings;
   document.getElementById("step2-timing").hidden = !timings;
   document.getElementById("step2-timing-stages").hidden = !timings;
@@ -2023,21 +2053,37 @@ function renderStep3Panel() {
   const facts = (state.run.selection && state.run.selection.evidence) || [];
   const hits = state.run.hits || [];
   const useForLabel = { trends: "Trend", us: "U.S. market", players: "Key player", context: "Context" };
-  evidenceList.innerHTML = facts.length
-    ? facts.map((e) => {
-        const idx = parseInt(String(e.id || "").replace(/\D/g, ""), 10) - 1;
-        const hit = hits[idx];
-        let sourceLabel = "web";
-        if (hit) {
-          sourceLabel = hit.source || (() => { try { return new URL(hit.url).hostname.replace(/^www\./, ""); } catch { return "web"; } })();
-        }
-        const tag = (e.use_for_all && e.use_for_all.length ? e.use_for_all : [e.use_for])
-          .map((t) => useForLabel[t] || "Context").join(" + ");
-        const sourceEl = hit && hit.url
-          ? `<a href="${escapeHtml(hit.url)}" target="_blank" rel="noopener">${escapeHtml(sourceLabel)}</a>`
-          : escapeHtml(sourceLabel);
-        return `<li>${escapeHtml(e.fact)} <span class="option-caption">${escapeHtml(tag)} &middot; source: ${sourceEl}</span></li>`;
-      }).join("")
+  const factLi = (e, withTag) => {
+    const idx = parseInt(String(e.id || "").replace(/\D/g, ""), 10) - 1;
+    const hit = hits[idx];
+    let sourceLabel = "web";
+    if (hit) {
+      sourceLabel = hit.source || (() => { try { return new URL(hit.url).hostname.replace(/^www\./, ""); } catch { return "web"; } })();
+    }
+    const tag = (e.use_for_all && e.use_for_all.length ? e.use_for_all : [e.use_for])
+      .map((t) => useForLabel[t] || "Context").join(" + ");
+    const sourceEl = hit && hit.url
+      ? `<a href="${escapeHtml(hit.url)}" target="_blank" rel="noopener">${escapeHtml(sourceLabel)}</a>`
+      : escapeHtml(sourceLabel);
+    return `<li>${escapeHtml(e.fact)} <span class="option-caption">${withTag ? escapeHtml(tag) + " &middot; " : ""}source: ${sourceEl}</span></li>`;
+  };
+  // Market-first chain: every fact sits in exactly one section; show them grouped, with the count and a "thin" badge below the minimum.
+  const sectionCounts = state.run.sectionCounts || {};
+  const grouped = Object.keys(sectionCounts).length > 0;
+  document.getElementById("step3-sections").innerHTML = grouped ? Object.entries(sectionCounts).map(([key, n]) => {
+    const [head, name] = [key.split(":")[0], key.includes(":") ? key.slice(key.indexOf(":") + 1) : ""];
+    const mine = facts.filter((e) => (head === "subsegment" ? e.section === "subsegment" && e.subsegment === name : e.section === head));
+    const min = (state.run.sectionMinimums || {})[key] ?? SECTION_MIN[head] ?? 0;
+    const thin = n < min;
+    return `<div class="evidence-group"><h4 class="evidence-group-title">${escapeHtml(sectionHeading(key))} <span class="section-chip">${n}</span>`
+      + (thin ? ` <span class="msq-badge thin-badge" title="Fewer than ${min} fact(s) found; the section leans on the report's own facts.">thin</span>` : "")
+      + `</h4><ul class="plain-list">`
+      + (mine.length ? mine.map((e) => factLi(e, false)).join("") : `<li class="empty-note">No fact found for this section.</li>`)
+      + `</ul></div>`;
+  }).join("") : "";
+  evidenceList.hidden = grouped;
+  evidenceList.innerHTML = grouped ? "" : facts.length
+    ? facts.map((e) => factLi(e, true)).join("")
     : `<li class="empty-note">No supporting web facts survived review — the writer will rely on the confirmed CMI report alone. You can still continue.</li>`;
 
   const claimsForBacking = (state.run.orient && state.run.orient.claims_to_back) || [];

@@ -1666,3 +1666,18 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
   .fs-edit-label { flex-basis: 100%; }
   .fs-hint { margin-left: 0; }
 }
+
+/* Evidence step: results and facts grouped by article section */
+.section-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.section-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.evidence-group { margin-top: 14px; }
+.evidence-group-title { margin: 0 0 4px; font-size: 14px; }
+.thin-badge { color: var(--warning, #b45309); border-color: var(--warning, #b45309); }
