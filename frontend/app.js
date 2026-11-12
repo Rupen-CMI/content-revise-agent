@@ -1211,6 +1211,9 @@ function renderStep1Panel() {
   const doneBlock = document.getElementById("step1-done-block");
 
   if (!state.run) { spinner.hidden = true; content.hidden = true; return; }
+  // the CMI report link box shows the run's own link (a restored run, or empty for a new one)
+  const cmiInput = document.getElementById("step1-cmi-url");
+  if (cmiInput.value !== (state.run.cmiUrl || "")) cmiInput.value = state.run.cmiUrl || "";
 
   const pending = state.run.stage === "pending";
   spinner.hidden = !pending;
