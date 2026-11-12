@@ -1,3 +1,4 @@
+import config
 import prompt_rules
 
 SPONSOR_TOKEN = "[[SPONSOR_PARAGRAPH]]"
@@ -280,15 +281,40 @@ _QUERY_RULES_SHARED = (SEARCH_QUERIES_USER[_QUERY_RULES_FROM:_QUERY_RULES_TO]
                        .replace("the 9 categories above describe", "the sections above describe")
                        .replace("For every category except key players", "For every section except key players"))
 
-SEARCH_SECTION_QUERIES_USER = """TODAY'S DATE: {today}
-CONFIRMED MARKET: {market_name}
-KNOWN COMPANIES IN THIS MARKET (from the confirmed CMI report, if any): {key_players}
-MARKET SEGMENTS (from the confirmed CMI report, if any): {segments}
+# the SOURCE GROUPS and TOPIC TERMS blocks that close the shared rules (the natural rules need them too)
+_SOURCE_AND_TERMS = SEARCH_QUERIES_USER[SEARCH_QUERIES_USER.index("SOURCE GROUPS —"):_QUERY_RULES_TO]
 
-SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that market as a whole and for its sections below, \
-and do not narrow to one product, feature or use case unless that IS the market.
+# The natural-query rules (config.QUERY_STYLE "natural", the default): the old "anchor phrase in quotes + one or two words"
+# shape produced stiff strings that landed few results, so every rule now pushes the queries toward what a journalist's
+# headline or a person's news search would contain. The rules that still hold from the shared block above are kept here
+# verbatim (no "OR", no "Market" in a quoted phrase, no research-firm report pages).
+_QUERY_RULES_NATURAL = """Every query reads like what a journalist's headline or a person's news search would contain, so the \
+engine finds real coverage. Follow these rules, learned from real search failures:
+- Plain, everyday wording: common synonyms of the market and its categories the way real coverage names them ("home EV charger \
+installation", "banks hiring translation services", "Asana new AI features", "CHO cell line antibody production deal"), not \
+the report's own segmentation vocabulary.
+- 3 to 7 words. Where it helps, one concrete news-angle word: launch, acquires, partnership, funding, expands, opens, \
+rollout, contract, survey, sales rise.
+- Double quotes only around a true multi-word name that must stay together — a company or a product name. Never around the \
+whole market name or a category phrase.
+- Vary the wording across a section's queries so they do not return the same pages.
+- U.S. queries name the U.S. naturally: "US", "American", or a U.S. state or agency where it fits.
+- Never use "OR" in a query — a search engine treats each OR branch as a fully independent search, so "launches OR \
+unveils OR service" can return results matching only "service", drifting completely off-topic.
+- Do not use the word "Market" as part of a quoted phrase (research firms title their own report PR pages "<X> \
+Market ... Trend/Analyst", and including it invites exactly that kind of page back as a "result").
+- Never search for a research firm's own report, analyst deck, or report-listing page (titles like "<X> \
+Market Size, Share, Growth, Trends, Forecast") — those are rival research firms' own marketing pages, not reported \
+news. No market-size wording ("market size", "share", "CAGR", "forecast") in a query either: sizing is the CMI report's \
+own job, and the wording only invites those pages.
+- No years ("2025", "2026") and no explainer words ("what is", "guide", "overview", "trends", "benefits") in the query \
+text — a literal year acts as a filter that just as often excludes fresh coverage, and explainer words invite glossary \
+and how-to pages, which are not evidence that anything actually happened."""
 
-The article's trends and its general market view each need their own recent, real news. For EACH section below write the queries \
+# The per-section intro and the Return shape differ by style: in the natural style the model writes the U.S. and
+# key-player queries too (the code-built shapes stand in when it returns none for a section); in the terse style it does
+# not (the old behaviour, code builds them).
+_INTRO_TERSE = """The article's trends and its general market view each need their own recent, real news. For EACH section below write the queries \
 named for it, built from that section's TARGETS: the targets say what the CMI report states there, so the news you look for is \
 news that shows it happening. A target is never text to paste into a query: turn it into the market's anchor plus one or two words.
 
@@ -299,16 +325,65 @@ product, service or activity ("banking translation services", "home EV charger i
 plus at most one or two plain words for the kind of development. Never the literal "<category> <market> demand" shape: \
 queries built that way from the category's report name matched almost no real headline, because headlines do not talk like \
 a report. No double quotes around more than the category phrase itself. Return them under the "subsegment" key, one entry \
-per sub-segment keyed by the sub-segment's name exactly as its block prints it.
-{section_targets}
+per sub-segment keyed by the sub-segment's name exactly as its block prints it."""
 
-Every query is about a concrete, recent development (a launch, an acquisition, a funding round, a partnership, a regulation, \
-an adoption), and the queries of one section look in different directions. Follow these rules exactly, learned from real \
-search failures:
-""" + _QUERY_RULES_SHARED + """
-Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": \
+_INTRO_NATURAL = """The article's sections each need their own recent, real news, and you write the queries for every one of them: the \
+trends, the two fixed sub-segments, the U.S., the key players and the market as a whole. For EACH section below write the \
+queries named for it, built from that section's TARGETS: the targets say what the CMI report states there, so the news you \
+look for is news that shows it happening. A target is never text to paste into a query: turn it into the everyday words a \
+journalist's headline or a person's news search would use.
+
+The two fixed sub-segments listed under SUB-SEGMENTS are already chosen (the CMI report's own leading categories), and their \
+queries are written here too, per sub-segment: for EACH one write exactly the number of queries its block names, each naming \
+the category the way a news headline about it would — a plain everyday phrase such as "home EV charger installation", \
+"banks hiring translation services" or "CHO cell line antibody production" — plus, where it helps, one word for the kind of \
+news. Never the literal "<category> <market> demand" shape: queries built that way from the category's report name matched \
+almost no real headline, because headlines do not talk like a report. Return them under the "subsegment" key, one entry \
+per sub-segment keyed by the sub-segment's name exactly as its block prints it."""
+
+_RETURN_TERSE = """Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": \
 {{"<sub-segment name>": ["<query>", ...]}}, "market": ["<query>", ...]}}, \
 "source_groups": ["<group id>", ...], "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
+
+# the terse rules block, verbatim as it always read (QUERY_STYLE=terse restores it unchanged)
+_RULES_TERSE = """Every query is about a concrete, recent development (a launch, an acquisition, a funding round, a partnership, a regulation, \
+an adoption), and the queries of one section look in different directions. Follow these rules exactly, learned from real \
+search failures:
+""" + _QUERY_RULES_SHARED
+
+_RETURN_NATURAL = """Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": \
+{{"<sub-segment name>": ["<query>", ...]}}, "us": ["<query>", ...], "key_players": ["<query>", ...], \
+"market": ["<query>", ...]}}, "source_groups": ["<group id>", ...], "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
+
+
+_RULES_NATURAL = _QUERY_RULES_NATURAL + "\n\n" + _SOURCE_AND_TERMS
+
+
+def _section_queries_user(natural: bool) -> str:
+    """The Evidence step's section query prompt in one style: natural (every section's queries written by the model, the
+    natural-query rules) or terse (the previous stiff anchored rules, no U.S./key-player blocks — code builds those)."""
+    return f"""TODAY'S DATE: {{today}}
+CONFIRMED MARKET: {{market_name}}
+KNOWN COMPANIES IN THIS MARKET (from the confirmed CMI report, if any): {{key_players}}
+MARKET SEGMENTS (from the confirmed CMI report, if any): {{segments}}
+
+SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that market as a whole and for its sections below, \
+and do not narrow to one product, feature or use case unless that IS the market.
+
+{_INTRO_NATURAL if natural else _INTRO_TERSE}
+{{section_targets}}
+
+{_RULES_NATURAL if natural else _RULES_TERSE}
+{_RETURN_NATURAL if natural else _RETURN_TERSE}"""
+
+
+SEARCH_SECTION_QUERIES_TERSE_USER = _section_queries_user(False)     # config.QUERY_STYLE=terse: the previous behaviour
+SEARCH_SECTION_QUERIES_NATURAL_USER = _section_queries_user(True)    # config.QUERY_STYLE=natural (the default)
+
+
+def section_queries_user() -> str:
+    """The section query prompt of the active style, read at call time so config.QUERY_STYLE can be switched per run."""
+    return SEARCH_SECTION_QUERIES_TERSE_USER if config.QUERY_STYLE == "terse" else SEARCH_SECTION_QUERIES_NATURAL_USER
 
 
 SELECT_SYSTEM = """You are a senior market-intelligence editor at Coherent Market Insights (CMI). \
@@ -1473,20 +1548,30 @@ EVIDENCE_PREP_SYSTEM = (
     "JOB 3 ROLE: " + SEARCH_QUERIES_SYSTEM
 )
 
-EVIDENCE_PREP_USER = (
-    "Three jobs follow. Each one is a complete prompt of its own, ending with the JSON shape of its own answer.\n\n"
-    "======== JOB 1 of 3: PUBLISHER POINTS (its answer goes under the key \"publisher\") ========\n\n"
-    + PUBLISHER_POINTS_USER
-    + "\n\n======== JOB 2 of 3: SEARCH DEMAND (its answer goes under the key \"demand\") ========\n\n"
-    + SEARCH_DEMAND_USER
-    + "\n\n======== JOB 3 of 3: MARKET SEARCH QUERIES (its answer goes under the key \"queries\") ========\n\n"
-    + SEARCH_SECTION_QUERIES_USER
-    + "\n\n======== YOUR ANSWER ========\n\n"
-    "Return ONE JSON object with exactly these three keys. Each key holds the object that its own job describes in its own "
-    "\"Return JSON\" line above, with exactly that job's keys and shapes: "
-    "{{\"publisher\": <job 1's object>, \"demand\": <job 2's object>, \"queries\": <job 3's object: its \"queries\", "
-    "\"source_groups\" and \"topic_terms\">}}"
-)
+def _evidence_prep_user(queries_prompt: str) -> str:
+    return (
+        "Three jobs follow. Each one is a complete prompt of its own, ending with the JSON shape of its own answer.\n\n"
+        "======== JOB 1 of 3: PUBLISHER POINTS (its answer goes under the key \"publisher\") ========\n\n"
+        + PUBLISHER_POINTS_USER
+        + "\n\n======== JOB 2 of 3: SEARCH DEMAND (its answer goes under the key \"demand\") ========\n\n"
+        + SEARCH_DEMAND_USER
+        + "\n\n======== JOB 3 of 3: MARKET SEARCH QUERIES (its answer goes under the key \"queries\") ========\n\n"
+        + queries_prompt
+        + "\n\n======== YOUR ANSWER ========\n\n"
+        "Return ONE JSON object with exactly these three keys. Each key holds the object that its own job describes in its own "
+        "\"Return JSON\" line above, with exactly that job's keys and shapes: "
+        "{{\"publisher\": <job 1's object>, \"demand\": <job 2's object>, \"queries\": <job 3's object: its \"queries\", "
+        "\"source_groups\" and \"topic_terms\">}}"
+    )
+
+
+EVIDENCE_PREP_USER_NATURAL = _evidence_prep_user(SEARCH_SECTION_QUERIES_NATURAL_USER)
+EVIDENCE_PREP_USER_TERSE = _evidence_prep_user(SEARCH_SECTION_QUERIES_TERSE_USER)
+
+
+def evidence_prep_user() -> str:
+    """The evidence-prep prompt of the active query style (config.QUERY_STYLE), read at call time."""
+    return EVIDENCE_PREP_USER_TERSE if config.QUERY_STYLE == "terse" else EVIDENCE_PREP_USER_NATURAL
 
 # ---------------------------------------------------------------- market-first chain: PLAN
 PLAN_SYSTEM = """You are the planning editor at Coherent Market Insights (CMI). You plan a market article before anyone writes it: which questions its headings answer, what each section tells the reader, which facts go where and which keywords sit where. A writer will turn your plan into prose and may use only what your plan assigns. Respond with JSON only."""

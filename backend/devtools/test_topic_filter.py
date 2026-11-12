@@ -72,6 +72,7 @@ check("trusted source: the same host passes when a topic term is used",
 # market sizing is the CMI report's alone
 import logging as _lg
 import feeds  # noqa: E402
+import config  # noqa: E402
 import pipeline  # noqa: E402
 sel = {"evidence": [
     {"id": "W1", "fact": "Firecrawl Inc., a provider of web scraping tools for AI agents, raised $75 million in funding.", "detail": ""},
@@ -283,16 +284,24 @@ check("common-word player: the bare weekday never matches, the domain and the ma
       and any(rx.search(domain_text) for _, rx in pats)
       and any(rx.search(possessive_text) for _, rx in pats))
 
-# the in-code key-player news queries: cleaned names, market anchor, at most six (the key-players Bing allotment) —
+# the in-code key-player news queries: cleaned names, market anchor, at most the key-players Bing allotment (eight; six in the terse style) —
 # with the cap raised, the Asana, Atlassian/Jira and monday.com news queries all fit one run
 pq = pipeline._player_news_queries("Agile Project Management Software Market", AGILE_PLAYERS + ["Pivotal Software"])
-check("player queries: one per cleaned player, capped at six, anchored to the market's core, with the Asana, Atlassian and monday.com news queries in",
+check("player queries: one per cleaned player, capped at the allotment, anchored to the market's core, with the Asana, Atlassian and monday.com news queries in",
       len(pq) == 5 and pq[0] == "Asana agile project management"
       and any(q.startswith("Atlassian JIRA ") for q in pq) and any(q.startswith("monday.com ") for q in pq)
       and any(q.startswith("Pivotal Software ") for q in pq) and "Microsoft agile project management" in pq, str(pq))
 capped = pipeline._player_news_queries("Agile Project Management Software Market",
-                                       ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta", "Eta BV"])
-check("player queries: seven players are cut to the six-query allotment", len(capped) == 6, str(capped))
+                                       ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta", "Eta BV", "Theta Ltd", "Iota Co"])
+check("player queries: nine players are cut to the eight-query allotment", len(capped) == 8, str(capped))
+old_style = config.QUERY_STYLE
+config.QUERY_STYLE = "terse"
+try:
+    capped_terse = pipeline._player_news_queries("Agile Project Management Software Market",
+                                                 ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta", "Eta BV"])
+finally:
+    config.QUERY_STYLE = old_style
+check("player queries: the terse style keeps the old six-query allotment", len(capped_terse) == 6, str(capped_terse))
 
 # ---- a quoted Bing keyword query that returns 0 results is retried once unquoted
 feeds._BING_QUERY_DELAY_S = feeds._BING_JITTER_S = 0

@@ -54,6 +54,13 @@ CMI_CHAIN_V2 = os.getenv("CMI_CHAIN_V2", "true").strip().lower() not in ("0", "f
 # web search waits for all of it, where the separate queries call used to finish first.
 EVIDENCE_ONE_CALL = os.getenv("EVIDENCE_ONE_CALL", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# The Evidence step's query-writing style. "natural" (default): the evidence-prep call writes every section's Bing queries —
+# trends, the two sub-segments, the U.S. and the key players — as natural news-search phrasings (everyday wording, 3-7
+# words, quotes only around true names; prompts._QUERY_RULES_NATURAL). "terse" restores the previous behaviour for an A/B
+# live run against the same article: the old stiff anchored rules, and the U.S./key-player queries built in code
+# (sections.budgeted_queries ignores the model's for those two sections).
+QUERY_STYLE = os.getenv("QUERY_STYLE", "natural").strip().lower()
+
 # Style anchors: when on, the write prompt carries four short passages from the content team's reference article as a register
 # guide (prompts.STYLE_ANCHORS). On by default (devtools/ab_voice.py compared the writer with and without them: shorter sentences,
 # every trend anchored); WRITE_STYLE_ANCHORS=false turns them off.

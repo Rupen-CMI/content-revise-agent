@@ -23,6 +23,7 @@ import pipeline  # noqa: E402
 import prompts  # noqa: E402
 import publisher  # noqa: E402
 import sections  # noqa: E402
+import us_search  # noqa: E402
 from docx_io import Link, Paragraph, SourceArticle  # noqa: E402
 
 FAILURES: list[str] = []
@@ -44,7 +45,8 @@ ARTICLE = SourceArticle(title="Tools", paragraphs=[Paragraph(index=0, text=BODY,
 SPONSOR = ARTICLE.paragraphs[1]
 FS = facts._empty_fact_sheet()
 FS["drivers"] = [{"id": "fs.drivers.0", "text": "Demand for widget automation grows", "quote": "q", "historical": False}]
-FS["players"] = ["Acme Corp"]
+FS["players"] = ["Acme Corp", "Monday"]
+FS["us"] = [{"id": "fs.us.0", "text": "U.S. banks lead widget adoption", "quote": "q", "historical": False}]
 # the two fixed sub-segments are known before the call: their split and the report's own reason the category leads
 # (the segment driver, else the dominance quote) ride into the prompt with them
 FS["segments"] = [{"id": "fs.segments.0", "type": "By Type", "items": ["Software", "Services"],
@@ -67,20 +69,22 @@ DEMAND_PART = {"questions": [{"intent": "growth", "question": f"How fast is the 
 QUERIES_PART = {"queries": {"trends": ['"zzz widget services" automation', '"zzz widget services" adoption'], "market": ['"zzz widget services" news'],
                             "subsegment": {"Software": ["audited workflow software for banks launch", "banking audit software news", "Software zzz widget services demand"],
                                            "Services": ["widget services rollout"], "Extra": ["ignored"]},
+                            "us": ["US banks widget services rollout", "American widget services contract"],
+                            "key_players": ["Acme Corp new widget platform", "monday.com expands widget tools"],
                             "segmentation": ["ignored"]},
                 "source_groups": ["not-a-pack"], "topic_terms": ["Widget Maker", "widget maker"]}
 ANSWER = {"publisher": PUBLISHER_PART, "demand": DEMAND_PART, "queries": QUERIES_PART}
 
 # ------------------------------------------------------------------------------------------------ the prompt
 check("prompt: each job's own prompt is in the one prompt verbatim, in order",
-      prompts.PUBLISHER_POINTS_USER in prompts.EVIDENCE_PREP_USER and prompts.SEARCH_DEMAND_USER in prompts.EVIDENCE_PREP_USER
-      and prompts.SEARCH_SECTION_QUERIES_USER in prompts.EVIDENCE_PREP_USER
-      and prompts.EVIDENCE_PREP_USER.index(prompts.PUBLISHER_POINTS_USER) < prompts.EVIDENCE_PREP_USER.index(prompts.SEARCH_DEMAND_USER)
-      < prompts.EVIDENCE_PREP_USER.index(prompts.SEARCH_SECTION_QUERIES_USER))
+      prompts.PUBLISHER_POINTS_USER in prompts.evidence_prep_user() and prompts.SEARCH_DEMAND_USER in prompts.evidence_prep_user()
+      and prompts.section_queries_user() in prompts.evidence_prep_user()
+      and prompts.evidence_prep_user().index(prompts.PUBLISHER_POINTS_USER) < prompts.evidence_prep_user().index(prompts.SEARCH_DEMAND_USER)
+      < prompts.evidence_prep_user().index(prompts.section_queries_user()))
 check("prompt: each job's own role is in the system prompt verbatim",
       all(s in prompts.EVIDENCE_PREP_SYSTEM for s in (prompts.PUBLISHER_POINTS_SYSTEM, prompts.SEARCH_DEMAND_SYSTEM, prompts.SEARCH_QUERIES_SYSTEM)))
-check("prompt: the answer is one object with the three keys", '"publisher"' in prompts.EVIDENCE_PREP_USER and '"demand"' in prompts.EVIDENCE_PREP_USER
-      and '"queries"' in prompts.EVIDENCE_PREP_USER)
+check("prompt: the answer is one object with the three keys", '"publisher"' in prompts.evidence_prep_user() and '"demand"' in prompts.evidence_prep_user()
+      and '"queries"' in prompts.evidence_prep_user())
 
 seen: dict = {}
 calls: list[str] = []
@@ -106,7 +110,26 @@ check("call: the prompt shows the article and the sponsor paragraph, the report 
 check("call: the prompt carries the fixed sub-segments with their split and the report's own reason the category leads, and the per-sub-segment query rules",
       "SUB-SEGMENTS" in user and "Software (split By Type) — the report's reason it leads: Banks want audited workflows" in user
       and "Services (split By Type)" in user and "Never the literal" in user and '"subsegment"' in user, user[:400])
+check("call: the natural prompt carries each section's inputs (trend drivers, sub-segments with split and reason, the report's U.S. statements, cleaned player names, the market and its everyday wording) and the natural rules",
+      "Demand for widget automation grows" in user and "Software (split By Type)" in user and "U.S. banks lead widget adoption" in user
+      and "monday.com" in user and "Acme Corp" in user and '(everyday wording: "zzz widget services")' in user
+      and "3 to 7 words" in user and "home EV charger installation" in user and "no years" in user.lower().replace("do not use years", "no years")
+      or ("No years" in user and "explainer words" in user), user[:200])
 check("call: no placeholder is left unfilled in the prompt", "{market_name}" not in user and "{section_targets}" not in user and "{facts}" not in user)
+
+us_key_spec = res["queries"][0]
+check("queries part: the model's U.S. and key-player queries are parsed under their own sections",
+      us_key_spec["us"] == ["US banks widget services rollout", "American widget services contract"]
+      and us_key_spec["key_players"] == ["Acme Corp new widget platform", "monday.com expands widget tools"], str(us_key_spec))
+no_us = pipeline.search_queries_from_result({"queries": {"trends": ["a b c"]}}, MARKET, LOG, PLAN)[0]
+core_ = pipeline._market_core(MARKET)
+fallback_budget = sections.budgeted_queries(no_us, core_, PICKS, us_search.us_news_queries(core_), pipeline._player_news_queries(MARKET, ["Acme Corp"]))
+check("queries part: with no U.S. or key-player queries from the model the code-built ones fill those sections",
+      no_us["us"] == [] and no_us["key_players"] == [] and fallback_budget["us"] == us_search.us_news_queries(core_)
+      and fallback_budget["key_players"] == pipeline._player_news_queries(MARKET, ["Acme Corp"]) and fallback_budget["key_players"], str(fallback_budget))
+model_budget = sections.budgeted_queries(us_key_spec, core_, PICKS, us_search.us_news_queries(core_), pipeline._player_news_queries(MARKET, ["Acme Corp"]))
+check("queries part: with the model's own the code-built ones are not used",
+      model_budget["us"] == us_key_spec["us"] and model_budget["key_players"] == us_key_spec["key_players"], str(model_budget))
 
 # ----------------------------------------------------- each part is what the separate call's own validation makes of it
 body = publisher.article_text(ARTICLE, LOG)

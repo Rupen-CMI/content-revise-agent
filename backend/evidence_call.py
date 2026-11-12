@@ -3,7 +3,7 @@
 The publisher points, the search demand (the most searched questions, related terms, long-tail searches) and the market search
 queries used to be three calls (publisher.run_publisher_points, demand.run_search_demand, pipeline.prepare_search_queries). They
 are one call here, answered as {"publisher": ..., "demand": ..., "queries": ...}: each part is the answer its own prompt always
-asked for (prompts.EVIDENCE_PREP_USER holds the three prompts verbatim as three jobs) and each part goes through the code that
+asked for (prompts.evidence_prep_user() holds the three prompts verbatim as three jobs) and each part goes through the code that
 always validated it (publisher.points_from_raw, demand.demand_from_raw, pipeline.search_queries_from_result). The keyword research
 (real searches, no model) still runs first and feeds the demand job. The three old functions stay for the old chain and for
 config.EVIDENCE_ONE_CALL=false.
@@ -30,7 +30,9 @@ def run_evidence_prep(
     plan: dict, real_queries: list[str], logger: logging.Logger,
 ) -> dict:
     """CALL: {"publisher": {intro_angle, points}, "demand": {questions, terms, long_tail}, "queries": (queries, groups, topic_terms)}.
-    `queries` is exactly what pipeline.prepare_search_queries returns for a section plan."""
+    `queries` is exactly what pipeline.prepare_search_queries returns for a section plan — in the natural query style
+    (config.QUERY_STYLE, the default) the model writes every section's queries there: trends, the market, each fixed
+    sub-segment, the U.S. and the key players, each from that section's targets (sections.format_targets)."""
     section(logger, "CALL: EVIDENCE PREP (publisher points + search demand + search queries)")
     body = publisher.article_text(article, logger)
     fields = {
@@ -41,7 +43,7 @@ def run_evidence_prep(
     }
     try:
         raw = llm.chat_json(
-            prompts.EVIDENCE_PREP_SYSTEM, prompts.EVIDENCE_PREP_USER.format(**fields),
+            prompts.EVIDENCE_PREP_SYSTEM, prompts.evidence_prep_user().format(**fields),
             temperature=0.3, call_name="evidence_prep", logger=logger, max_tokens=_MAX_TOKENS,
         )
     except llm.LLMError:
