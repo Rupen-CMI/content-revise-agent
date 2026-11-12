@@ -390,6 +390,75 @@ check("ddgs lane: retries stop once the lane has a hit",
       lane_calls == ['"agile" word0', "agile word0", '"agile" word1', "agile word1", '"agile" word2', "agile word2", '"agile" word3', '"agile" word4'],
       str(lane_calls))
 
+# ----------------------------------------------------------------- round 4: evidence-filter audit fixes
+# Three live-audit fixes: the news window is now 365 days (freshness checks live in
+# test_event_filter.py), a multi-word player's non-distinctive words are no longer matchers
+# ("Body", "Shop" out of "The Body Shop International" carried "TikTok Shop" beauty stories),
+# and a single topic term alone no longer keeps an item ("crispr" carried a wheat-genetics
+# headline into a cell line development market).
+
+# ---- key-player name splitting: a non-distinctive single word is never a variant
+check("player cleaner: 'The Body Shop International' gains no single common word, only the trimmed phrase",
+      set(search.player_name_variants("The Body Shop International")) == {"The Body Shop International", "The Body Shop"},
+      str(search.player_name_variants("The Body Shop International")))
+check("player cleaner: 'Atlassian JIRA' still yields 'Atlassian' and 'JIRA'",
+      set(search.player_name_variants("Atlassian JIRA")) >= {"Atlassian JIRA", "Atlassian", "JIRA"},
+      str(search.player_name_variants("Atlassian JIRA")))
+check("player cleaner: 'Monday' still yields 'monday.com'",
+      "monday.com" in search.player_name_variants("Monday"), str(search.player_name_variants("Monday")))
+
+BODY_PLAYERS = ["The Body Shop International"]
+body_pats = search._player_patterns(BODY_PLAYERS)
+shop_text = "the body shop launches a refill station pilot across five stores"
+tiktok_text = "the booming business of beauty on tiktok shop"
+target_text = "appleton-area shoppers can now experience target beauty studio"
+check("player patterns: the full name still matches 'The Body Shop launches ...'",
+      any(rx.search(shop_text) for _, rx in body_pats))
+check("player patterns: 'TikTok Shop' and 'Target Beauty Studio' headlines match no variant",
+      not any(rx.search(tiktok_text) or rx.search(target_text) for _, rx in body_pats))
+
+# through filter_hits: the beauty headlines are dropped, the real player story is kept
+bs_drop1 = hit("The Booming Business of Beauty on TikTok Shop", "https://random-news.example.org/bs1")
+bs_drop2 = hit("Appleton-area shoppers can now experience Target Beauty Studio", "https://random-news.example.org/bs2")
+bs_keep = hit("The Body Shop launches a new widget testing programme in its stores", "https://random-news.example.org/bs3")
+bs_kept = [h.title for h in search.filter_hits(
+    [bs_drop1, bs_drop2, bs_keep], MARKET, logger=LOG, key_players=BODY_PLAYERS, topic_terms=TERMS)]
+check("key player: 'TikTok Shop' / 'Target Beauty Studio' headlines are not kept for the Body Shop",
+      bs_kept == [bs_keep.title], str(bs_kept))
+
+# ---- a topic_terms-only keep needs a second signal
+CELL = ["Cell Line Development Market"]
+CELL_TERMS = ["crispr", "gene editing", "cho cells", "monoclonal antibodies"]
+wheat = hit("CRISPR cuts at wheat centromeres rewrite the karyotype in a single generation",
+            "https://random-news.example.org/cl1")
+check("topic terms: a single common-word topic term alone does not keep (wheat CRISPR)",
+      search.filter_hits([wheat], CELL, logger=LOG, topic_terms=CELL_TERMS) == [],
+      str(search.filter_hits([wheat], CELL, logger=LOG, topic_terms=CELL_TERMS)))
+two_terms = hit("A CRISPR gene editing advance halves the cost of a biotech workflow",
+                "https://random-news.example.org/cl2")
+check("topic terms: two distinct topic terms keep an item",
+      len(search.filter_hits([two_terms], CELL, logger=LOG, topic_terms=CELL_TERMS)) == 1)
+multi_term = hit("A biologics contractor expands monoclonal antibodies capacity for a new tenant",
+                 "https://random-news.example.org/cl3")
+check("topic terms: a multi-word topic term alone is its own second signal",
+      len(search.filter_hits([multi_term], CELL, logger=LOG, topic_terms=CELL_TERMS)) == 1)
+
+# the EV keeps: "EV charging" matches across one word ("EV smart charging"), so the
+# Renault-EDF headline is no longer dropped for missing the exact phrase word order
+EV = ["Electric Vehicle Charger Market"]
+EV_TERMS = ["ev charging", "smart charging", "home charging", "charging station"]
+ev_hits = [
+    hit("Ather Energy launches Ather Node: New EV charging solution for apartments", "https://random-news.example.org/ev1"),
+    hit("Mova launches residential battery with integrated EV charging management", "https://random-news.example.org/ev2"),
+    hit("Rivian's Latest Partnership Unlocks Cheaper Home EV Charging", "https://random-news.example.org/ev3"),
+    hit("Renault and EDF partner on French EV smart charging", "https://random-news.example.org/ev4"),
+]
+ev_kept = {h.title for h in search.filter_hits(ev_hits, EV, logger=LOG, topic_terms=EV_TERMS)}
+check("topic terms: the three EV charging headlines are still kept",
+      all(h.title in ev_kept for h in ev_hits[:3]), str(sorted(ev_kept)))
+check("topic terms: 'Renault and EDF partner on French EV smart charging' is kept (EV ... charging within two words)",
+      all(h.title in ev_kept for h in ev_hits), str(sorted(ev_kept)))
+
 print()
 print("all topic filter tests passed" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}")
 sys.exit(1 if FAILED else 0)
