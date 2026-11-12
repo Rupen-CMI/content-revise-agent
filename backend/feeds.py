@@ -212,7 +212,16 @@ class _Bing:
         for i, q in enumerate(queries):
             if self.disabled:
                 break
-            out += self.search(q)
+            batch = self.search(q)
+            if not batch and '"' in q and "site:" not in q:
+                # A quoted phrase plus extra words is the most over-constrained shape there is
+                # (15 of 24 Bing keyword queries in one run returned nothing): retry once unquoted,
+                # where a multi-word term is an implicit AND rather than a hard requirement.
+                # filter_hits re-checks relevance, so widening the query is safe.
+                unquoted = " ".join(q.replace('"', "").split())
+                self._logger.info(f"[bing] {q!r} gave 0 result(s); retrying without the quotes: {unquoted!r}")
+                batch = self.search(unquoted)
+            out += batch
             if i < len(queries) - 1:
                 time.sleep(_BING_QUERY_DELAY_S + random.uniform(0, _BING_JITTER_S))
         return out

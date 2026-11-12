@@ -150,7 +150,16 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
         for n, g in enumerate(s["trend_groups"], 1):
             name = g["trend"] or "(the planner gave this trend no name: name it from its facts)"
             body = "\n".join(_fact_text(inp.items[f]) for f in g["facts"]) or "- (no listed fact: reason from the section's purpose without adding a fact)"
-            parts.append(f"Trend {n}: {name}\n{body}")
+            # A trend whose facts are all the report's own (no news item survived SELECT for it) is
+            # told so on its own trend line: built from the report driver, not padded with a generic
+            # definition of the technology.
+            head = f"Trend {n}: {name}"
+            if g["facts"] and not any(inp.items[f]["kind"] == "evidence" for f in g["facts"]):
+                head += (" — This trend has no news item: build it on its report driver: paragraph one states the driver "
+                         "precisely as the fact gives it, paragraph two the mechanism in this market (who buys what "
+                         "differently and why), paragraph three the commercial implication; no generic definitions or "
+                         "textbook explanation of the technology.")
+            parts.append(f"{head}\n{body}")
         rows.append("Facts to use, by trend (each trend is written only from its own facts, and its sub-heading states that trend):\n" + "\n".join(parts))
     else:
         rows.append("Facts to use:\n" + ("\n".join(facts_rows) if facts_rows else "- (none)"))

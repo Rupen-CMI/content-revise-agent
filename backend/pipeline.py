@@ -32,6 +32,14 @@ _null_logger.propagate = False
 
 _BODY_CHARS = 12000
 
+# One Bing news query per cleaned key player (up to this many) is added in CODE in
+# run_search_evidence — the query prompt has a key-players category, but in the real run log not one
+# LLM query was written about the players' own news, and the players are where a market's
+# developments are reported.
+_PLAYER_QUERY_LIMIT = 5
+# Kept hits that carry a strong rule (search.STRONG_RULES) below which one broader search round runs.
+_STRONG_HITS_TARGET = 6
+
 Segment = tuple[str, str | None]  # (text, hyperlink url or None)
 
 # A retained paragraph that carries no sentence punctuation at all and is only a handful of words is
@@ -568,6 +576,26 @@ def _market_core(market_name: str) -> str:
     return core.strip().lower() or market_name.strip()
 
 
+def _player_news_queries(market_name: str, key_players: list[str]) -> list[str]:
+    """One Bing news query per cleaned key player (up to _PLAYER_QUERY_LIMIT), added in CODE rather
+    than left to the query-writing LLM: in a real run log not one of the 24 LLM queries was written
+    about the key players' own news, yet the players are exactly where a market's developments are
+    reported ('Atlassian Jira project management', 'monday.com work management'). The query is
+    '<player> <market anchor>', the market's core head noun — or the core's words before it when the
+    head is a generic category word ("software", "platform"), which alone would anchor half the tech
+    industry. Everything these queries return still passes filter_hits, which after the key-player
+    fix demands a market signal in the hit itself."""
+    core_tokens = search._ordered_market_tokens(_market_core(market_name))
+    head = core_tokens[-1] if core_tokens else ""
+    anchor = " ".join(core_tokens[:-1]) if head in search._TECH_HEAD_SYNONYMS and len(core_tokens) > 1 else head
+    queries = []
+    for player in search.clean_player_names(key_players)[:_PLAYER_QUERY_LIMIT]:
+        q = f"{player} {anchor}".strip()
+        if q.lower() not in [x.lower() for x in queries]:
+            queries.append(q)
+    return queries
+
+
 _VALID_SOP_TAGS = {
     "trends", "report_context", "segmentation", "subsegment",
     "country_us", "key_players", "conclusion", "transition",
@@ -847,7 +875,10 @@ def _llm_search_queries(
         result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_QUERIES_USER.format(
             today=date.today().isoformat(),
             market_name=market_name,
-            key_players=", ".join(key_players) if key_players else "(none known)",
+            # The players as cleaned query subjects ("Monday" -> "monday.com"): the LLM copies the
+            # names it is given straight into its queries, and a bare weekday or common noun in a
+            # query finds everything but the company.
+            key_players=", ".join(search.clean_player_names(key_players)) if key_players else "(none known)",
             segments=", ".join(segments[:14]) if segments else "(none listed)",
             source_group_menu=sources.pack_menu(),
         ), call_name="search_queries", logger=logger)
@@ -900,6 +931,12 @@ def run_search_evidence(
     )
     logger.info(f"[search] queries ({len(queries)}): {queries}")
     logger.info(f"[search] source groups chosen: {groups or '(none — general business + funding only)'}")
+    # The in-code key-player news queries run beside the LLM's own queries (Bing's keyword cap may
+    # cut the tail; the thin-evidence round below re-runs any that were cut).
+    player_queries = _player_news_queries(market_name, list(key_players))
+    if player_queries:
+        queries = queries + [q for q in player_queries if q.lower() not in {x.lower() for x in queries}]
+        logger.info(f"[search] key-player news queries ({len(player_queries)}): {player_queries}")
     core = _market_core(market_name)
     sponsor_hosts = tuple(_host(link.url) for link in sponsor.links if link.is_external)
 
@@ -945,6 +982,24 @@ def run_search_evidence(
         progress(f"Primary sources thin ({len(hits)} articles) — adding web search ({len(ddgs_queries)} queries)")
         hits = filtered(raw_hits + search.run_searches(ddgs_queries, logger=logger))
     ddgs_pool.shutdown(wait=False)
+
+    # THIN-EVIDENCE ROUND: a hit kept only by the key-player or trusted-host rule is not evidence
+    # that names the market (one real run reported 47 kept hits and 46 were noise — Patch Tuesday
+    # stories for "Microsoft", weekday mentions for "Monday", a projector review for "project").
+    # When fewer than _STRONG_HITS_TARGET kept hits carry a strong rule (search.STRONG_RULES), one
+    # broader round runs: the market core unquoted plus one plain event word each, and the
+    # key-player queries Bing's keyword cap cut from the primary stage. The broader queries only
+    # widen what the engines return; everything they find still passes filtered() unchanged.
+    strong = search.strong_hit_count(hits)
+    if strong < _STRONG_HITS_TARGET:
+        ran = set(queries[:feeds._BING_MAX_KEYWORD_QUERIES])
+        broader = [f"{core} {w}" for w in ("news", "launch", "adoption", "AI")]
+        broader += [q for q in player_queries if q not in ran]
+        logger.info(f"[search] thin evidence: {strong} strong hit(s); broader round queries: {broader}")
+        progress("Thin evidence — running one broader search round")
+        before = len(hits)
+        hits = filtered(hits + feeds.bing_search(broader, [], logger))
+        logger.info(f"[search] thin evidence: {strong} strong hit(s); broader round added {len(hits) - before}")
 
     # Full-text pass over what survived, so SELECT and the writer see article text, not just a snippet.
     progress(f"Reading {len(hits)} candidate articles")

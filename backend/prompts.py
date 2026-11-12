@@ -213,13 +213,20 @@ though most results in any category will get filtered out later and only the bes
   5. A new innovation (a novel technology or capability entering the market).
   6. Regulatory or rule changes affecting the market.
   7. Law changes affecting the market (legislative, not regulatory-agency, action).
-  8. Key players — built around the specific company names listed above (if any are given) paired with a concrete \
-  event word (acquisition, funding, partnership, launch, expansion).
+  8. Key players — built around the specific company names listed above (if any are given), one company per query, \
+the company's name plus ONE event word (acquisition, funding, partnership, launch, expansion) or the market's core \
+noun. These are the market's own newsmakers: a query on one of them is often the only search that surfaces its news \
+at all.
   9. Segment demand — recent news on a shift in demand or adoption within one of the named segments listed above (why a \
   category is growing or being chosen): the market's anchor phrase plus ONE segment name from that list, with a plain verb \
   or noun about demand or adoption. When no segments are listed, ask about demand within the market's main product or \
   service categories instead.
   That totals 15 queries. Follow these rules exactly, learned from real search failures:
+- Each query is its ANCHOR — the market's quoted phrase, or one key player's name — plus AT MOST ONE or TWO plain \
+words after it: a verb or noun naming the kind of development ("launch", "partnership", "regulation"), or the \
+market's core noun (format only, placeholder not a real market: "\"Zzz Widget\" launch"). Never three or four extra \
+words on top of the quoted phrase: in a real run every query shaped that way returned zero results (15 of 24 Bing \
+queries found nothing), because an engine treats each extra word as a requirement that no real headline satisfies.
 - If a query names the market by a multi-word phrase, wrap that phrase in double quotes so the engine requires it \
 as one unit — an unquoted multi-word market name matches anything sharing just one of those words (e.g. unquoted \
 "digital marketing software" also matches a story about a marketing AGENCY that has nothing to do with software). \

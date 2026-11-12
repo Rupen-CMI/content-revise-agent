@@ -1302,12 +1302,20 @@ def _step2_v2(
                 warnings += [f"{c.host}: {n}" for n in clients_mod.brief_notes(c)]
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Step 2", e)
+    # The count the editor should judge is the STRONG one — hits kept by a rule that names the market
+    # or its topic vocabulary (search.STRONG_RULES), not just a key player or a trusted host. The raw
+    # kept count can look healthy while nearly everything in it is noise (one real run: 47 kept, 46
+    # noise), so the response carries strong_hits and warns when even that is thin: the trends may
+    # end up built from the report's own drivers alone.
+    strong_hits = search.strong_hit_count(hits)
+    if strong_hits < 4:
+        warnings.append(f"Only {strong_hits} news item(s) about this market were found; the trends may lean on the report's own drivers.")
     run.report, run.hits = report, hits
     run.fact_sheet, run.gap_pages, run.demand, run.publisher = fs, gap_pages, demand_result, publisher_result
     run.report_mode, run.warnings = mode, warnings
     run.timings = timer.summary()
     run.logger.info(
-        f"STEP 2 DONE in {run.timings['total_s']}s — report {report.name} ({mode}), {len(hits)} hits, "
+        f"STEP 2 DONE in {run.timings['total_s']}s — report {report.name} ({mode}), {len(hits)} hits ({strong_hits} strong), "
         f"{len(demand_result.get('questions') or [])} MSQ(s), fact sheet gaps: {fs['gaps'] or 'none'}"
     )
     return {
@@ -1317,6 +1325,7 @@ def _step2_v2(
         "publisher": publisher_result,
         "timings": run.timings,
         "report_mode": mode, "warnings": warnings,
+        "strong_hits": strong_hits,
         "clients": _client_dicts(run),
     }
 
