@@ -469,13 +469,14 @@ def _is_region_split(name: str) -> bool:
 def _fixed_subsegments(inp: "PlanInputs") -> list[dict]:
     """The sub-segments fixed before the news search (inp.subsegments), as {"split", "name"} in the fact sheet's own spelling.
     All of them or none: when any no longer names a split and a category of the report's segments (the editor changed the
-    sheet since), nothing is fixed and the planner chooses as it always did. A region split is accepted here (a fixed pair
-    only contains one when the report has no other split)."""
+    sheet since), nothing is fixed and the planner chooses as it always did. The two may come from one split (the top two
+    of it) or from two splits. A region split is accepted here (a fixed pair only contains one when the report has no
+    other split)."""
     out: list[dict] = []
     for s in inp.subsegments:
         seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(s.get("split", ""))), None)
         cat = next((i for i in seg["items"] if facts._norm(i) == facts._norm(s.get("name", ""))), None) if seg else None
-        if not (seg and cat) or any(o["split"] == seg["type"] for o in out):
+        if not (seg and cat):
             return []
         out.append({"split": seg["type"], "name": cat})
     return out
@@ -670,7 +671,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     grouped = {f for g in trends["trend_groups"] for f in g["facts"]}
     trends["facts"] = [f for f in trends["facts"] if f in grouped]      # the section keeps the planner's order
 
-    # ---- sub-segments (the subsegment section): two categories from different splits of the report
+    # ---- sub-segments (the subsegment section): the top two categories of one split of the report (of two when the
+    # report states no second category for the first)
     sub = by_sop["subsegment"]
     picks = []
     for it in sub["_raw"].get("sub_segments") if isinstance(sub["_raw"].get("sub_segments"), list) else []:
@@ -684,7 +686,7 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     for split, name in [] if fixed else picks:
         seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(split) and not _is_region_split(g["type"])), None)
         cat = next((i for i in seg["items"] if facts._norm(i) == facts._norm(name)), None) if seg else None
-        if seg and cat and all(v["split"] != seg["type"] for v in valid):
+        if seg and cat and all((v["split"], v["name"]) != (seg["type"], cat) for v in valid):
             valid.append({"split": seg["type"], "name": cat})
     if len(valid) < 2 and len(inp.segments) >= 1 and not fixed:
         ordered = sorted((g for g in inp.segments if not _is_region_split(g["type"])),
@@ -694,10 +696,10 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
         for d in defaults:
             if len(valid) >= 2:
                 break
-            if all(v["split"] != d["split"] for v in valid):
+            if all((v["split"], v["name"]) != (d["split"], d["name"]) for v in valid):
                 valid.append(d)
         if valid != [{"split": s, "name": n} for s, n in picks][:len(valid)]:
-            repair("the two sub-segments were not valid choices from different splits; defaults from the report were used")
+            repair("the two sub-segments were not valid choices from the report's splits; defaults from the report were used")
     valid = valid[:2]
     # The sub-segment of a split is its DOMINANT category whenever the report states it or its figures show it; the
     # planner's taste never overrides that. A pick from a split with no known leader gives way to a split that has one.

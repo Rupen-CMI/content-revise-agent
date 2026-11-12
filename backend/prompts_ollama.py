@@ -302,10 +302,10 @@ in "sop" with every requirement it satisfies (a paragraph may satisfy more than 
   figures/dynamics, not asserted vaguely.
   - segmentation: at least two paragraphs (not one): one paragraph naming and briefly explaining the report's major \
   segments, and a second paragraph on how the sub-segments within those relate to each other and to the market as a whole.
-  - subsegment: exactly two paragraphs of at least 80 words each, each a detailed analysis of one sub-segment from two \
-  DIFFERENT major segments (e.g. one from "by type" and one from "by application" — not two sub-segments of the same \
-  segment). Each paragraph must cover: growth/adoption drivers, major applications/end-use cases, and its contribution \
-  to the overall market.
+  - subsegment: exactly two paragraphs of at least 80 words each, each a detailed analysis of one sub-segment; both come \
+  from the same major segment when the report states its top two categories (e.g. both from "by type"), otherwise from \
+  two different segments (e.g. one from "by type" and one from "by application"). Each paragraph must cover: \
+  growth/adoption drivers, major applications/end-use cases, and its contribution to the overall market.
   - country_us: exactly one section, 100-200 words total across its paragraph(s), on U.S. market factors, growth drivers, \
   adoption trends, and relevant industry developments.
   - key_players: at least two paragraphs (not one): one introducing the competitive landscape generally, and a second \
