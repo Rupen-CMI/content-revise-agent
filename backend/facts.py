@@ -810,6 +810,203 @@ def merge_fact_sheets(sheets: list[dict], sources: list[dict]) -> dict:
     return merged
 
 
+# ------------------------------------------------------------------------------------------ the editor's own values
+
+def _clean(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _editor_source(fs: dict, prev: dict | None) -> dict:
+    """The source fields an editor-entered headline figure carries: the entry it replaces keeps its own (so an outside
+    report's figure stays unnamed in the article), a new one takes the sheet's own base source."""
+    if prev:
+        return {"source": prev.get("source", "CMI report"), **({"external": True} if prev.get("external") else {}),
+                **({"url": prev["url"]} if prev.get("url") else {})}
+    if fs.get("report_mode") == "external":
+        return {"source": "Editor", "external": True}
+    return {"source": fs.get("source_label") or "CMI report"}
+
+
+def _drop_audit(fs: dict, field: str, original: str | None = None) -> None:
+    """Remove the variance audit row of a figure the editor has now set (what the editor typed was never moved)."""
+    fs["variance"] = [r for r in fs.get("variance") or []
+                      if not (r.get("field") == field and (original is None or r.get("original") == original or r.get("shown") == original))]
+
+
+def _edit_headline(fs: dict, key: str, raw) -> None:
+    prev = fs.get(key)
+    raw = raw if isinstance(raw, dict) else {}
+    value, when = _clean(raw.get("value")), _clean(raw.get("when"))
+    if not value:
+        if prev:
+            fs.setdefault("editor_removed", []).append({"kind": key, "text": f"{prev['value']} ({prev.get('when', '')})"})
+        fs[key] = None
+        _drop_audit(fs, key)
+        return
+    if prev and prev["value"] == value and prev.get("when", "") == when:
+        return
+    entry = {"id": f"fs.{key}", "value": value, "when": when, "quote": "", "stale": False, "edited_by_editor": True,
+             "varied": False, **_editor_source(fs, prev)}
+    if prev:
+        entry["agent_value"], entry["agent_when"] = prev.get("agent_value", prev["value"]), prev.get("agent_when", prev.get("when", ""))
+        if prev.get("original_value"):
+            entry["original_value"] = prev["original_value"]
+    fs[key] = entry
+    _drop_audit(fs, key)
+
+
+def _edit_region(fs: dict, which: str, raw) -> None:
+    prev = (fs.get("regions") or {}).get(which)
+    raw = raw if isinstance(raw, dict) else {}
+    name, basis = _clean(raw.get("name")), _clean(raw.get("basis"))
+    if not name:
+        if prev:
+            fs.setdefault("editor_removed", []).append({"kind": f"regions.{which}", "text": prev["name"]})
+        fs["regions"][which] = None
+    elif not (prev and prev["name"] == name and prev["basis"] == basis):
+        fs["regions"][which] = {
+            "id": f"fs.regions.{which}", "name": name, "basis": basis, "quote": "", "historical": False, "edited_by_editor": True,
+            **({"agent_value": prev.get("agent_value", {"name": prev["name"], "basis": prev["basis"]})} if prev else {})}
+
+
+def _edit_statements(fs: dict, key: str, raw) -> None:
+    prev_by_id = {e["id"]: e for e in fs.get(key) or []}
+    extra = ("split", "name") if key == "segment_drivers" else ()
+    used = {e["id"] for e in raw if isinstance(e, dict) and e.get("id") in prev_by_id}
+    counter = 1 + max([int(m.group(1)) for i in prev_by_id for m in [re.search(r"(\d+)$", i)] if m] or [-1])
+    out: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not _clean(item.get("text")):
+            continue
+        text, prev = _clean(item["text"]), prev_by_id.get(item.get("id"))
+        tied = {k: _clean(item.get(k)) for k in extra}
+        if prev and prev["text"] == text and all(prev.get(k, "") == v for k, v in tied.items()):
+            out.append(prev)
+            continue
+        if prev:
+            eid = prev["id"]
+        else:
+            eid = f"fs.{key}.{counter}"
+            counter += 1
+        entry = {"id": eid, "text": text, "quote": "", "historical": False, "edited_by_editor": True, **tied}
+        if prev:
+            entry["agent_text"] = prev.get("agent_text", prev["text"])
+            if prev.get("original_text"):
+                entry["original_text"] = prev["original_text"]
+            _drop_audit(fs, f"{key}: statement", prev.get("original_text") or prev["text"])
+        out.append(entry)
+    for pid, prev in prev_by_id.items():
+        if pid not in {e["id"] for e in out}:
+            fs.setdefault("editor_removed", []).append({"kind": key, "text": prev["text"]})
+            _drop_audit(fs, f"{key}: statement", prev.get("original_text") or prev["text"])
+    fs[key] = out
+
+
+def _edit_segments(fs: dict, raw) -> None:
+    prev_by_id = {g["id"]: g for g in fs.get("segments") or []}
+    counter = 1 + max([int(m.group(1)) for i in prev_by_id for m in [re.search(r"(\d+)$", i)] if m] or [-1])
+    out: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not _clean(item.get("type")):
+            continue
+        stype, prev = _clean(item["type"]), prev_by_id.get(item.get("id"))
+        rows, seen = [], set()
+        for it in item.get("items") or []:
+            name = _clean(it.get("name") if isinstance(it, dict) else it)
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                rows.append((name, _clean(it.get("figure")) if isinstance(it, dict) else ""))
+        if not rows:
+            continue
+        figures: dict[str, dict] = {}
+        for name, figure in rows:
+            old = ((prev or {}).get("figures") or {}).get(name)
+            if not figure:
+                continue
+            if old and old["figure"] == figure:
+                figures[name] = old
+                continue
+            parsed = _parse_figure(figure)
+            fig = {"figure": figure, "kind": parsed[0] if parsed else "other", "amount": parsed[1] if parsed else 0.0,
+                   "quote": "", "edited_by_editor": True, "varied": False}
+            if old:
+                fig["agent_figure"] = old.get("agent_figure", old["figure"])
+                if old.get("original_figure"):
+                    fig["original_figure"] = old["original_figure"]
+                _drop_audit(fs, f"{(prev or {}).get('type', stype)}: {name}", old.get("original_figure") or old["figure"])
+            figures[name] = fig
+        names = [n for n, _ in rows]
+        lead = _clean(item.get("dominant"))
+        lead = next((n for n in names if n.lower() == lead.lower()), None)
+        old_dom = (prev or {}).get("dominant")
+        if not lead:
+            dominant = None
+        elif old_dom and old_dom["name"] == lead:
+            dominant = old_dom
+        else:
+            dominant = {"name": lead, "basis": "editor", "quote": ""}
+        entry = {"id": prev["id"] if prev else f"fs.segments.{counter}", "type": stype, "items": names, "figures": figures,
+                 "dominant": dominant}
+        if not prev:
+            counter += 1
+        changed = (not prev or prev["type"] != stype or prev["items"] != names or figures != prev.get("figures")
+                   or (old_dom or {}).get("name") != (dominant or {}).get("name"))
+        if prev and prev.get("agent_original"):
+            entry["agent_original"] = prev["agent_original"]
+        if changed or (prev and prev.get("edited_by_editor")):
+            entry["edited_by_editor"] = True
+        if changed:
+            if prev:
+                entry.setdefault("agent_original", {"type": prev["type"], "items": prev["items"],
+                                                    "figures": {n: f.get("figure", "") for n, f in (prev.get("figures") or {}).items()},
+                                                    "dominant": (old_dom or {}).get("name", "")})
+        out.append(entry)
+    for pid, prev in prev_by_id.items():
+        if pid not in {e["id"] for e in out}:
+            fs.setdefault("editor_removed", []).append({"kind": "segments", "text": f"{prev['type']}: " + ", ".join(prev["items"])})
+    fs["segments"] = out
+
+
+def apply_editor_edits(fs: dict, edits: dict) -> dict:
+    """Apply the editor's edits to a fact sheet IN PLACE, in the same shapes flatten_fact_sheet reads, so the planner, the
+    writer and the number trace use them with no other change. Returns `fs`. Pure (no network, no model).
+
+    `edits` holds only the parts the editor sent; a key that is absent leaves that part alone.
+      size / forecast / cagr  {"value", "when"}            an empty value removes the figure
+      regions                 {"leader": {"name", "basis"}, "fastest": {...}}   an empty name removes it
+      segments                [{"id"?, "type", "items": [{"name", "figure"}], "dominant": name}]   the WHOLE list
+      us / drivers / opportunities / segment_drivers   [{"id"?, "text", ("split", "name")}]   the WHOLE list
+      players                 [name]                        the WHOLE list
+    A list replaces the sheet's list: an item sent with its `id` and the same text is kept exactly as it was; one sent with
+    an id and new text, or with no id, is the editor's own (`edited_by_editor`); one left out is removed. Whatever the
+    editor sets is used exactly as entered — never varied (`varied` False, its variance audit row dropped) — and what the
+    agent had read stays beside it (`agent_value` / `agent_text` / `agent_figure` / `agent_original`, `editor_removed`)."""
+    fs.setdefault("regions", {"leader": None, "fastest": None})
+    for key in HEADLINE_KEYS:
+        if key in edits:
+            _edit_headline(fs, key, edits[key])
+    for which, raw in (edits.get("regions") or {}).items():
+        if which in ("leader", "fastest"):
+            _edit_region(fs, which, raw)
+    if "segments" in edits:
+        _edit_segments(fs, edits["segments"])
+    for key in STATEMENT_KEYS:
+        if key in edits:
+            _edit_statements(fs, key, edits[key])
+    if "players" in edits:
+        players: list[str] = []
+        for name in edits["players"] if isinstance(edits["players"], list) else []:
+            name = _clean(name)
+            if name and name.lower() not in (p.lower() for p in players):
+                players.append(name)
+        if players != fs.get("players"):
+            fs.setdefault("agent_players", list(fs.get("players") or []))
+            fs["players"] = players
+    _match_segment_drivers(fs, logging.getLogger("revamp"))
+    fs["gaps"] = headline_gaps(fs)
+    return fs
+
+
 # ------------------------------------------------------------------------------------------ for later stages
 
 def flatten_fact_sheet(fs: dict) -> list[dict]:
@@ -834,7 +1031,8 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                     "text": f"Segmentation {seg['type']}: " + ", ".join(seg["items"])})
         dom = seg.get("dominant")
         if dom:
-            how = "the report states it leads this split" if dom["basis"] == "stated" else "its stated figure is the largest in this split"
+            how = {"stated": "the report states it leads this split", "editor": "the editor confirmed it leads this split"}.get(
+                dom["basis"], "its stated figure is the largest in this split")
             out.append({"id": f"{seg['id']}.dominant", "kind": "segments", "source": base, "historical": False,
                         "text": f"Dominant category in {seg['type']}: {dom['name']} ({how})"})
         for k, name in enumerate(seg["items"]):

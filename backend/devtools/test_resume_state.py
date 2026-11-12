@@ -116,7 +116,7 @@ finally:
 
 try:
     make_run(TOKEN)
-    with patched(external_reports, "find_candidate_pages", fake_find),             patched(external_reports, "read_page", lambda u, l: "readable page text"),             patched(main, "_early_evidence", lambda run, market: {"market": market, "hits": [], "publisher": {}}):
+    with patched(external_reports, "find_candidate_pages", fake_find), patched(external_reports, "read_page", lambda u, l: "readable page text"):
         with patched(main, "_step2_v2", never_step2_v2):
             resp = main.find_reports(main.FindReportsRequest(run_token=TOKEN, markets=MESSY))
     check("find_reports: the response shape is unchanged (markets + the found candidates)",
@@ -128,7 +128,7 @@ try:
           "(trimmed, case-duplicates dropped, empty dropped, first kept)",
           snap["picked_markets"] == CLEAN, str(snap["picked_markets"]))
     # a second search overwrites the first — the run keeps only the latest picker state
-    with patched(external_reports, "find_candidate_pages", lambda m, h, l, per_market=6: []),             patched(main, "_early_evidence", lambda run, market: {"market": market, "hits": [], "publisher": {}}):
+    with patched(external_reports, "find_candidate_pages", lambda m, h, l, per_market=6: []):
         main.find_reports(main.FindReportsRequest(run_token=TOKEN, markets=["Only One Market"]))
     snap = main.get_run(TOKEN)
     check("find_reports: a later search replaces the candidates and the markets",
@@ -137,63 +137,63 @@ try:
 finally:
     drop_run()
 
-# ----------------------------------------------------------------------- /step2 recording
+# ----------------------------------------------------------------------- /reports/fetch recording
 
 try:
     run = make_run(TOKEN, candidates=[entry(1, "Azia Market"), entry(2, "B2 Market"), entry(3, "C3 Market")])
     run.found_reports = fake_find(["Azia Market"], [], LOG)
     seen = {}
 
-    def stub_step2_v2(r, picked, urls, **kw):
+    def stub_build(r, picked, urls, **kw):
         seen.update(picked=[c.news_id for c in picked], urls=list(urls),
                     markets=list(kw.get("markets", [])))
-        return {}
+        return {"report": reports.Report(news_id=2, name="B2 Market", subject="B2 Market", url="", source="", sections={}),
+                "fact_sheet": {"gaps": [], "sources": []}, "report_mode": "cmi", "warnings": []}
 
-    with patched(main, "_step2_v2", stub_step2_v2):
-        with patched(config, "CMI_CHAIN_V2", True):
-            out = main.step2(main.Step2Request(
-                run_token=TOKEN, report_ids=[2, 1],
-                report_urls=[" https://own.com/a ", "   ", "https://own.com/b "],
-                markets=MESSY, url_markets={}))
-    # R2/R3: a CMI report was chosen, so it is used alone — only its first id, no market, no links.
-    check("step2: a CMI report chosen — the stub receives only its FIRST id and no urls/markets",
-          out == {} and seen["picked"] == [2]
+    with patched(main, "_build_reports", stub_build):
+        out = main.reports_fetch(main.ReportsFetchRequest(
+            run_token=TOKEN, kind="cmi", report_ids=[2, 1],
+            report_urls=[" https://own.com/a ", "   ", "https://own.com/b "],
+            markets=MESSY, url_markets={}))
+    # R2/R3: a CMI report was chosen, so it is used alone - only its first id, no market, no links.
+    check("fetch: a CMI report chosen - the build receives only its FIRST id and no urls/markets",
+          out["kind"] == "cmi" and seen["picked"] == [2]
           and seen["urls"] == [] and seen["markets"] == [], str(seen))
     snap = main.get_run(TOKEN)
-    check("step2: get_run returns only the first confirmed CMI report id",
+    check("fetch: get_run returns only the first confirmed CMI report id",
           snap["picked_report_ids"] == [2], str(snap["picked_report_ids"]))
-    check("step2: with a CMI report chosen, the pasted urls are dropped from the run's picks too",
+    check("fetch: with a CMI report chosen, the pasted urls are dropped from the run's picks too",
           snap["picked_urls"] == [], str(snap["picked_urls"]))
-    check("step2: with a CMI report chosen, the market pick is dropped from the run's picks too",
+    check("fetch: with a CMI report chosen, the market pick is dropped from the run's picks too",
           snap["picked_markets"] == [], str(snap["picked_markets"]))
-    check("step2: the earlier found_reports are NOT cleared by confirming",
+    check("fetch: the earlier found_reports are NOT cleared by fetching",
           len(snap["found_reports"]) == 2, str(snap["found_reports"])[:120])
 finally:
     drop_run()
 
-# ------------------------------------------------------- /step2 recording without a CMI report id
+# ------------------------------------------------------- /reports/fetch recording on the competitor tab
 
 try:
     run = make_run(TOKEN, candidates=[entry(1, "Azia Market"), entry(2, "B2 Market")])
     seen = {}
 
-    def stub_step2_v2_no_cmi(r, picked, urls, **kw):
+    def stub_build_no_cmi(r, picked, urls, **kw):
         seen.update(picked=[c.news_id for c in picked], urls=list(urls),
                     markets=list(kw.get("markets", [])))
-        return {}
+        return {"report": reports.Report(news_id=0, name="Azia Market", subject="Azia Market", url="", source="", sections={}),
+                "fact_sheet": {"gaps": [], "sources": []}, "report_mode": "external", "warnings": []}
 
-    with patched(main, "_step2_v2", stub_step2_v2_no_cmi):
-        with patched(config, "CMI_CHAIN_V2", True):
-            main.step2(main.Step2Request(
-                run_token=TOKEN, report_ids=[],
-                report_urls=[" https://own.com/a ", "   ", "https://own.com/b "],
-                markets=MESSY, url_markets={}))
+    with patched(main, "_build_reports", stub_build_no_cmi):
+        main.reports_fetch(main.ReportsFetchRequest(
+            run_token=TOKEN, kind="competitor", report_ids=[2],
+            report_urls=[" https://own.com/a ", "   ", "https://own.com/b "],
+            markets=MESSY, url_markets={}))
     snap = main.get_run(TOKEN)
-    # no CMI id: the single picked market and the trimmed pasted urls are kept (R2)
-    check("step2: no CMI id — the stub receives no picked report but the market and urls",
+    # competitor tab: the single picked market and the trimmed pasted urls are kept; CMI ids are ignored
+    check("fetch: competitor tab - the build receives no picked report but the market and urls",
           seen["picked"] == [] and seen["urls"] == ["https://own.com/a", "https://own.com/b"]
           and seen["markets"] == CLEAN, str(seen))
-    check("step2: no CMI id — get_run keeps the url picks and the single market pick",
+    check("fetch: competitor tab - get_run keeps the url picks and the single market pick",
           snap["picked_urls"] == ["https://own.com/a", "https://own.com/b"]
           and snap["picked_markets"] == CLEAN and snap["picked_report_ids"] == [],
           str(snap["picked_urls"]) + str(snap["picked_markets"]) + str(snap["picked_report_ids"]))

@@ -109,7 +109,7 @@ check("nothing usable: empty result and the page is named in a warning",
       sources == [] and any(TICKED in w for w in warnings), str(warnings))
 check("no pages at all: empty result, no model call", main._use_outside_pages(PICKED, [], {}, [], LOG) == ({}, [], {}))
 
-# ----------------------------------------------------------------------------------- _step2_v2 end to end
+# ----------------------------------------------------------------------------------- _build_reports end to end
 
 
 def make_run(found):
@@ -144,7 +144,7 @@ def step2(found, page_text, usable_urls):
     ]
     try:
         with patched_all(*stubs):
-            return main._step2_v2(run, [], [TICKED], markets=[PICKED], url_markets={TICKED: PICKED})
+            return main._build_reports(run, [], [TICKED], markets=[PICKED], url_markets={TICKED: PICKED})
     finally:
         main._RUNS.pop(TOKEN, None)
 
@@ -166,10 +166,10 @@ check("step2: ticked report unreadable -> the other report of the list is used a
 raised = None
 try:
     step2(found, {TICKED: "", SPARE: ""}, usable_urls=set())
-except main.HTTPException as e:
+except main.PipelineError as e:
     raised = e
 check("step2: nothing works anywhere -> the error says WHY (which link, what happened)",
-      raised is not None and TICKED in str(raised.detail) and "could not be read" in str(raised.detail), str(raised and raised.detail))
+      raised is not None and TICKED in str(raised) and "could not be read" in str(raised), str(raised))
 
 print()
 if FAILURES:

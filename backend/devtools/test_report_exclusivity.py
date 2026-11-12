@@ -1,8 +1,9 @@
-"""Offline test for the report-source exclusive rules (R1-R3): a Step-2 run uses EXACTLY ONE of
-(a) a CMI report alone, (b) one agent-suggested market name, (c) the editor's own report links.
-Concretely: _clean_markets returns ONE market, find_reports passes exactly that one, /step2 keeps
-only the first CMI report id and drops the market pick and pasted links whenever a CMI report was
-picked, and _step2_v2 with a chosen CMI report touches NO outside page at all — no competitor
+"""Offline test for the report-source exclusive rules (R1-R3): a Reports-step fetch uses EXACTLY ONE of
+(a) a CMI report alone (the CMI tab), (b) one agent-suggested market name, (c) the editor's own report links
+(the competitor tab). Concretely: _clean_markets returns ONE market, find_reports passes exactly that one
+(and starts no evidence search), /reports/fetch with kind "cmi" keeps only the first CMI report id and ignores any
+market and pasted links, kind "competitor" ignores CMI ids and refuses CMI links, and _build_reports with a chosen
+CMI report touches NO outside page at all — no competitor
 report read, no figure gap search, no figure backing (a missing headline figure simply stays a
 gap). No network, no LLM: every heavier step is stubbed to either return a small fixture or raise
 with a message naming what must never be reached.
@@ -133,19 +134,15 @@ try:
         return [{"url": "https://no1.com/report", "title": f"{MARKET} Report 2026", "host": "no1.com",
                  "snippet": "the size of it", "market": (markets or [MARKET])[0]}]
 
-    early_calls = []
-
-    def fake_early(run, market):
-        early_calls.append(market)
-        return {"market": market, "hits": [], "publisher": {}}
-
-    # the evidence search that find_reports starts in the background is stubbed: it must not touch the network
-    with patched(external_reports, "find_candidate_pages", fake_find), patched(main, "_early_evidence", fake_early),             patched(external_reports, "read_page", lambda u, l: "readable page text"):
+    # no evidence search starts from find_reports any more: evidence is collected once, after the fact sheet is confirmed
+    with patched(external_reports, "find_candidate_pages", fake_find), \
+            patched(external_reports, "read_page", lambda u, l: "readable page text"):
         resp = main.find_reports(main.FindReportsRequest(
             run_token=TOKEN, markets=["  Azia Market ", "B2 Market", "C3 Market"]))
         main.get_run(TOKEN)
-        main._get_run(TOKEN).early_future.result(timeout=5)
-    check("find_reports: the early evidence search starts for that one market only", early_calls == ["Azia Market"], str(early_calls))
+    check("find_reports: no early evidence search exists any more",
+          not hasattr(main, "_early_evidence") and not hasattr(main.RunState, "early_future")
+          and not any(r.path == "/step2/early_evidence" for r in main.app.routes))
     check("find_reports: exactly ONE market reaches the search even though three were sent",
           called == [[ "Azia Market" ]], str(called))
     check("find_reports: the response's markets list holds that one name only",
@@ -165,65 +162,66 @@ try:
 finally:
     drop_run()
 
-# ------------------------------------------------------------------ step2: CMI report used alone
+# ------------------------------------------------------------------ /reports/fetch routing: CMI report used alone
+
+def fetch_stub(seen):
+    def stub_build(r, picked, urls, **kw):
+        seen.update(picked=[c.news_id for c in picked], urls=list(urls), markets=list(kw.get("markets", [])),
+                    cmi_pages=list(kw.get("cmi_pages", [])))
+        return {"report": cmi_report(), "fact_sheet": facts._empty_fact_sheet() | {"sources": [], "variance": []},
+                "report_mode": "cmi", "warnings": []}
+    return stub_build
+
+
+def cmi_report() -> reports.Report:
+    return reports.Report(
+        news_id=7211, name=NAME, subject=MARKET, url=URL, source="cmi.example",
+        sections={"live_report_page": "Some market text with no figures at all.\n"},
+        segment_terms=["Type"])
+
 
 try:
     run = make_run(TOKEN, candidates=[entry(7211, MARKET), entry(7212, "B2 Market")])
     seen = {}
+    with patched(main, "_build_reports", fetch_stub(seen)):
+        main.reports_fetch(main.ReportsFetchRequest(
+            run_token=TOKEN, kind="cmi", report_ids=[7211], report_urls=[FIRST_URL, "   ", SECOND_URL],
+            markets=[MARKET], url_markets={FIRST_URL: MARKET}))
+    check("fetch cmi: a CMI report picked - the build gets urls == [] (links ignored, R3)", seen["urls"] == [], str(seen))
+    check("fetch cmi: a CMI report picked - the build gets markets == [] (market ignored, R1)", seen["markets"] == [], str(seen))
+    check("fetch cmi: picked_urls on the run stays empty", run.picked_urls == [], str(run.picked_urls))
+    check("fetch cmi: the run records only the CMI report id, no market",
+          run.picked_report_ids == [7211] and run.picked_markets == [], f"{run.picked_report_ids} / {run.picked_markets}")
 
-    def stub_step2_v2(r, picked, urls, **kw):
-        seen.update(picked=[c.news_id for c in picked], urls=list(urls),
-                    markets=list(kw.get("markets", [])))
-        return {}
-
-    with patched(main, "_step2_v2", stub_step2_v2):
-        with patched(config, "CMI_CHAIN_V2", True):
-            main.step2(main.Step2Request(
-                run_token=TOKEN, report_ids=[7211],
-                report_urls=[FIRST_URL, "   ", SECOND_URL],
-                markets=[MARKET], url_markets={FIRST_URL: MARKET}))
-    check("step2: a CMI report picked — _step2_v2 gets urls == [] (links ignored, R3)",
-          seen["urls"] == [], str(seen))
-    check("step2: a CMI report picked — _step2_v2 gets markets == [] (market ignored, R1)",
-          seen["markets"] == [], str(seen))
-    check("step2: a CMI report picked — picked_urls on the run stays empty",
-          run.picked_urls == [], str(run.picked_urls))
-    check("step2: a CMI report picked — the run records only the CMI report id, no market",
-          run.picked_report_ids == [7211] and run.picked_markets == [],
-          f"{run.picked_report_ids} / {run.picked_markets}")
-
-    # two ids sent: only the FIRST is used — the second is never validated or recorded (so an
-    # unknown second id cannot even make the request fail)
+    # two ids sent: only the FIRST is used - the second is never validated or recorded
     seen.clear()
-    with patched(main, "_step2_v2", stub_step2_v2):
-        with patched(config, "CMI_CHAIN_V2", True):
-            main.step2(main.Step2Request(run_token=TOKEN, report_ids=[7211, 999999]))
-    check("step2: two report ids sent — only the first is used (an unknown second id is irrelevant)",
-          seen["picked"] == [7211] and run.picked_report_ids == [7211],
-          f"{seen} / {run.picked_report_ids}")
+    with patched(main, "_build_reports", fetch_stub(seen)):
+        main.reports_fetch(main.ReportsFetchRequest(run_token=TOKEN, kind="cmi", report_ids=[7211, 999999]))
+    check("fetch cmi: two report ids sent - only the first is used (an unknown second id is irrelevant)",
+          seen["picked"] == [7211] and run.picked_report_ids == [7211], f"{seen} / {run.picked_report_ids}")
+
+    raised = None
+    try:
+        main.reports_fetch(main.ReportsFetchRequest(run_token=TOKEN, kind="cmi", report_ids=[], markets=[MARKET]))
+    except main.HTTPException as e:
+        raised = e
+    check("fetch cmi: nothing picked is a 400 (a market pick does not count on the CMI tab)",
+          raised is not None and raised.status_code == 400, str(raised))
 finally:
     drop_run()
 
 try:
     run = make_run(TOKEN, candidates=[entry(7211, MARKET)])
     seen = {}
-
-    def stub_step2_v2_no_cmi(r, picked, urls, **kw):
-        seen.update(picked=[c.news_id for c in picked], urls=list(urls),
-                    markets=list(kw.get("markets", [])))
-        return {}
-
-    with patched(main, "_step2_v2", stub_step2_v2_no_cmi):
-        with patched(config, "CMI_CHAIN_V2", True):
-            main.step2(main.Step2Request(
-                run_token=TOKEN, report_ids=[], report_urls=[f" {FIRST_URL} ", "", SECOND_URL],
-                markets=[f"  {MARKET}  ", "B2 Market"], url_markets={}))
-    check("step2: NO CMI id picked — the ONE kept market and the trimmed pasted urls are used",
-          seen["picked"] == [] and seen["urls"] == [FIRST_URL, SECOND_URL]
-          and seen["markets"] == [MARKET], str(seen))
-    check("step2: NO CMI id picked — the run records the same market and urls",
-          run.picked_markets == [MARKET] and run.picked_urls == [FIRST_URL, SECOND_URL]
-          and run.picked_report_ids == [],
+    with patched(main, "_build_reports", fetch_stub(seen)):
+        main.reports_fetch(main.ReportsFetchRequest(
+            run_token=TOKEN, kind="competitor", report_ids=[7211], report_urls=[f" {FIRST_URL} ", "", SECOND_URL],
+            markets=[f"  {MARKET}  ", "B2 Market"], url_markets={}, cmi_report_url="https://www.coherentmarketinsights.com/x"))
+    check("fetch competitor: the ONE kept market and the trimmed pasted urls are used; CMI ids and link are ignored",
+          seen["picked"] == [] and seen["urls"] == [FIRST_URL, SECOND_URL] and seen["markets"] == [MARKET]
+          and seen["cmi_pages"] == [], str(seen))
+    check("fetch competitor: the run records the same market and urls",
+          run.picked_markets == [MARKET] and run.picked_urls == [FIRST_URL, SECOND_URL] and run.picked_report_ids == [],
           f"{run.picked_markets} / {run.picked_urls} / {run.picked_report_ids}")
 finally:
     drop_run()
@@ -315,34 +313,51 @@ try:
         (us_search, "run_us_search", fake_us_search),
     ]
     with patched_all(*stubs):
-        out = main._step2_v2(run, [main._RUNS[TOKEN].candidates[0]], [],
-                             markets=[MARKET], url_markets={})
-    check("_step2_v2 CMI: the fact sheet comes from the fetcher and NOTHING outside is read",
+        built = main._build_reports(run, [main._RUNS[TOKEN].candidates[0]], [], markets=[MARKET], url_markets={})
+    check("_build_reports CMI: no search demand, publisher, evidence or query planning runs in the Reports step",
+          all(flags[k] == 0 for k in ("search_demand", "publisher", "search_queries", "evidence", "us")), str(flags))
+    run.report_tabs["cmi"] = built
+    main._activate_report(run, "cmi")
+    refused = None
+    with patched_all(*stubs):
+        try:
+            main.step2(main.Step2Request(run_token=TOKEN))
+        except main.HTTPException as e:
+            refused = e
+    check("evidence: refused (400) until the fact sheet is confirmed, and nothing was searched",
+          refused is not None and refused.status_code == 400 and flags["evidence"] == 0 and flags["fetch"] == 1,
+          f"{refused} {flags}")
+    main.reports_confirm(main.ReportsConfirmRequest(run_token=TOKEN))
+    with patched_all(*stubs):
+        out = main.step2(main.Step2Request(run_token=TOKEN))
+    check("evidence: with a confirmed sheet it runs and does NOT fetch the report again",
+          flags["fetch"] == 1 and flags["evidence"] == 1, str(flags))
+    check("_build_reports CMI: the fact sheet comes from the fetcher and NOTHING outside is read",
           all(flags[k] == 0 for k in ("read_page", "find_pages", "build_sheet")), str(flags))
-    check("_step2_v2 CMI: no figure gap search, no figure backing, no web fill (R3)",
+    check("CMI run: no figure gap search, no figure backing, no web fill (R3)",
           flags["gap_search"] == 0 and flags["figure_backing"] == 0 and flags["fill_web"] == 0,
           str(flags))
-    check("_step2_v2 CMI: the report is the CMI report and the mode is 'cmi'",
+    check("CMI run: the report is the CMI report and the mode is 'cmi'",
           out["report"]["name"] == NAME and out["report_mode"] == "cmi", str(out["report_mode"]))
     fs = out["fact_sheet"]
-    check("_step2_v2 CMI: the fact sheet has NO figure_source (stays unset)",
+    check("CMI run: the fact sheet has NO figure_source (stays unset)",
           (fs.get("figure_source") or None) is None, str(fs.get("figure_source")))
-    check("_step2_v2 CMI: all three headline figures simply stay gaps",
+    check("CMI run: all three headline figures simply stay gaps",
           fs["gaps"] == ["size", "forecast", "cagr"], str(fs["gaps"]))
-    check("_step2_v2 CMI: the sheet is a pure CMI sheet (no variance, no external source rows)",
+    check("CMI run: the sheet is a pure CMI sheet (no variance, no external source rows)",
           fs["variance"] == [] and fs["sources"] == [{"name": NAME, "url": URL, "kind": "cmi"}],
           str(fs["sources"]) + str(fs["variance"]))
-    check("_step2_v2 CMI: no editor warning about outside reports",
+    check("CMI run: no editor warning about outside reports",
           [w for w in out["warnings"] if "news item(s) about this market" not in w] == [], str(out["warnings"]))
-    check("_step2_v2 CMI: gap_pages stays [] so Step 3 and the response still work",
+    check("CMI run: gap_pages stays [] so Step 3 and the response still work",
           run.gap_pages == [], str(run.gap_pages))
-    check("_step2_v2 CMI: the market-news evidence search STILL ran with the report's name",
+    check("CMI run: the market-news evidence search STILL ran with the report's name",
           flags["evidence"] == 1 and names["evidence"] == [NAME], str(flags) + str(names))
-    check("_step2_v2 CMI: the U.S. search, search demand and publisher points still ran",
+    check("CMI run: the U.S. search, search demand and publisher points still ran",
           flags["us"] == 1 and flags["search_demand"] == 1 and flags["publisher"] == 1, str(flags))
-    check("_step2_v2 CMI: the search queries were planned from the CMI report's name",
+    check("CMI run: the search queries were planned from the CMI report's name",
           flags["search_queries"] == 1 and names["queries"] == [NAME], str(names))
-    check("_step2_v2 CMI: the run carries the result (fact sheet, report, mode) for Step 3",
+    check("CMI run: the run carries the result (fact sheet, report, mode) for Step 3",
           run.report is not None and run.report.url == URL and run.fact_sheet is fs
           and run.report_mode == "cmi", "run state")
 finally:
@@ -367,119 +382,49 @@ try:
             patched(facts, "fill_headline_from_web", fake_fill_empty):
         raised = None
         try:
-            main._step2_v2(run, [], [], markets=[f"  {MARKET}  "], url_markets=None)
-        except main.HTTPException as e:
+            main._build_reports(run, [], [], markets=[f"  {MARKET}  "], url_markets=None)
+        except main.PipelineError as e:
             raised = e
-    check("_step2_v2 no-CMI: the search was sent exactly ONE market (never plural)",
+    check("_build_reports no-CMI: the search was sent exactly ONE market (never plural)",
           found_markets == [MARKET], str(found_markets))
-    check("_step2_v2 no-CMI: with nothing found the step still fails loudly for the editor",
-          raised is not None and raised.status_code == 500 and "No report could be found" in str(raised.detail),
-          str(raised))
+    check("_build_reports no-CMI: with nothing found the step still fails loudly for the editor",
+          raised is not None and "No report could be found" in str(raised), str(raised))
 finally:
     drop_run()
 
-# ------------- _step2_v2 with an agent-picked market: the early evidence search is reused, not repeated
-
-from concurrent.futures import Future  # noqa: E402
-
-
-def early_case(players):
-    """Run _step2_v2 for a market pick whose early evidence is already in; returns (flags, hits urls, publisher)."""
-    make_run(TOKEN)
-    r = main._RUNS[TOKEN]
-    done = Future()
-    done.set_result({"market": MARKET, "hits": [hit("https://early.example/one")], "publisher": {"points": ["early point"]}})
-    r.early_future, r.early_market = done, MARKET
-    flags = {"publisher": 0, "us": 0, "evidence": 0, "queries": 0, "demand": 0}
-
-    def ext_sheet(market_name, pages, logger, today=None):
-        sheet = facts._empty_fact_sheet()
-        sheet["players"] = list(players)
-        return sheet, [{"name": "Outside", "url": FIRST_URL, "kind": "external"}], {FIRST_URL: "text"}
-
-    def count(key, ret):
-        def fn(*a, **kw):
-            flags[key] += 1
-            return ret
-        return fn
-
-    stubs = [
-        (external_reports, "read_page", lambda url, logger: "page text"),
-        (external_reports, "build_external_sheet", ext_sheet),
-        (facts, "fill_headline_from_web", lambda fs, market, hosts, logger: []),
-        (demand, "run_search_demand", count("demand", {"questions": []})),
-        (keyword_research, "research", lambda m, l: {"suggestions": [], "pool": [], "ranking_terms": [], "method": ""}),
-        (publisher, "run_publisher_points", count("publisher", {"points": ["late point"]})),
-        (pipeline, "prepare_search_queries", count("queries", (["n"], ["w"], ["u"]))),
-        (pipeline, "run_search_evidence", count("evidence", [hit("https://late.example/two")])),
-        (us_search, "run_us_search", count("us", [hit("https://us.example/three")])),
-    ]
-    try:
-        with patched_all(*stubs):
-            out = main._step2_v2(r, [], [FIRST_URL], markets=[MARKET], url_markets={FIRST_URL: MARKET})
-        return flags, [h["url"] for h in out["hits"]], out["publisher"]
-    finally:
-        drop_run()
-
-
-flags, urls_, pub = early_case(players=[])
-check("early evidence: nothing to top up, so no second web search, no U.S. search, no second publisher call",
-      flags["evidence"] == 0 and flags["us"] == 0 and flags["publisher"] == 0 and flags["queries"] == 0, str(flags))
-check("early evidence: the early hits and publisher points are what Step 2 carries; demand still runs",
-      urls_ == ["https://early.example/one"] and pub == {"points": ["early point"]} and flags["demand"] == 1,
-      f"{urls_} {pub} {flags}")
-flags, urls_, pub = early_case(players=["Acme"])
-check("early evidence: a picked report that names players gets ONE top-up search merged after the early hits (no U.S. repeat)",
-      flags["evidence"] == 1 and flags["us"] == 0 and flags["publisher"] == 0
-      and urls_ == ["https://early.example/one", "https://late.example/two"], f"{flags} {urls_}")
-
-# ------------------------------------------- step2: the dedicated CMI report link (its own box, never a competitor's)
+# ------------------------------------------- the dedicated CMI report link (its own box, never a competitor's)
 
 CMI_LINK = "https://www.coherentmarketinsights.com/market-insight/rose-oil-market-7211"
 
 
-def stub_step2_v2(r, picked, urls, **kw):
-    seen.update(picked=[c.news_id for c in picked], urls=list(urls),
-                markets=list(kw.get("markets", [])), cmi_pages=list(kw.get("cmi_pages", [])))
-    return {}
+def fetch_raises(req):
+    try:
+        main.reports_fetch(req)
+    except main.HTTPException as e:
+        return e
+    return None
 
 
 try:
     make_run(TOKEN, candidates=[entry(7211, MARKET)])
-    raised = None
-    try:
-        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[CMI_LINK], markets=[]))
-    except main.HTTPException as e:
-        raised = e
-    check("step2: a CMI link pasted among the competitor links is refused (400) and pointed at the CMI report link box",
+    raised = fetch_raises(main.ReportsFetchRequest(run_token=TOKEN, kind="competitor", report_urls=[CMI_LINK]))
+    check("fetch competitor: a CMI link pasted among the competitor links is refused (400) and pointed at the CMI report link box",
           raised is not None and raised.status_code == 400
           and "CMI report link box" in str(raised.detail) and CMI_LINK in str(raised.detail), str(raised))
-finally:
-    drop_run()
-
-try:
-    make_run(TOKEN, candidates=[entry(7211, MARKET)])
-    raised = None
-    try:
-        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[],
-                                     cmi_report_url="https://reports.example/rose-oil"))
-    except main.HTTPException as e:
-        raised = e
-    check("step2: a non-CMI link in the CMI report link box is refused (400) naming CMI's own site",
-          raised is not None and raised.status_code == 400
-          and "coherentmarketinsights.com" in str(raised.detail), str(raised))
+    raised = fetch_raises(main.ReportsFetchRequest(run_token=TOKEN, kind="cmi", cmi_report_url="https://reports.example/rose-oil"))
+    check("fetch cmi: a non-CMI link in the CMI report link box is refused (400) naming CMI's own site",
+          raised is not None and raised.status_code == 400 and "coherentmarketinsights.com" in str(raised.detail), str(raised))
 finally:
     drop_run()
 
 try:
     run = make_run(TOKEN, candidates=[entry(7211, MARKET)])
     seen = {}
-    with patched(main, "_step2_v2", stub_step2_v2), patched(config, "CMI_CHAIN_V2", True), \
-            patched(reports, "match_report_url", lambda u: entry(7211, MARKET)):
-        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[], cmi_report_url=CMI_LINK))
-    check("step2: a CMI report link on a catalog page becomes the picked CMI report itself (R3: nothing else)",
+    with patched(main, "_build_reports", fetch_stub(seen)), patched(reports, "match_report_url", lambda u: entry(7211, MARKET)):
+        main.reports_fetch(main.ReportsFetchRequest(run_token=TOKEN, kind="cmi", cmi_report_url=CMI_LINK))
+    check("fetch cmi: a CMI report link on a catalog page becomes the picked CMI report itself (R3: nothing else)",
           seen["picked"] == [7211] and seen["urls"] == [] and seen["cmi_pages"] == [], str(seen))
-    check("step2: the run records that catalog report id",
+    check("fetch cmi: the run records that catalog report id",
           run.picked_report_ids == [7211] and run.picked_markets == [] and run.picked_urls == [],
           f"{run.picked_report_ids} / {run.picked_markets} / {run.picked_urls}")
 finally:
@@ -488,10 +433,9 @@ finally:
 try:
     make_run(TOKEN, candidates=[entry(7211, MARKET)])
     seen = {}
-    with patched(main, "_step2_v2", stub_step2_v2), patched(config, "CMI_CHAIN_V2", True), \
-            patched(reports, "match_report_url", lambda u: None):
-        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[], report_urls=[], cmi_report_url=CMI_LINK))
-    check("step2: a CMI report link outside the catalog is read as a CMI page (cmi_pages, figures never adjusted)",
+    with patched(main, "_build_reports", fetch_stub(seen)), patched(reports, "match_report_url", lambda u: None):
+        main.reports_fetch(main.ReportsFetchRequest(run_token=TOKEN, kind="cmi", cmi_report_url=CMI_LINK))
+    check("fetch cmi: a CMI report link outside the catalog is read as a CMI page (cmi_pages, figures never adjusted)",
           seen["picked"] == [] and seen["cmi_pages"] == [CMI_LINK], str(seen))
 finally:
     drop_run()
@@ -499,10 +443,9 @@ finally:
 try:
     run = make_run(TOKEN, candidates=[entry(7211, MARKET), entry(7212, "B2 Market")])
     seen = {}
-    with patched(main, "_step2_v2", stub_step2_v2), patched(config, "CMI_CHAIN_V2", True), \
-            patched(reports, "match_report_url", lambda u: entry(7212, "B2 Market")):
-        main.step2(main.Step2Request(run_token=TOKEN, report_ids=[7211], report_urls=[], cmi_report_url=CMI_LINK))
-    check("step2: a ticked CMI report wins over a pasted CMI report link (the link is ignored, not an error)",
+    with patched(main, "_build_reports", fetch_stub(seen)), patched(reports, "match_report_url", lambda u: entry(7212, "B2 Market")):
+        main.reports_fetch(main.ReportsFetchRequest(run_token=TOKEN, kind="cmi", report_ids=[7211], cmi_report_url=CMI_LINK))
+    check("fetch cmi: a ticked CMI report wins over a pasted CMI report link (the link is ignored, not an error)",
           seen["picked"] == [7211] and seen["cmi_pages"] == [] and run.picked_report_ids == [7211], str(seen))
 finally:
     drop_run()
@@ -526,11 +469,3 @@ if FAILURES:
     sys.exit(1)
 print("all report-exclusivity tests passed")
 
-
-def patched_d_all(*specs):
-    """Nested context managers are deep enough to be unreadable when there are twelve stubs."""
-    from contextlib import ExitStack
-    stack = ExitStack()
-    for obj, name, fn in specs:
-        stack.enter_context(patched(obj, name, fn))
-    return stack
