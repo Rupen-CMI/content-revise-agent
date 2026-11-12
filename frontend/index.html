@@ -260,22 +260,24 @@
         </div>
 
         <div class="tabs-content" role="tabpanel" id="reports-panel-cmi" aria-labelledby="reports-tab-cmi" tabindex="0" data-tab="cmi">
-          <!-- CMI TAB AGENT: build this screen inside #reports-cmi-screen. Until then it holds the old Step 1 CMI list and link box. -->
+          <!-- CMI tab: the report choice (suggestions + own link); its fact sheet renders into #reports-cmi-factsheet below. -->
           <div id="reports-cmi-screen">
             <div class="market-col-head">
-              <span class="market-col-note">Pick one. Its CMI report is used on its own and linked in the article. Its facts and figures are used as they are, with no adjustment.</span>
-              <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-cmi-clear" hidden><i data-lucide="x"></i> Clear selection</button>
+              <span class="market-col-title"><i data-lucide="library"></i> CMI report suggestions</span>
+              <span class="market-col-note">Pick one. Its CMI report is used on its own and linked in the article.</span>
+              <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="reports-cmi-clear" hidden><i data-lucide="x"></i> Clear selection</button>
             </div>
-            <div class="market-col-body" id="step1-cmi"></div>
-            <div class="report-url-entry" id="step1-cmi-url-block">
+            <div class="market-col-body" id="reports-cmi-list"></div>
+            <div class="report-url-entry" id="reports-cmi-url-block">
               <span class="kv-label">Or paste a CMI report link</span>
               <div class="report-url-row">
-                <input type="text" class="text-input report-url-input" id="step1-cmi-url" placeholder="https://www.coherentmarketinsights.com/...">
-                <button type="button" class="btn btn-secondary btn-small" id="step1-cmi-url-check">Check</button>
+                <input type="text" class="text-input report-url-input" id="reports-cmi-url" placeholder="https://www.coherentmarketinsights.com/...">
+                <button type="button" class="btn btn-secondary btn-small" id="reports-cmi-url-check">Check</button>
               </div>
-              <p class="url-check-result" id="step1-cmi-url-status" hidden></p>
-              <p class="field-hint">For a CMI report that is not in the list. It is used exactly like a picked CMI report: its figures are CMI's own and are never adjusted.</p>
+              <p class="url-check-result" id="reports-cmi-url-status" hidden></p>
+              <p class="field-hint">For a CMI report that is not in the list. It is read exactly like a picked CMI report.</p>
             </div>
+            <p class="field-hint" id="reports-cmi-note">CMI figures are used exactly as the report states them; nothing is adjusted.</p>
           </div>
           <div class="btn-row reports-fetch-row" id="reports-cmi-fetch-area">
             <button type="button" class="btn btn-primary" id="reports-cmi-fetch-btn" disabled><i data-lucide="download"></i> <span>Fetch report</span></button>
