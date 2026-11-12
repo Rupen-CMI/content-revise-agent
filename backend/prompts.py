@@ -271,6 +271,37 @@ Return JSON: {{"queries": ["<query 1>", "<query 2>", ...], "source_groups": ["<g
 "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
 
 
+# The Evidence step's query prompt: the same rules, source groups and topic terms as SEARCH_QUERIES_USER (sliced from it, so the
+# two can never drift), but the queries come back GROUPED BY SECTION, each built from what the confirmed fact sheet says that
+# section needs (sections.section_search_plan, rendered by sections.format_targets).
+_QUERY_RULES_FROM = SEARCH_QUERIES_USER.index("- Each query is its ANCHOR")
+_QUERY_RULES_TO = SEARCH_QUERIES_USER.index('\nReturn JSON: {{"queries"')
+_QUERY_RULES_SHARED = (SEARCH_QUERIES_USER[_QUERY_RULES_FROM:_QUERY_RULES_TO]
+                       .replace("the 9 categories above describe", "the sections above describe")
+                       .replace("For every category except key players", "For every section except key players"))
+
+SEARCH_SECTION_QUERIES_USER = """TODAY'S DATE: {today}
+CONFIRMED MARKET: {market_name}
+KNOWN COMPANIES IN THIS MARKET (from the confirmed CMI report, if any): {key_players}
+MARKET SEGMENTS (from the confirmed CMI report, if any): {segments}
+
+SCOPE: the CONFIRMED MARKET above is the only subject. Write queries for that market as a whole and for its sections below, \
+and do not narrow to one product, feature or use case unless that IS the market.
+
+The article has the sections below, and each needs its own recent, real news. For EACH section write the queries named for it, \
+built from that section's TARGETS: the targets say what the CMI report states there, so the news you look for is news that \
+shows it happening. A target is never text to paste into a query: turn it into the market's anchor plus one or two words.
+{section_targets}
+
+Every query is about a concrete, recent development (a launch, an acquisition, a funding round, a partnership, a regulation, \
+an adoption), and the queries of one section look in different directions. Follow these rules exactly, learned from real \
+search failures:
+""" + _QUERY_RULES_SHARED + """
+Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": ["<query>", ...], \
+"segmentation": ["<query>", ...], "us": ["<query>", ...], "key_players": ["<query>", ...], "market": ["<query>", ...]}}, \
+"source_groups": ["<group id>", ...], "topic_terms": ["<term 1>", "<term 2>", ...]}}"""
+
+
 SELECT_SYSTEM = """You are a senior market-intelligence editor at Coherent Market Insights (CMI). \
 The market/report for this article has already been confirmed by a human editor — your only job here is to select \
 reliable supporting evidence from web search results. Respond with JSON only."""
@@ -390,7 +421,7 @@ buyers and its rivals now face — so select such a fact under another section's
 only for a fact specifically about the U.S. market. The article needs three distinct \
 market trends, each examined in depth and so backed by two or three facts (prefer a named organisation, study, launch, policy or deal with its date and its figure; the three trends must differ from one another, so where the results allow it the trends facts span different directions, such as technology or product change, buyer demand and adoption, and investment or competitive moves), a U.S. paragraph, and a key-players section, so when the results allow it, make sure your selection \
 gives each of those a real supply of facts — do not label every fact the same way just because they all name a company.
-
+{section_rules}
 CLAIM BACKING (the second selection job, from the claim-results pool above). For each claim under CLAIMS FROM \
 THE ORIGINAL ARTICLE, judge the results tagged "(for: Cn)" and select at most TWO of them — exactly the results \
 that give the claim real, outside backing the article itself could never supply. Tag each selected result with \
@@ -424,6 +455,27 @@ Return JSON:
   "claim_backing": [{{"claim_id": "<C-number>", "id": "<P-number>", "stance": "<supports|qualifies|contradicts>", "fact": "<one factual sentence stating only what that source says>"}}],
   "question_backing": [{{"question_id": "<Q-number>", "id": "<PQ-number>", "fact": "<one factual sentence stating only what that source says>"}}],
   "report_claim_backing": [{{"claim_id": "<RC-number>", "id": "<PR-number>", "fact": "<one factual sentence stating only what that source says>"}}]}}"""
+
+
+# The Evidence step's SELECT (pipeline.run_select with sections): injected into SELECT_USER in place of {section_rules}. It
+# says that each selected result goes to exactly one named section and replaces the free "use_for" tags above it.
+SELECT_SECTION_RULES = """
+SECTIONS (replaces everything said above about use_for with several entries and about "context": there is no "context"). The \
+results above are grouped by the section whose search found them ("also found for" names other sections whose queries found the \
+same page). Assign each selected result to EXACTLY ONE section: use_for is a list with ONE entry, one of:
+- "trends": a DATED finding showing a direction the market is moving in (a shift in technology or product, buyer demand and \
+adoption, investment or competitive moves); the three trends differ, so the trends results span different directions.
+{sub_segment_lines}
+- "segmentation": a finding that shows why a leading category of one of the market's splits leads or is gaining (its demand, \
+adoption or growth).
+- "us": a finding specifically about the U.S. market.
+- "players": a company's own move in the market (a launch, a partnership, an acquisition, an integration, an expansion); never a \
+recognition or a personnel change.
+A result that fits two sections goes to the one it serves best; one that fits none is left out; an UNDATED result is never \
+assigned to "trends". A result about a sub-segment that is not one of the two named is left out, not filed under another \
+section. Where the results allow it, aim for at least {min_trends} results for "trends", {min_sub} for each sub-segment, {min_us} for \
+"us" and {min_players} for "players"; never pad a section with a weak result to reach a number.
+{only_note}"""
 
 
 # The second SELECT pass (pipeline.run_select) injects this block into SELECT_USER in place of the
@@ -1401,6 +1453,9 @@ REPORT FACTS (from CMI's report on this market; each has an id):
 NEWS EVIDENCE (recent, vetted; each has an id and the kinds of section it suits):
 {evidence}
 
+THE TWO SUB-SEGMENTS:
+{subsegments}
+
 KEYWORDS
 Secondary keyword pool (key: the section it usually fits; listed most searched first, from real search data, so prefer the earlier ones when they fit):
 {secondary_pool}
@@ -1432,7 +1487,7 @@ HOW TO PLAN
    4d. Per section.
    - key_players: name the companies together; give a company a detail only where a fact in the list supplies one, and each detail shows how that company moves the market (launches, partnerships, acquisitions, integrations, expansion), never a recognition given to it or a change in its people.
    - country_us: a fact tagged us (its suits list is country_us) belongs to the U.S. section and to no trend. Give the section every U.S. fact there is. With fewer than two, code builds the section from the report's own facts, so you plan it from the U.S. facts alone.
-   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category), chosen from different splits in the report facts, by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
+   - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category). When THE TWO SUB-SEGMENTS above are given, they were fixed before the news was searched and you do not choose them: copy exactly those two. Only when none are given, choose them from different splits in the report facts, by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
 5. Keywords.
    - Secondary: choose 4 to 6 keys from the pool, at most one per section, each in the section where one of its facts makes the keyword fit a sentence the writer would write anyway.
    - Long-tail: choose 2 or 3, each in a different section whose facts include the fact the search rests on.

@@ -18,7 +18,9 @@ import polarity
 import prompts
 import reports
 import search
+import sections
 import sources
+from sections import section_search_plan  # noqa: F401  (the Evidence step's section search plan lives in sections.py)
 from checks import (
     _FIGURE, MAX_LINK_WORD_OFFSET, CMI_OPINIONS_MAX, CMI_OPINIONS_MIN, CheckResult, count_cmi_opinions, _CMI_TITLE_TERMS, _numbers, _stale_event_mentions,
     _title_subject_stems, _verbatim_overlap, cmi_link_placement, long_paragraph_problems, LONG_PARAGRAPH_CHECK_ENABLED, question_heading_problems, run_checks,
@@ -39,6 +41,12 @@ _BODY_CHARS = 12000
 _PLAYER_QUERY_LIMIT = 5
 # Kept hits that carry a strong rule (search.STRONG_RULES) below which one broader search round runs.
 _STRONG_HITS_TARGET = 6
+# The section search (queries grouped by section) runs more keyword queries than the flat one because six sections share them
+# (round-robin, so a cap cuts every section evenly), and every section keeps up to this many hits of its own in the shortlist.
+_SECTION_BING_QUERIES = 22
+_SECTION_HIT_FLOOR = 8
+# the top-up of one thin section: queries run, and the most words of a target a query keeps
+_TOPUP_QUERIES_MAX = 8
 
 Segment = tuple[str, str | None]  # (text, hyperlink url or None)
 
@@ -862,7 +870,8 @@ def resolve_longtails(market_name: str, report: reports.Report, orient: dict | N
 
 def _llm_search_queries(
     market_name: str, key_players: list[str], logger: logging.Logger, segments: list[str] = (),
-) -> tuple[list[str], list[str], list[str]]:
+    plan: dict | None = None,
+) -> tuple[list[str] | dict[str, list[str]], list[str], list[str]]:
     """LLM-generated search queries, seeded with the confirmed market name, the article's own
     topic/angle, and real company names pulled from the CMI report — lets query phrasing adapt
     per-market instead of blindly applying the same fixed event-word templates to every market
@@ -870,46 +879,60 @@ def _llm_search_queries(
     "digital marketing software" rarely appears verbatim in real coverage; a company-name-led
     query like "<real vendor> acquisition" finds genuine news a bare category-name query cannot).
     Falls back to the deterministic templates on any LLM failure — search must never hard-fail
-    the whole pipeline over a transient model error."""
+    the whole pipeline over a transient model error.
+
+    plan (the Evidence step's sections.section_search_plan): one call, the same cost, but the queries come back GROUPED BY
+    SECTION ({"trends": [...], "subsegment": [...], "segmentation": [...], "us": [...], "key_players": [...], "market":
+    [...]}), each built from that section's targets. Without a plan the queries are the flat list the old chain reads."""
+    players = ", ".join(search.clean_player_names(key_players)) if key_players else "(none known)"
     try:
-        result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_QUERIES_USER.format(
-            today=date.today().isoformat(),
-            market_name=market_name,
-            # The players as cleaned query subjects ("Monday" -> "monday.com"): the LLM copies the
-            # names it is given straight into its queries, and a bare weekday or common noun in a
-            # query finds everything but the company.
-            key_players=", ".join(search.clean_player_names(key_players)) if key_players else "(none known)",
-            segments=", ".join(segments[:14]) if segments else "(none listed)",
-            source_group_menu=sources.pack_menu(),
-        ), call_name="search_queries", logger=logger)
-        queries = [str(q).strip() for q in result.get("queries") or [] if str(q).strip()]
+        # The players as cleaned query subjects ("Monday" -> "monday.com"): the LLM copies the names it is given straight
+        # into its queries, and a bare weekday or common noun in a query finds everything but the company.
+        fields = dict(
+            today=date.today().isoformat(), market_name=market_name, key_players=players,
+            segments=", ".join(segments[:14]) if segments else "(none listed)", source_group_menu=sources.pack_menu(),
+        )
+        if plan is not None:
+            result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_SECTION_QUERIES_USER.format(
+                section_targets=sections.format_targets(plan), **fields), call_name="search_queries", logger=logger)
+            queries = sections.parse_grouped_queries(result.get("queries"))
+            has_queries = any(queries.values())
+        else:
+            result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_QUERIES_USER.format(**fields),
+                                   call_name="search_queries", logger=logger)
+            queries = [str(q).strip() for q in result.get("queries") or [] if str(q).strip()]
+            has_queries = bool(queries)
         groups = [str(g).strip() for g in result.get("source_groups") or [] if str(g).strip() in sources.PACKS]
         topic_terms = list(dict.fromkeys(
             re.sub(r"\s+", " ", str(t)).strip().lower() for t in result.get("topic_terms") or [] if str(t).strip()
         ))[:20]
-        if queries:
+        if has_queries:
             return queries, groups, topic_terms
         logger.warning("[search] LLM returned no usable queries, falling back to deterministic templates")
     except llm.LLMError:
         logger.warning("[search] LLM query generation failed, falling back to deterministic templates", exc_info=True)
+    if plan is not None:
+        return sections.fallback_queries(plan, _market_core(market_name), _market_search_queries(market_name)), [], []
     return _market_search_queries(market_name), [], []
 
 
 def prepare_search_queries(
     market_name: str, key_players: list[str], logger: logging.Logger, segments: list[str] = (),
-) -> tuple[list[str], list[str], list[str]]:
+    plan: dict | None = None,
+) -> tuple[list[str] | dict[str, list[str]], list[str], list[str]]:
     """The query-generation half of run_search_evidence, callable on its own thread: main.py's
     Step 2 runs it concurrently with the question harvest and the report-claim extraction (none of
     the three needs another's output). Returns exactly what run_search_evidence reads when handed
-    it back — (queries, source_groups, topic_terms)."""
-    return _llm_search_queries(market_name, list(key_players), logger, list(segments))
+    it back — (queries, source_groups, topic_terms); queries is a dict grouped by section when a
+    section plan was given."""
+    return _llm_search_queries(market_name, list(key_players), logger, list(segments), plan)
 
 
 def run_search_evidence(
     market_name: str, sponsor: Paragraph, candidates: list[reports.CatalogEntry], logger: logging.Logger,
     progress: Callable[[str], None] = lambda _: None, key_players: list[str] = (),
     orient: dict | None = None, segments: list[str] = (),
-    search_queries: tuple[list[str], list[str], list[str]] | None = None,
+    search_queries: tuple[list[str] | dict[str, list[str]], list[str], list[str]] | None = None,
 ) -> list[search.SearchHit]:
     """Web search for supporting evidence, run AFTER the human has confirmed the market —
     queries are built from the confirmed market name itself, so this never searches for a
@@ -917,7 +940,12 @@ def run_search_evidence(
 
     search_queries: pre-generated (queries, groups, topic_terms) from prepare_search_queries, so
     the stepwise API can overlap that LLM call with the other Step 2 prep. None (CLI / callers that
-    did not parallelize) generates them here as before."""
+    did not parallelize) generates them here as before.
+
+    SECTION SEARCH: when `queries` is a dict grouped by section (prepare_search_queries with a section plan), every section's
+    queries run in this ONE pass, each hit carries the sections of the queries that found it (hit.sections; a page two
+    sections found keeps both), and one cleaning pass follows: duplicates merged (same URL or headline), the junk and
+    relevance filters, and a shortlist in which every section keeps up to _SECTION_HIT_FLOOR hits of its own."""
     section(logger, "WEB SEARCH")
     logger.info(f"[search] key players for {market_name!r}: {list(key_players) or '(none)'}")
     queries, groups, topic_terms = (
@@ -929,7 +957,8 @@ def run_search_evidence(
             else (_market_search_queries(market_name), [], [])
         )
     )
-    logger.info(f"[search] queries ({len(queries)}): {queries}")
+    grouped = queries if isinstance(queries, dict) else None
+    logger.info(f"[search] queries ({sum(len(v) for v in grouped.values()) if grouped is not None else len(queries)}): {queries}")
     logger.info(f"[search] source groups chosen: {groups or '(none — general business + funding only)'}")
     # The topic vocabulary rides on orient so later steps (SELECT's "categories inside this market"
     # block) can see it without changing run_search_evidence's return shape.
@@ -938,21 +967,42 @@ def run_search_evidence(
     # The in-code key-player news queries run beside the LLM's own queries (Bing's keyword cap may
     # cut the tail; the thin-evidence round below re-runs any that were cut).
     player_queries = _player_news_queries(market_name, list(key_players))
-    if player_queries:
+    query_sections = None
+    max_keyword = feeds._BING_MAX_KEYWORD_QUERIES
+    if grouped is not None:
+        grouped = sections.add_queries(grouped, "key_players", player_queries)
+        queries, query_sections = sections.flatten_queries(grouped)
+        max_keyword = _SECTION_BING_QUERIES
+        logger.info(f"[search] section queries, one per section in turn ({len(queries)}; the first {max_keyword} run on Bing): {queries}")
+    elif player_queries:
         queries = queries + [q for q in player_queries if q.lower() not in {x.lower() for x in queries}]
+    if player_queries:
         logger.info(f"[search] key-player news queries ({len(player_queries)}): {player_queries}")
     core = _market_core(market_name)
     sponsor_hosts = tuple(_host(link.url) for link in sponsor.links if link.is_external)
+
+    def tag_general(raw: list[search.SearchHit]) -> list[search.SearchHit]:
+        # hits from an engine call that is not about one section (the DDGS fallback, the broader round) belong to "market"
+        if query_sections is not None:
+            for h in raw:
+                if not h.sections:
+                    h.add_sections(("market",))
+        return raw
 
     def filtered(raw: list[search.SearchHit]) -> list[search.SearchHit]:
         # Gate on the CONFIRMED market name only. candidates[] are OTHER markets the human did not
         # pick — mixing their tokens in here (e.g. "Network Automation", "Logistics Automation") let
         # hits about those rejected markets pass the topical filter on borrowed vocabulary, directly
         # contradicting this function's own job of never surfacing evidence for a rejected market.
-        return search.filter_hits(
-            raw, [market_name], sponsor_hosts, limit=config.SEARCH_KEEP_HITS, logger=logger, key_players=key_players,
-            max_per_host=config.SEARCH_MAX_PER_HOST, sector_hosts=feeds.sector_hosts(groups), topic_terms=topic_terms,
+        sectioned = query_sections is not None
+        if sectioned:
+            raw = sections.merge_duplicate_hits(raw)
+        kept = search.filter_hits(
+            raw, [market_name], sponsor_hosts, limit=config.SEARCH_KEEP_HITS * (2 if sectioned else 1), logger=logger,
+            key_players=key_players, max_per_host=config.SEARCH_MAX_PER_HOST, sector_hosts=feeds.sector_hosts(groups),
+            topic_terms=topic_terms,
         )
+        return sections.cap_hits(kept, config.SEARCH_KEEP_HITS, _SECTION_HIT_FLOOR) if sectioned else kept
 
     # FALLBACK: DDGS, which is rate-sensitive and slow (about 9s per query), runs only when the primary stage came up
     # short (or when config says always/never). It uses the LLM's own queries only: the site: queries it used to repeat
@@ -962,7 +1012,7 @@ def run_search_evidence(
     mode = config.SEARCH_DDGS_MODE
     if mode not in ("fallback", "always", "off"):
         logger.warning(f"[search] unknown SEARCH_DDGS_MODE {mode!r}; DDGS not run")
-    ddgs_queries = queries[:config.SEARCH_DDGS_MAX_QUERIES]
+    ddgs_queries = ((grouped["market"] + grouped["trends"]) if grouped is not None else queries)[:config.SEARCH_DDGS_MAX_QUERIES]
     ddgs_pool = ThreadPoolExecutor(1)
     ddgs_future = None
 
@@ -976,15 +1026,17 @@ def run_search_evidence(
 
     # PRIMARY: Bing News RSS (keyword + site: queries) and the curated publisher feeds.
     progress(f"Gathering evidence for {market_name} (Bing News + publisher feeds)")
-    raw_hits = feeds.gather(market_name, core, queries, groups, list(key_players), logger, topic_terms, after_keywords)
+    raw_hits = feeds.gather(
+        market_name, core, queries, groups, list(key_players), logger, topic_terms, after_keywords,
+        query_sections=query_sections, max_keyword_queries=max_keyword)
     hits = filtered(raw_hits)
     logger.info(f"[search] primary stage kept {len(hits)} article(s)")
     if ddgs_future is not None:
-        hits = filtered(raw_hits + ddgs_future.result())
+        hits = filtered(raw_hits + tag_general(ddgs_future.result()))
     elif mode == "fallback" and len(hits) < config.SEARCH_PRIMARY_MIN_HITS:
         logger.info(f"[search] DDGS fallback (primary stage kept only {len(hits)} < {config.SEARCH_PRIMARY_MIN_HITS}): {len(ddgs_queries)} queries")
         progress(f"Primary sources thin ({len(hits)} articles) — adding web search ({len(ddgs_queries)} queries)")
-        hits = filtered(raw_hits + search.run_searches(ddgs_queries, logger=logger))
+        hits = filtered(raw_hits + tag_general(search.run_searches(ddgs_queries, logger=logger)))
     ddgs_pool.shutdown(wait=False)
 
     # THIN-EVIDENCE ROUND: a hit kept only by the key-player or trusted-host rule is not evidence
@@ -996,13 +1048,13 @@ def run_search_evidence(
     # widen what the engines return; everything they find still passes filtered() unchanged.
     strong = search.strong_hit_count(hits)
     if strong < _STRONG_HITS_TARGET:
-        ran = set(queries[:feeds._BING_MAX_KEYWORD_QUERIES])
+        ran = set(queries[:max_keyword])
         broader = [f"{core} {w}" for w in ("news", "launch", "adoption", "AI")]
         broader += [q for q in player_queries if q not in ran]
         logger.info(f"[search] thin evidence: {strong} strong hit(s); broader round queries: {broader}")
         progress("Thin evidence — running one broader search round")
         before = len(hits)
-        hits = filtered(hits + feeds.bing_search(broader, [], logger))
+        hits = filtered(hits + tag_general(feeds.bing_search(broader, [], logger, query_sections)))
         logger.info(f"[search] thin evidence: {strong} strong hit(s); broader round added {len(hits) - before}")
 
     # Full-text pass over what survived, so SELECT and the writer see article text, not just a snippet.
@@ -1486,6 +1538,136 @@ def _market_category_terms(report: reports.Report, orient: dict | None, topic_te
 _SELECT_SECOND_PASS_MIN = 5
 _SELECT_SECOND_PASS_POOL = 8
 
+_SECTION_HEADERS = {
+    "trends": "FOUND BY THE TRENDS SEARCH",
+    "subsegment": "FOUND BY THE SUB-SEGMENT SEARCH (for the two named sub-segments)",
+    "segmentation": "FOUND BY THE SEGMENTATION SEARCH (why a category leads its split)",
+    "us": "FOUND BY THE U.S. SEARCH",
+    "key_players": "FOUND BY THE KEY-PLAYERS SEARCH",
+    "market": "FOUND BY THE GENERAL MARKET SEARCH (any section)",
+}
+
+
+def _hit_sections(hit: search.SearchHit) -> list[str]:
+    """The hit's sections in the article's order ("market" when no section's query found it)."""
+    mine = [s for s in sections.QUERY_SECTIONS if s in (hit.sections or [])]
+    return mine or ["market"]
+
+
+def _format_hits_by_section(hits: list[search.SearchHit], subsegments: list[dict]) -> str:
+    """The candidates grouped by the section whose search found them (a hit two sections found sits under the first and names
+    the other). Each keeps its W-number from the whole list, so every W(n) still maps to hits[n - 1]."""
+    groups: dict[str, list[str]] = {s: [] for s in sections.QUERY_SECTIONS}
+    for i, h in enumerate(hits, 1):
+        mine = _hit_sections(h)
+        tag = f"DATED, {h.date.strftime('%Y-%m-%d')}" if h.date else "UNDATED"
+        us = " | found by the U.S. search" if h.scope == "us" else ""
+        also = f" | also found for: {', '.join(mine[1:])}" if len(mine) > 1 else ""
+        groups[mine[0]].append(f"[W{i}] {h.title} | {h.source or h.host} | {tag}{us}{also}\n      {h.excerpt or h.snippet[:300]}")
+    out = []
+    for sec in sections.QUERY_SECTIONS:
+        if groups[sec]:
+            names = f" ({'; '.join(s['name'] for s in subsegments)})" if sec == "subsegment" and subsegments else ""
+            out.append(f"=== {_SECTION_HEADERS[sec]}{names} ===\n" + "\n".join(groups[sec]))
+    return "\n".join(out) or "(no results)"
+
+
+def _section_rules(subsegments: list[dict], only: set[str] | None = None) -> str:
+    """The SELECT prompt's section block (prompts.SELECT_SECTION_RULES): the one-section-each rule, the two fixed sub-segments
+    and, for a top-up over new hits, the only sections an item may be assigned to."""
+    mins = sections.MINIMUMS
+    names = "; ".join(f'"{s["name"]}"' for s in subsegments)
+    sub_lines = (
+        "".join(f'- "subsegment:{s["name"]}": a finding about that sub-segment itself (its products, adoption, demand or '
+                f'investment); write the tag with the name exactly as given.\n' for s in subsegments).rstrip("\n")
+        if subsegments else '- (the report names no sub-segment: there is no "subsegment" tag)')
+    only_note = ""
+    if only:
+        only_note = ("THIS LIST ONLY NEEDS: " + ", ".join(sorted(only)) + ". Select a result only when it belongs to one of "
+                     "those sections; leave every other result out.\n")
+    text = prompts.SELECT_SECTION_RULES.format(
+        sub_segment_lines=sub_lines, min_trends=mins["trends"], min_sub=mins["subsegment"], min_us=mins["us"],
+        min_players=mins["key_players"], only_note=only_note)
+    return text + (f"The two sub-segments are {names}.\n" if subsegments else "")
+
+
+def _hit_of(item: dict, hits: list[search.SearchHit]) -> search.SearchHit | None:
+    m = re.fullmatch(r"W(\d+)", str(item.get("id", "")).strip())
+    return hits[int(m.group(1)) - 1] if m and 1 <= int(m.group(1)) <= len(hits) else None
+
+
+def _fallback_section(hit: search.SearchHit | None, text: str, subsegments: list[dict],
+                      skip: tuple[str, ...] = ()) -> tuple[str, str] | None:
+    """Where an item with no usable section goes: its hit's first section ("market", the general search, is trends; a
+    "subsegment" hit goes to the sub-segment its text names). None when there is none."""
+    for s in _hit_sections(hit) if hit is not None else ["market"]:
+        sec = "trends" if s == "market" else s
+        if sec in skip:
+            continue
+        if sec == "subsegment":
+            name = sections.match_subsegment(text, subsegments)
+            if name:
+                return "subsegment", name
+            continue
+        return sec, ""
+    return None
+
+
+def _assign_sections(selection: dict, hits: list[search.SearchHit], subsegments: list[dict], logger: logging.Logger,
+                     only: set[str] | None = None) -> None:
+    """Section mode's counterpart of _normalize_selection_tags: every item ends with EXACTLY ONE section, in `section`
+    ("trends", "subsegment", "segmentation", "us", "key_players"), `subsegment` (its category, "" for the others) and the
+    one matching tag in `use_for_all`/`use_for` ("players" for key_players, "subsegment:<category>"). The model's first entry
+    counts; an entry that names no section (the old "context") goes to its hit's first section; an undated item is never a
+    trend (it moves to another section its hit was found for, else it is dropped); a sub-segment that is not one of the two
+    fixed is dropped, never filed elsewhere. `only` (keys as sections.counts names them) drops an item outside those."""
+    kept = []
+    for e in selection.get("evidence") or []:
+        raw = e.get("use_for")
+        parts = [str(x) for x in raw] if isinstance(raw, list) else re.split(r"\s*\|\s*", str(raw or ""))
+        hit = _hit_of(e, hits)
+        text = f"{e.get('fact', '')} {hit.title if hit else ''}"
+        named = next((t for p in parts if (t := sections.tag_section(p)) is not None), None)
+        if named and named[0] == "subsegment":
+            name = sections.match_subsegment(named[1], subsegments) if named[1] else sections.match_subsegment(text, subsegments)
+            if name is None:
+                logger.info(f"[select] dropped {e.get('id')}: its sub-segment {named[1]!r} is not one of the two fixed ({[s['name'] for s in subsegments]})")
+                continue
+            named = ("subsegment", name)
+        if named is None:
+            named = _fallback_section(hit, text, subsegments)
+            if named is not None:
+                logger.info(f"[select] {e.get('id')} had no section ({raw!r}); it goes to {named[0]}, where its hit was found")
+        if named is not None and named[0] == "trends" and hit is not None and hit.date is None:
+            named = _fallback_section(hit, text, subsegments, skip=("trends",))
+            logger.info(f"[select] {e.get('id')} is undated, so it is not a trend; "
+                        + (f"it goes to {named[0]}" if named else "it is dropped"))
+        if named is None:
+            continue
+        section, name = named
+        key = f"subsegment:{name}" if section == "subsegment" else section
+        if only and key not in only:
+            logger.info(f"[select] dropped {e.get('id')}: assigned to {key}, which this look does not need")
+            continue
+        tag = sections.evidence_tag(section, name)
+        e["section"], e["subsegment"], e["use_for_all"], e["use_for"] = section, name, [tag], tag
+        kept.append(e)
+    selection["evidence"] = kept
+
+
+def _merge_same_events(selection: dict, hits: list[search.SearchHit], logger: logging.Logger) -> None:
+    """Two selected items that report one event (the same organisation in the same month) stay once, whichever sections they
+    were assigned to: the one with more words (fact and detail) stays, on a tie the earlier. The same rule the planner applies
+    (planning.dedupe_events), run here so the Evidence step shows the editor the list the planner will use."""
+    import planning
+    rows = []
+    for i, e in enumerate(selection.get("evidence") or []):
+        hit = _hit_of(e, hits)
+        source = (f"{hit.source or hit.host}, {hit.date:%Y-%m}" if hit.date else hit.source or hit.host) if hit else ""
+        rows.append({**e, "source": source, "_i": i})
+    keep = {r["_i"] for r in planning.dedupe_events(rows, logger)}
+    selection["evidence"] = [e for i, e in enumerate(selection.get("evidence") or []) if i in keep]
+
 
 def run_select(
     article: SourceArticle, orient: dict, sponsor: Paragraph,
@@ -1494,8 +1676,16 @@ def run_select(
     questions: list[dict] = (), question_hits: dict[str, list[search.SearchHit]] | None = None,
     report_claims: list[dict] = (), report_claim_hits: dict[str, list[search.SearchHit]] | None = None,
     headline_figures: dict | None = None, topic_terms: list[str] = (),
+    subsegments: list[dict] | None = None, only: set[str] | None = None, second_pass: bool = True,
 ) -> dict:
     """CALL 2: select evidence for the human-confirmed report. Returns the parsed JSON.
+
+    SECTION MODE (subsegments is a list, the Evidence step's two fixed sub-segments, empty when the report has none): the
+    candidates are shown grouped by the section whose search found them, and every kept item is assigned EXACTLY ONE
+    section (trends, subsegment:<category>, segmentation, us, players; the "context" catch-all is gone and any leftover one
+    is mapped in code to its hit's first section: see _assign_sections). `only` limits the sections an item may be assigned
+    (the top-up SELECT over new hits for the thin sections); second_pass=False skips the second look. Each kept item
+    carries `section` and, for a sub-segment, `subsegment`. A same-event merge runs last (see _merge_same_events).
     Report choice is no longer this call's job — the human picked the market/report in Step 1
     (see run_fetch_confirmed_report), so this call only judges which search hits are usable.
 
@@ -1538,24 +1728,37 @@ def run_select(
     report_claims = list(report_claims or [])
     report_claim_flat = _flatten_report_claim_pool(report_claims, report_claim_hits or {})
     categories = _market_category_terms(report, orient, topic_terms)
-    selection = llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
-        title=article.title,
-        topic_summary=orient.get("topic_summary", ""),
-        bridge_angle=orient.get("bridge_angle", ""),
-        sponsor=sponsor.text,
-        report_name=report.name,
-        market_categories=categories,
-        hits=_format_hits(hits),
-        claims_block=_format_claims_for_select(claims),
-        claim_pool=_format_pool_for_select(claim_flat, claims),
-        questions_block=_format_questions_for_select(questions),
-        question_pool=_format_question_pool_for_select(question_flat, questions),
-        report_claims_block=_format_report_claims_for_select(report_claims),
-        report_claim_pool=_format_report_claim_pool_for_select(report_claim_flat, report_claims),
-        max_selected=config.SEARCH_MAX_SELECTED,
-        second_pass="",
-    ), call_name="select", logger=logger, max_tokens=8000)
-    _normalize_selection_tags(selection, hits, logger)
+    sectioned = subsegments is not None
+    picks = list(subsegments or [])
+
+    def ask(pool: list[search.SearchHit], second_pass_text: str) -> dict:
+        return llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
+            title=article.title,
+            topic_summary=orient.get("topic_summary", ""),
+            bridge_angle=orient.get("bridge_angle", ""),
+            sponsor=sponsor.text,
+            report_name=report.name,
+            market_categories=categories,
+            hits=_format_hits_by_section(pool, picks) if sectioned else _format_hits(pool),
+            claims_block=_format_claims_for_select(claims),
+            claim_pool=_format_pool_for_select(claim_flat, claims),
+            questions_block=_format_questions_for_select(questions),
+            question_pool=_format_question_pool_for_select(question_flat, questions),
+            report_claims_block=_format_report_claims_for_select(report_claims),
+            report_claim_pool=_format_report_claim_pool_for_select(report_claim_flat, report_claims),
+            max_selected=config.SEARCH_MAX_SELECTED,
+            second_pass=second_pass_text,
+            section_rules=_section_rules(picks, only) if sectioned else "",
+        ), call_name="select", logger=logger, max_tokens=8000)
+
+    def tag(sel: dict, pool: list[search.SearchHit]) -> None:
+        if sectioned:
+            _assign_sections(sel, pool, picks, logger, only)
+        else:
+            _normalize_selection_tags(sel, pool, logger)
+
+    selection = ask(hits, "")
+    tag(selection, hits)
     _strip_players_tag(selection, logger)
     _drop_stale_facts(selection, logger)
     _drop_negative_facts(selection, logger, report.name)
@@ -1572,25 +1775,9 @@ def run_select(
     kept_idx = {int(m.group(1)) for e in selection.get("evidence") or []
                 if (m := re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip()))}
     rest = [(i, h) for i, h in enumerate(hits, 1) if i not in kept_idx]
-    if first_kept < _SELECT_SECOND_PASS_MIN and len(hits) >= _SELECT_SECOND_PASS_POOL and rest \
+    if second_pass and first_kept < _SELECT_SECOND_PASS_MIN and len(hits) >= _SELECT_SECOND_PASS_POOL and rest \
             and first_kept < config.SEARCH_MAX_SELECTED:
-        second = llm.chat_json(prompts.SELECT_SYSTEM, prompts.SELECT_USER.format(
-            title=article.title,
-            topic_summary=orient.get("topic_summary", ""),
-            bridge_angle=orient.get("bridge_angle", ""),
-            sponsor=sponsor.text,
-            report_name=report.name,
-            market_categories=categories,
-            hits=_format_hits([h for _, h in rest]),
-            claims_block=_format_claims_for_select(claims),
-            claim_pool=_format_pool_for_select(claim_flat, claims),
-            questions_block=_format_questions_for_select(questions),
-            question_pool=_format_question_pool_for_select(question_flat, questions),
-            report_claims_block=_format_report_claims_for_select(report_claims),
-            report_claim_pool=_format_report_claim_pool_for_select(report_claim_flat, report_claims),
-            max_selected=config.SEARCH_MAX_SELECTED,
-            second_pass=prompts.SELECT_SECOND_PASS.format(first=first_kept),
-        ), call_name="select", logger=logger, max_tokens=8000)
+        second = ask([h for _, h in rest], prompts.SELECT_SECOND_PASS.format(first=first_kept))
         # Remap the second pass's W-ids (indices into the reduced list) onto the original hits list,
         # so they stay unique against the first pass's and every W(n) still maps to hits[n - 1].
         for e in second.get("evidence") or []:
@@ -1599,7 +1786,7 @@ def run_select(
                 e["id"] = f"W{rest[int(m.group(1)) - 1][0]}"
         # The same post-SELECT backstops police the second pass's facts before anything is merged;
         # its claim/question/report-claim backing is discarded (the first pass already covered those).
-        _normalize_selection_tags(second, hits, logger)
+        tag(second, hits)
         _strip_players_tag(second, logger)
         _drop_stale_facts(second, logger)
         _drop_negative_facts(second, logger, report.name)
@@ -1616,7 +1803,99 @@ def run_select(
         if added:
             selection["evidence"] = list(selection.get("evidence") or []) + added
         logger.info(f"[select] second pass: first kept {first_kept}, second added {len(added)}")
+    if sectioned:
+        _merge_same_events(selection, hits, logger)
     return selection
+
+
+def section_topup_queries(
+    thin: list[str], grouped: dict[str, list[str]], plan: dict, market_name: str, key_players: list[str],
+) -> dict[str, list[str]]:
+    """The ONE top-up search's queries, per thin section (keys as sections.counts names them): the section's own queries
+    again without their quotes (an unquoted phrase asks for less than an exact one), then a few plain variants of the
+    anchor with a word for what that section needs. Queries the first pass already ran are not repeated."""
+    core = _market_core(market_name)
+    ran = {q.lower() for qs in grouped.values() for q in qs} | {q.lower() for q in _player_news_queries(market_name, list(key_players))}
+    out: dict[str, list[str]] = {}
+    for key in thin:
+        sec, _, name = key.partition(":")
+        own = grouped.get(sec) or []
+        if sec == "subsegment" and name:
+            own = [q for q in own if name.lower() in q.lower()]
+        variants = [" ".join(q.replace('"', "").split()) for q in own]
+        if sec == "trends":
+            variants += [f"{core} {w}" for w in ("adoption", "investment", "partnership", "launch")]
+        elif sec == "subsegment":
+            variants += [f"{core} {name}", f"{name} adoption", f"{name} launch"]
+        elif sec == "us":
+            variants += [f"{core} United States", f"{core} U.S. adoption", f"{core} U.S. launch"]
+        elif sec == "key_players":
+            players = search.clean_player_names(list(key_players))
+            variants += [f"{p} {core}" for p in players[_PLAYER_QUERY_LIMIT:]] + [f"{p} launch" for p in players[:3]]
+        picked: list[str] = []
+        for q in variants:
+            if q and q.lower() not in ran and q.lower() not in {x.lower() for x in picked}:
+                picked.append(q)
+        out[key] = picked[:_TOPUP_QUERIES_MAX]
+    return out
+
+
+def run_sectioned_select(
+    article: SourceArticle, orient: dict, sponsor: Paragraph, report: reports.Report, hits: list[search.SearchHit],
+    logger: logging.Logger, *, subsegments: list[dict], grouped_queries: dict[str, list[str]], plan: dict,
+    key_players: list[str] = (), search_groups: list[str] = (), topic_terms: list[str] = (),
+    headline_figures: dict | None = None,
+) -> tuple[dict, list[search.SearchHit], dict[str, int], list[str]]:
+    """SELECT by section, then the minimums: (selection, hits, counts, warnings). After the first SELECT a section below its
+    minimum (sections.MINIMUMS: trends 6, each sub-segment 1, U.S. 2, key players 3) gets ONE targeted top-up search, all thin
+    sections' queries together (section_topup_queries, unquoted variants), and ONE more SELECT over the new hits for those
+    sections only; whatever is still below its minimum is warned about as "Thin evidence for <section>: N item(s)". The
+    returned hits are the first search's plus the top-up's new ones, so every W(n) of the selection maps to hits[n - 1]."""
+    selection = run_select(article, orient, sponsor, report, hits, logger, headline_figures=headline_figures,
+                           topic_terms=topic_terms, subsegments=subsegments)
+    counts = sections.counts(selection.get("evidence") or [], subsegments)
+    thin = sections.thin_sections(counts)
+    if thin:
+        logger.info(f"[sections] below the minimum after SELECT: {[(k, counts[k]) for k in thin]}; one top-up search follows")
+        try:
+            queries = section_topup_queries(thin, grouped_queries, plan, report.name, list(key_players))
+            by_query: dict[str, list[str]] = {}
+            for key, qs in queries.items():
+                for q in qs:
+                    by_query.setdefault(q.lower(), [])
+                    if key.partition(":")[0] not in by_query[q.lower()]:
+                        by_query[q.lower()].append(key.partition(":")[0])
+            flat = [q for qs in queries.values() for q in qs]
+            flat = [q for i, q in enumerate(flat) if q.lower() not in {x.lower() for x in flat[:i]}]
+            logger.info(f"[sections] top-up queries: {queries}")
+            sponsor_hosts = tuple(_host(link.url) for link in sponsor.links if link.is_external)
+            raw = feeds.bing_search(flat, [], logger, by_query) if flat else []
+            known = {h.url for h in hits} | {sections._title_key(h.title) for h in hits}
+            fresh = [h for h in sections.merge_duplicate_hits(raw) if h.url not in known and sections._title_key(h.title) not in known]
+            new = search.filter_hits(
+                fresh, [report.name], sponsor_hosts, limit=config.SEARCH_KEEP_HITS, logger=logger, key_players=list(key_players),
+                max_per_host=config.SEARCH_MAX_PER_HOST, sector_hosts=feeds.sector_hosts(list(search_groups)), topic_terms=list(topic_terms),
+            )
+            logger.info(f"[sections] top-up search: {len(raw)} raw, {len(new)} new hit(s) kept")
+            if new:
+                feeds.attach_excerpts(new, report.name, logger)
+                more = run_select(article, orient, sponsor, report, new, logger, headline_figures=headline_figures,
+                                  topic_terms=topic_terms, subsegments=subsegments, only=set(thin), second_pass=False)
+                offset = len(hits)
+                for e in more.get("evidence") or []:
+                    m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
+                    if m:
+                        e["id"] = f"W{offset + int(m.group(1))}"
+                hits = list(hits) + new
+                selection["evidence"] = list(selection.get("evidence") or []) + list(more.get("evidence") or [])
+                _merge_same_events(selection, hits, logger)
+                counts = sections.counts(selection["evidence"], subsegments)
+        except (llm.LLMError, OSError):      # the top-up is best-effort: the first SELECT's evidence stands, the section is flagged thin
+            logger.warning("[sections] the top-up search failed; the sections stay as the first SELECT left them", exc_info=True)
+    warnings = [f"Thin evidence for {sections.label(k)}: {counts[k]} item(s)" for k in sections.thin_sections(counts)]
+    for w in warnings:
+        logger.warning(f"[sections] {w}")
+    return selection, hits, counts, warnings
 
 
 _FIGURE_RE = re.compile(r"\d+(?:[.,]\d+)*")
@@ -2162,6 +2441,8 @@ def run_fetch_confirmed_report(chosen: reports.CatalogEntry, logger: logging.Log
 # tag); a flat list with every item tagged for every section left the writer nothing to route by.
 _EVIDENCE_GROUPS = (
     ("trends", "MARKET TRENDS (back each of the three trends with at least one of these, two where space allows)"),
+    ("segmentation", "THE SEGMENTATION (why a split's leading category leads)"),
+    ("subsegment", "THE TWO SUB-SEGMENTS (each item is tagged subsegment:<category>)"),
     ("us", "THE U.S. PARAGRAPH"),
     ("players", "KEY PLAYERS (each entry about one company explains that company's own move in the market and what it changes for buyers and its rivals)"),
     ("context", "SEGMENTS, SUB-SEGMENTS, GROWTH DRIVERS AND THE BRIDGE (the conclusion adds nothing new)"),
@@ -2248,7 +2529,8 @@ def run_build_evidence(
         line = f"- ({evidence_id}) [{', '.join(tags)}] {e.get('fact', '')} (source: {h.source or h.host}, {date})"
         if str(e.get("detail") or "").strip():
             line += f"\n    DETAIL: {str(e['detail']).strip()}"
-        grouped[tags[0] if tags[0] in grouped else "context"].append(line)
+        head = tags[0].partition(":")[0]
+        grouped[head if head in grouped else "context"].append(line)
     for key, label in _EVIDENCE_GROUPS:
         if grouped[key]:
             parts.append(f"### MARKET EVIDENCE FOR {label}")
@@ -2274,7 +2556,7 @@ def _parse_evidence(evidence: str) -> list[dict]:
             tags = [t.strip() for t in m.group(2).split(",") if t.strip()]
             is_article = m.group(1).startswith("C")
             items.append({"id": m.group(1), "tags": tags,
-                          "group": "article" if is_article else (tags[0] if tags else "context"),
+                          "group": "article" if is_article else (tags[0].partition(":")[0] if tags else "context"),
                           "fact": m.group(3).strip(), "detail": "", "source": m.group(4).strip()})
         elif items and line.strip().startswith("DETAIL:"):
             items[-1]["detail"] = line.strip()[len("DETAIL:"):].strip()

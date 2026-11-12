@@ -17,6 +17,7 @@ import demand
 import facts
 import llm
 import prompts
+import sections as ev_sections
 from pipeline import _SECONDARY_KEYWORD_SUFFIXES, _market_core
 from pipeline_log import section
 
@@ -59,6 +60,9 @@ _EVIDENCE_TAG_SECTIONS = {
     "trends": {"trends", "subsegment"}, "us": {"country_us"}, "players": {"key_players", "trends"},
     "context": {"report_context", "segmentation", "subsegment", "trends", "key_players"},
 }
+# The Evidence step's section (sections.EVIDENCE_SECTIONS) -> the plan section that is the only place its items may sit.
+_SECTION_SOP = {"trends": "trends", "subsegment": "subsegment", "segmentation": "segmentation", "us": "country_us",
+                "key_players": "key_players"}
 
 # The U.S. section rests on at least this many U.S. facts (report statements and evidence tagged "us"). With fewer, it is written
 # from the report's own facts of these kinds instead (its U.S. statements first), and when even those do not exist it is flagged
@@ -194,16 +198,26 @@ class PlanInputs:
     report_mode: str = "cmi"                 # "cmi", "external" or "mixed" (see facts.merge_fact_sheets)
     outside_audit: list[dict] = field(default_factory=list)   # {field, original, shown, source, url} per varied figure
     clients: list = field(default_factory=list)               # clients.Client: the writer restates each client's paragraph
+    subsegments: list[dict] = field(default_factory=list)     # [{"split", "name"}]: the two sub-segments, fixed before the news search
 
 
 def build_inputs(
     market_name: str, fs: dict, evidence_items: list[dict], demand_result: dict, publisher_result: dict, sponsor_words: int,
-    clients: list | tuple = (), logger: logging.Logger | None = None,
+    clients: list | tuple = (), logger: logging.Logger | None = None, subsegments: list[dict] | tuple = (),
+    sectioned: bool = False,
 ) -> PlanInputs:
     """Assemble the planner's world: every fact the plan may cite (report facts and selected news evidence) with the
-    sections it may sit in, the answerable questions, the keyword pools and the guest points."""
+    sections it may sit in, the answerable questions, the keyword pools and the guest points.
+
+    The Evidence step assigns each news item exactly one section (tags "trends", "us", "players", "segmentation",
+    "subsegment:<category>"): with `sectioned`, or as soon as an item carries one of the tags only that step writes, an item
+    sits ONLY in its assigned section (a sub-segment item only in the sub-segment section, for its category). `subsegments`
+    are the two fixed before the news search; the planner does not choose them."""
     items: dict[str, dict] = {}
     evidence_items = dedupe_events([e for e in evidence_items if e.get("group") != "article"], logger)
+    picks = [dict(s) for s in subsegments]
+    sectioned = sectioned or any(t in ("segmentation", "key_players") or t.startswith("subsegment:")
+                                 for e in evidence_items for t in e.get("tags") or [])
     for f in facts.flatten_fact_sheet(fs):
         sections = set(_FACT_SECTIONS.get(f["kind"], set()))
         items[f["id"]] = {**f, "tags": [], "detail": "", "sections": sections}
@@ -211,14 +225,21 @@ def build_inputs(
         if e.get("group") == "article":
             continue
         sections: set[str] = set()
-        for tag in e.get("tags") or []:
-            sections |= _EVIDENCE_TAG_SECTIONS.get(tag, set())
-        sections = sections or set(_EVIDENCE_TAG_SECTIONS["context"])
-        if "us" in (e.get("tags") or []):
-            sections = {"country_us"}       # a U.S. finding belongs to the U.S. section and to no trend or other section
+        sub_name = ""
+        named = next((n for n in (ev_sections.tag_section(t) for t in e.get("tags") or []) if n), None) if sectioned else None
+        if named:
+            sections = {_SECTION_SOP[named[0]]}
+            if named[0] == "subsegment":
+                sub_name = ev_sections.match_subsegment(named[1], picks) or named[1]
+        else:
+            for tag in e.get("tags") or []:
+                sections |= _EVIDENCE_TAG_SECTIONS.get(tag, set())
+            sections = sections or set(_EVIDENCE_TAG_SECTIONS["context"])
+            if "us" in (e.get("tags") or []):
+                sections = {"country_us"}       # a U.S. finding belongs to the U.S. section and to no trend or other section
         items[e["id"]] = {
             "id": e["id"], "kind": "evidence", "tags": list(e.get("tags") or []), "text": e["fact"], "detail": e.get("detail", ""),
-            "source": e.get("source", ""), "historical": False, "sections": sections,
+            "source": e.get("source", ""), "historical": False, "sections": sections, "subsegment": sub_name,
         }
     longtails = [{"id": f"L{i}", **lt} for i, lt in enumerate(demand_result.get("long_tail") or [], 1)]
     us = any(_is_us_fact(i) for i in items.values())
@@ -229,7 +250,7 @@ def build_inputs(
         secondary_pool=_secondary_pool(demand_result),
         sponsor_words=sponsor_words, has_us_facts=us,
         link_report=fs.get("report_mode", "cmi") != "external", report_mode=fs.get("report_mode", "cmi"),
-        outside_audit=list(fs.get("variance") or []), clients=list(clients or []),
+        outside_audit=list(fs.get("variance") or []), clients=list(clients or []), subsegments=picks,
     )
 
 
@@ -262,6 +283,8 @@ def _fmt_items(inp: PlanInputs, evidence: bool) -> str:
             continue
         if evidence:
             suits = ", ".join(sorted(i["sections"] & set(ORDER))) or "any"
+            if i.get("subsegment"):
+                suits += f" (about the sub-segment {i['subsegment']})"
             line = f"- {i['id']} [suits: {suits}] {i['text']} (source: {i['source']})"
             if i["detail"]:
                 line += f"\n    detail: {i['detail'][:200]}"
@@ -272,9 +295,17 @@ def _fmt_items(inp: PlanInputs, evidence: bool) -> str:
     return "\n".join(rows) or "(none)"
 
 
+def _fmt_subsegments(inp: PlanInputs) -> str:
+    fixed = _fixed_subsegments(inp)
+    if not fixed:
+        return "(not fixed: choose them as the subsegment instruction says)"
+    return "\n".join(f"- {v['name']} (from the split {v['split']})" for v in fixed)
+
+
 def build_prompt(inp: PlanInputs) -> str:
     return prompts.PLAN_USER.format(
         market_name=inp.market_name, intro_angle=inp.intro_angle or "(the title and subject of the guest article)",
+        subsegments=_fmt_subsegments(inp),
         points=_fmt_points(inp), questions=_fmt_questions(inp), report_facts=_fmt_items(inp, False), evidence=_fmt_items(inp, True),
         secondary_pool="\n".join(f"- {k}: {s}" for k, s in inp.secondary_pool),
         terms=", ".join(inp.terms) or "(none)",
@@ -432,7 +463,22 @@ _REGION_SPLIT_RE = re.compile(r"region|geograph|countr|area|location", re.I)
 
 def _is_region_split(name: str) -> bool:
     """A geographic split ("By Region"): regions are the report-context and U.S. sections' business, never a sub-segment."""
-    return bool(_REGION_SPLIT_RE.search(name or ""))
+    return ev_sections.is_region_split(name)
+
+
+def _fixed_subsegments(inp: "PlanInputs") -> list[dict]:
+    """The sub-segments fixed before the news search (inp.subsegments), as {"split", "name"} in the fact sheet's own spelling.
+    All of them or none: when any no longer names a split and a category of the report's segments (the editor changed the
+    sheet since), nothing is fixed and the planner chooses as it always did. A region split is accepted here (a fixed pair
+    only contains one when the report has no other split)."""
+    out: list[dict] = []
+    for s in inp.subsegments:
+        seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(s.get("split", ""))), None)
+        cat = next((i for i in seg["items"] if facts._norm(i) == facts._norm(s.get("name", ""))), None) if seg else None
+        if not (seg and cat) or any(o["split"] == seg["type"] for o in out):
+            return []
+        out.append({"split": seg["type"], "name": cat})
+    return out
 
 
 def _segment_reason_ids(inp: "PlanInputs", split: str, name: str | None = None) -> list[str]:
@@ -630,13 +676,17 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     for it in sub["_raw"].get("sub_segments") if isinstance(sub["_raw"].get("sub_segments"), list) else []:
         if isinstance(it, dict):
             picks.append((str(it.get("split") or "").strip(), str(it.get("name") or "").strip()))
-    valid: list[dict] = []
-    for split, name in picks:
+    # The two sub-segments were fixed before the news was searched (inp.subsegments): the planner's picks never override them.
+    fixed = _fixed_subsegments(inp)
+    if fixed and [(facts._norm(s), facts._norm(n)) for s, n in picks][:len(fixed)] != [(facts._norm(v["split"]), facts._norm(v["name"])) for v in fixed]:
+        repair("the sub-segments were fixed before the news search; the planner's picks were replaced by them")
+    valid: list[dict] = list(fixed)
+    for split, name in [] if fixed else picks:
         seg = next((g for g in inp.segments if _split_key(g["type"]) == _split_key(split) and not _is_region_split(g["type"])), None)
         cat = next((i for i in seg["items"] if facts._norm(i) == facts._norm(name)), None) if seg else None
         if seg and cat and all(v["split"] != seg["type"] for v in valid):
             valid.append({"split": seg["type"], "name": cat})
-    if len(valid) < 2 and len(inp.segments) >= 1:
+    if len(valid) < 2 and len(inp.segments) >= 1 and not fixed:
         ordered = sorted((g for g in inp.segments if not _is_region_split(g["type"])),
                          key=lambda g: not g.get("dominant"))     # splits with a known leader first
         defaults = [{"split": g["type"], "name": (g.get("dominant") or {}).get("name") or g["items"][0]}
@@ -654,6 +704,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     spare = [g for g in inp.segments
              if g.get("dominant") and not _is_region_split(g["type"]) and all(v["split"] != g["type"] for v in valid)]
     for v in valid:
+        if fixed:
+            break
         seg = next(g for g in inp.segments if g["type"] == v["split"])
         if not seg.get("dominant") and spare:
             g = spare.pop(0)

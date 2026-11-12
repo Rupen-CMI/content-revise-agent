@@ -283,7 +283,7 @@ try:
         flags["publisher"] += 1
         return {"points": []}
 
-    def fake_search_queries(market_name, players, logger, segment_terms=None):
+    def fake_search_queries(market_name, players, logger, segment_terms=None, plan=None):
         flags["search_queries"] += 1
         names["queries"].append(market_name)
         return (["news query"], ["web query"], ["us query"])

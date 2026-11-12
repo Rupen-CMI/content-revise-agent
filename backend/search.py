@@ -8,7 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
@@ -246,6 +246,8 @@ class SearchHit:
     # The rules that kept this hit in filter_hits ("tokens", "topic_terms", ...), set when it passes.
     # strong_hit_count reads them to judge how strongly the kept pool actually names the market.
     keep_rules: list[str] | None = None
+    # The evidence sections whose queries found this hit (sections.SECTIONS); a hit found by two sections' queries keeps both.
+    sections: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # a feed can hand the publisher's name percent-encoded ("Morningstar%2c Inc."); it is written into the article as a name
@@ -255,6 +257,11 @@ class SearchHit:
     @property
     def host(self) -> str:
         return urlparse(self.url).netloc.lower().removeprefix("www.")
+
+    def add_sections(self, names) -> None:
+        for n in names:
+            if n not in self.sections:
+                self.sections.append(n)
 
 
 # --------------------------------------------------------------- dev-only disk cache (config.SEARCH_CACHE)

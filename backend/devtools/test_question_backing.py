@@ -154,7 +154,7 @@ formatted = prompts.SELECT_USER.format_map({
     "title": "x", "topic_summary": "x", "bridge_angle": "x", "sponsor": "x", "report_name": "x",
     "market_categories": "x", "hits": "x", "claims_block": "x", "claim_pool": "x", "questions_block": block,
     "question_pool": pool_block, "report_claims_block": "x", "report_claim_pool": "x", "max_selected": 10,
-    "second_pass": "",
+    "second_pass": "", "section_rules": "",
 })
 check("prompt: SELECT_USER formats with the new question fields and contains them", "Q1" in formatted and "Q2" in formatted)
 

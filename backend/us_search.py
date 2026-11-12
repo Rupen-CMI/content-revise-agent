@@ -76,6 +76,7 @@ def run_us_search(
     kept = [h for h in kept if names_the_us(h)]
     for h in kept:
         h.scope = "us"
+        h.add_sections(["us"])
     logger.info(f"[us-search] kept {len(kept)} page(s) that name the U.S.: " + "; ".join(h.host for h in kept))
     return kept
 
@@ -88,6 +89,7 @@ def merge_hits(general: list[search.SearchHit], us_hits: list[search.SearchHit])
     for h in us_hits:
         if h.url in by_url:
             by_url[h.url].scope = "us"
+            by_url[h.url].add_sections(["us"])
         else:
             extra.append(h)
     return list(general) + extra

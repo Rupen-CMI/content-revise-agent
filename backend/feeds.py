@@ -207,11 +207,16 @@ class _Bing:
         self._logger.info(f"[bing{' web' if web else ''}] {query!r} -> {len(hits)} result(s)")
         return hits
 
-    def run(self, queries: list[str]) -> list[search.SearchHit]:
+    def run(
+        self, queries: list[str], sections_for: dict[str, list[str]] | None = None, default: tuple[str, ...] = (),
+    ) -> list[search.SearchHit]:
+        """Each query in turn. With sections_for ({lower-cased query: [section, ...]}) every hit carries the sections of the
+        query that found it (default for a query not in the map)."""
         out: list[search.SearchHit] = []
         for i, q in enumerate(queries):
             if self.disabled:
                 break
+            tag = (sections_for or {}).get(q.lower()) or list(default)
             batch = self.search(q)
             if not batch and '"' in q and "site:" not in q:
                 # A quoted phrase plus extra words is the most over-constrained shape there is
@@ -221,6 +226,8 @@ class _Bing:
                 unquoted = " ".join(q.replace('"', "").split())
                 self._logger.info(f"[bing] {q!r} gave 0 result(s); retrying without the quotes: {unquoted!r}")
                 batch = self.search(unquoted)
+            for h in batch:
+                h.add_sections(tag)
             out += batch
             if i < len(queries) - 1:
                 time.sleep(_BING_QUERY_DELAY_S + random.uniform(0, _BING_JITTER_S))
@@ -244,12 +251,16 @@ class ClaimWebSearch:
         self._client.close()
 
 
-def bing_search(news_queries: list[str], web_queries: list[str], logger: logging.Logger = _null_logger) -> list[search.SearchHit]:
+def bing_search(
+    news_queries: list[str], web_queries: list[str], logger: logging.Logger = _null_logger,
+    sections_for: dict[str, list[str]] | None = None,
+) -> list[search.SearchHit]:
     """Bing News queries then Bing web queries on one polite client (same gate and breaker as the market search). Used by
-    the U.S. data search, which wants news AND statistics pages. Returns raw, unfiltered hits."""
+    the U.S. data search, which wants news AND statistics pages, and by the section top-up (sections_for tags each hit
+    with the sections of the query that found it). Returns raw, unfiltered hits."""
     with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
         bing = _Bing(client, logger)
-        out = bing.run(news_queries)
+        out = bing.run(news_queries, sections_for)
         for q in web_queries:
             out += bing.search(q, web=True)
     return out
@@ -358,13 +369,18 @@ def gather(
     market_name: str, core: str, queries: list[str], group_ids: list[str], key_players: list[str],
     logger: logging.Logger = _null_logger, topic_terms: list[str] = (),
     after_keywords: "Callable[[list[search.SearchHit]], None] | None" = None,
+    query_sections: dict[str, list[str]] | None = None, max_keyword_queries: int = _BING_MAX_KEYWORD_QUERIES,
 ) -> list[search.SearchHit]:
     """Bing keyword queries + Bing site: queries + the relevant publisher feeds. Returns raw (unfiltered)
     hits, possibly empty; the caller filters them and decides whether the DDGS fallback is needed.
     after_keywords, if given, is called with the Bing hits after the first few keyword queries, before the rest of
-    them and the site: queries run, so the caller can start slow work (the DDGS fallback) that overlaps with the rest."""
+    them and the site: queries run, so the caller can start slow work (the DDGS fallback) that overlaps with the rest.
+    query_sections ({lower-cased query: [section, ...]}, the Evidence step's section search): each keyword hit carries the
+    sections of the query that found it; the site: queries and the publisher feeds are not about one section, so their
+    hits carry "market"."""
     feed_defs = feeds_for(group_ids)
-    keyword_queries = queries[:_BING_MAX_KEYWORD_QUERIES]
+    keyword_queries = queries[:max_keyword_queries]
+    general = ("market",) if query_sections is not None else ()
     site_qs = site_queries(core, group_ids)
     logger.info(f"[gather] {len(feed_defs)} feed(s), {len(keyword_queries) + len(site_qs)} Bing query(ies) for groups {group_ids or '(none)'}")
     keep = _topical_filter([market_name], key_players, topic_terms)
@@ -373,11 +389,13 @@ def gather(
         rss_future = ex.submit(_fetch_feeds, feed_defs, keep, gate, logger)
         with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
             bing = _Bing(client, logger)
-            bing_hits = bing.run(keyword_queries[:_BING_EARLY_QUERIES])
+            bing_hits = bing.run(keyword_queries[:_BING_EARLY_QUERIES], query_sections, general)
             if after_keywords is not None:
                 after_keywords(list(bing_hits))
-            bing_hits += bing.run(keyword_queries[_BING_EARLY_QUERIES:] + site_qs)
+            bing_hits += bing.run(keyword_queries[_BING_EARLY_QUERIES:] + site_qs, query_sections, general)
         rss_hits = rss_future.result()
+        for h in rss_hits:
+            h.add_sections(general)
     logger.info(f"[gather] Bing {len(bing_hits)} + RSS {len(rss_hits)} raw hit(s){' (Bing was abandoned)' if bing.disabled else ''}")
     return bing_hits + rss_hits
 

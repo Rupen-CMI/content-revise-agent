@@ -83,6 +83,7 @@ import prompts
 import publisher
 import reports
 import search
+import sections as ev_sections
 import sopcheck
 import telemetry
 import us_search
@@ -335,6 +336,12 @@ class RunState:
     report_warnings: list[str] = field(default_factory=list)   # the active tab's warnings (shown above its fact sheet)
     fact_sheet_confirmed: bool = False
     competitor_choice: dict = field(default_factory=dict)   # the Competitor screen's picks: {market, found_url, link}
+    # ---- Evidence step (v2): the section layer. The two sub-segments are fixed from the confirmed fact sheet before any news is
+    # searched; the plan, the grouped queries and the source groups stay so Step 3's one top-up search can reuse them.
+    subsegments: list[dict] = field(default_factory=list)       # [{"split", "name", "basis", "id"}]
+    section_plan: dict = field(default_factory=dict)            # sections.section_search_plan
+    section_queries: dict = field(default_factory=dict)         # {section: [query, ...]} as the model wrote them
+    search_groups: list[str] = field(default_factory=list)      # the source groups the query step chose
     step2_timer: "StageTimer | None" = None   # the running Reports/Evidence step's timer: GET /step2/progress reads which stages are live
 
 
@@ -626,6 +633,7 @@ def _hit_dict(h: search.SearchHit) -> dict:
         "excerpt": h.excerpt,
         "scope": h.scope,
         "claim_id": h.claim_id,
+        "sections": list(h.sections),
     }
 
 
@@ -1046,7 +1054,8 @@ def step1(req: Step1Request) -> dict:
     title = article.title or Path(req.filename).name or "upload.docx"
     try:
         orient = pipeline.run_orient(article, sponsor, logger)
-        claim_future = _start_claim_search(orient, logger)
+        # the claim-backing search is unused by the market-first chain (nothing reads run.claim_pool there)
+        claim_future = None if config.CMI_CHAIN_V2 else _start_claim_search(orient, logger)
         candidates = pipeline.run_match_catalog(orient, logger)
         candidates = pipeline.run_tier_catalog(orient, article, candidates, logger)
         own_note = pipeline.own_market_report_note(orient, candidates, logger)
@@ -1283,6 +1292,11 @@ def _step2_v2(run: RunState) -> dict:
         gap_pages: list[search.SearchHit] = []
         players = list(fs.get("players") or []) if "agent_players" in fs else (list(reports.key_players(report)) or list(fs.get("players") or []))
         segment_terms = _search_segment_terms(run, report, fs)
+        # The section search plan, in code, from the confirmed facts: the two sub-segments are fixed HERE (the planner no longer
+        # chooses them), and every section's queries are written from its own targets.
+        run.subsegments = ev_sections.choose_subsegments(fs)
+        run.section_plan = pipeline.section_search_plan(fs, report, players, run.subsegments)
+        run.logger.info(f"[sections] sub-segments fixed: {[(s['name'], s['split'], s['basis']) for s in run.subsegments]}")
         prep = ThreadPoolExecutor(max_workers=4, thread_name_prefix="step2-v2")
         try:
             def timed(name: str, fn, *args):
@@ -1306,9 +1320,11 @@ def _step2_v2(run: RunState) -> dict:
                 timed, "Publisher points", publisher.run_publisher_points, run.article, run.sponsor, report.name, run.logger)
             search_queries_f = prep.submit(
                 timed, "Plan market search queries", pipeline.prepare_search_queries, report.name,
-                players, run.logger, segment_terms,
+                players, run.logger, segment_terms, run.section_plan,
             )
             prepared_queries = search_queries_f.result()
+            run.section_queries = prepared_queries[0] if isinstance(prepared_queries[0], dict) else {}
+            run.search_groups = list(prepared_queries[1])
         finally:
             prep.shutdown(wait=False)
         with timer.stage("Market web search"):
@@ -1341,8 +1357,9 @@ def _step2_v2(run: RunState) -> dict:
     run.hits, run.gap_pages, run.demand, run.publisher = hits, gap_pages, demand_result, publisher_result
     run.warnings = warnings
     run.timings = timer.summary()
+    section_hits = ev_sections.hit_counts(hits)
     run.logger.info(
-        f"EVIDENCE STEP DONE in {run.timings['total_s']}s — report {report.name} ({mode}), {len(hits)} hits ({strong_hits} strong), "
+        f"EVIDENCE STEP DONE in {run.timings['total_s']}s — report {report.name} ({mode}), {len(hits)} hits ({strong_hits} strong; by section {section_hits}), "
         f"{len(demand_result.get('questions') or [])} MSQ(s), fact sheet gaps: {fs['gaps'] or 'none'}"
     )
     return {
@@ -1353,6 +1370,8 @@ def _step2_v2(run: RunState) -> dict:
         "timings": run.timings,
         "report_mode": mode, "warnings": warnings,
         "strong_hits": strong_hits,
+        "sections": section_hits,
+        "subsegments": run.subsegments,
         "clients": _client_dicts(run),
     }
 
@@ -1624,8 +1643,14 @@ def _step3_v2(run: RunState) -> dict:
     The same post-processing the devtools build_chain.load_chain applies to its fixtures."""
     run.logger.info("STEP 3 (market-first chain)")
     try:
-        selection = pipeline.run_select(run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
-                                        headline_figures=pipeline._headline_figures(run.fact_sheet))
+        fs = run.fact_sheet
+        players = list(fs.get("players") or []) if "agent_players" in fs else (list(reports.key_players(run.report)) or list(fs.get("players") or []))
+        selection, hits, section_counts, thin_warnings = pipeline.run_sectioned_select(
+            run.article, run.orient, run.sponsor, run.report, run.hits, run.logger,
+            subsegments=run.subsegments, grouped_queries=run.section_queries, plan=run.section_plan, key_players=players,
+            search_groups=run.search_groups, topic_terms=(run.orient or {}).get("topic_terms") or [],
+            headline_figures=pipeline._headline_figures(fs))
+        run.hits = hits       # the top-up's new hits sit after the first search's, so every W(n) still maps to hits[n - 1]
         evidence = pipeline.run_build_evidence(selection, run.hits, run.logger, orient=run.orient)
         evidence_items = [it for it in pipeline._parse_evidence(evidence) if it.get("group") != "article"]
         questions = demand.mark_answerability(
@@ -1635,7 +1660,7 @@ def _step3_v2(run: RunState) -> dict:
         run.plan_inputs = planning.build_inputs(
             run.report.name, run.fact_sheet, evidence_items, run.demand, run.publisher,
             clients_mod.paragraph_words(run.clients) if run.clients and config.CLIENT_REWRITE else pipeline._word_count(run.sponsor.text),
-            clients=run.clients if config.CLIENT_REWRITE else ())
+            clients=run.clients if config.CLIENT_REWRITE else (), subsegments=run.subsegments, sectioned=True)
         # The market-first chain's long-tail phrases come from Step 2's search demand (run.demand's
         # long_tail records), and the planner shards them onto sections via plan_inputs; expose the
         # same list as run.longtails (the old chain sets it in Step 2) so finalize's usage check, the
@@ -1644,14 +1669,17 @@ def _step3_v2(run: RunState) -> dict:
     except (PipelineError, LLMError, LookupError) as e:
         raise _pipeline_failure(run.logger, "Step 3", e)
     run.selection, run.evidence = selection, evidence
+    run.warnings = [w for w in run.warnings if not w.startswith("Thin evidence for")] + thin_warnings
     msqs = run.demand.get("questions") if run.demand else []
     run.logger.info(
-        f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s), "
+        f"STEP 3 DONE — {len(selection.get('evidence') or [])} evidence item(s) by section {section_counts}, "
         f"{sum(1 for q in msqs or [] if q.get('answerable'))}/{len(msqs or [])} MSQ(s) answerable")
     # long_tail_keywords rides along for the UI (renderStep3Panel reads state.run.longtails);
     # the old chain's Step 2 response already sent it, this chain populates run.longtails here.
     return {"selection": selection, "evidence": evidence, "demand": run.demand,
-            "long_tail_keywords": run.longtails}
+            "long_tail_keywords": run.longtails, "sections": section_counts, "subsegments": run.subsegments,
+            "minimums": {k: ev_sections.minimum(k) for k in section_counts}, "warnings": thin_warnings,
+            "hits": [_hit_dict(h) for h in run.hits]}
 
 
 @app.post("/step3")
@@ -1757,6 +1785,14 @@ def get_run(run_token: str) -> dict:
         "claim_hits": _claim_hits_dict(run.claim_pool),
         "report": _report_dict(run.report) if run.report else None,
         "selection": run.selection,
+        # the Evidence step's section layer (the "sections" key below is the draft's): the two fixed sub-segments, the hits found
+        # per section and the selected items per section with their minimums
+        "subsegments": run.subsegments,
+        "evidence_sections": {
+            "hits": ev_sections.hit_counts(run.hits or []),
+            "selected": (ev_sections.counts((run.selection or {}).get("evidence") or [], run.subsegments)
+                         if run.selection else {}),
+        },
         "questions": run.questions,
         "demand": run.demand,
         "fact_sheet": run.fact_sheet,
