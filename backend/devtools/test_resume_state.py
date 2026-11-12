@@ -190,11 +190,11 @@ try:
             markets=MESSY, url_markets={}))
     snap = main.get_run(TOKEN)
     # competitor tab: the single picked market and the trimmed pasted urls are kept; CMI ids are ignored
-    check("fetch: competitor tab - the build receives no picked report but the market and urls",
-          seen["picked"] == [] and seen["urls"] == ["https://own.com/a", "https://own.com/b"]
+    check("fetch: competitor tab - the build receives no picked report but the market and the one (first) url",
+          seen["picked"] == [] and seen["urls"] == ["https://own.com/a"]
           and seen["markets"] == CLEAN, str(seen))
-    check("fetch: competitor tab - get_run keeps the url picks and the single market pick",
-          snap["picked_urls"] == ["https://own.com/a", "https://own.com/b"]
+    check("fetch: competitor tab - get_run keeps the url pick and the single market pick",
+          snap["picked_urls"] == ["https://own.com/a"]
           and snap["picked_markets"] == CLEAN and snap["picked_report_ids"] == [],
           str(snap["picked_urls"]) + str(snap["picked_markets"]) + str(snap["picked_report_ids"]))
 finally:

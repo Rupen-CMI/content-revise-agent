@@ -289,31 +289,32 @@
         </div>
 
         <div class="tabs-content" role="tabpanel" id="reports-panel-competitor" aria-labelledby="reports-tab-competitor" tabindex="0" data-tab="competitor" hidden>
-          <!-- COMPETITOR TAB AGENT: build this screen inside #reports-competitor-screen. Until then it holds the old Step 1 market list, the found-reports picker and the competitor link boxes. -->
           <div id="reports-competitor-screen">
             <div class="market-col-head">
               <span class="market-col-title"><i data-lucide="sparkles"></i> Agent-suggested markets</span>
-              <span class="market-col-note">Pick one market, then find competitor reports for it (or paste a report link of your own below). Their figures are moved by 3-5% and no competitor is named in the article.</span>
+              <span class="market-col-note">Pick one market, then find competitor reports for it, or paste one report link of your own below. Competitor figures are moved by 3-5% and no competitor is named in the article.</span>
               <button type="button" class="btn btn-secondary btn-small market-clear-btn" id="step1-agent-clear" hidden><i data-lucide="x"></i> Clear selection</button>
             </div>
             <div class="market-col-body" id="step1-suggested"></div>
             <div class="btn-row">
-              <button type="button" class="btn btn-secondary btn-small" id="reports-find-btn" disabled><i data-lucide="search"></i> Find competitor reports for this market</button>
+              <button type="button" class="btn btn-secondary btn-small" id="reports-find-btn" disabled><i data-lucide="search"></i> Find reports</button>
               <span class="field-hint" id="reports-find-status"></span>
             </div>
             <div id="reports-found-block" hidden>
               <h3 class="subheading">Competitor reports found</h3>
-              <p class="field-hint" id="reports-found-hint">Tick the report whose figures you want to use. Nothing ticked: the agent reads the best-matching reports it found.</p>
+              <p class="field-hint" id="reports-found-hint">Choose the one report whose figures you want to use.</p>
               <div id="reports-found-list"></div>
             </div>
             <hr class="divider">
-            <div id="step1-links-section">
-              <h3 class="subheading">Or paste a competitor report link</h3>
-              <p class="field-hint" id="step1-links-hint">Paste competitor report pages for this market. A CMI report link goes in the CMI tab, never here. Checking a link is optional.</p>
-              <div class="report-url-list" id="step1-report-urls"></div>
-              <div class="btn-row">
-                <button type="button" class="btn btn-secondary btn-small" id="step1-add-url-btn"><i data-lucide="plus"></i> Add another report</button>
+            <div id="reports-competitor-url-block">
+              <h3 class="subheading">Or paste your own competitor report link</h3>
+              <p class="field-hint" id="reports-competitor-url-hint">One link. A CMI report link goes in the CMI tab, never here. Choosing a market above clears this link, and pasting a link clears the market. Checking the link is optional.</p>
+              <div class="report-url-row">
+                <input type="text" class="text-input report-url-input" id="reports-competitor-url" placeholder="Paste a report link (https://...)">
+                <button type="button" class="btn btn-secondary btn-small" id="reports-competitor-url-check">Check</button>
+                <button type="button" class="btn btn-ghost btn-small" id="reports-competitor-url-clear" hidden>Clear link</button>
               </div>
+              <p class="url-check-result" id="reports-competitor-url-status" hidden></p>
             </div>
           </div>
           <div class="btn-row reports-fetch-row" id="reports-competitor-fetch-area">

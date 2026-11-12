@@ -217,11 +217,11 @@ try:
         main.reports_fetch(main.ReportsFetchRequest(
             run_token=TOKEN, kind="competitor", report_ids=[7211], report_urls=[f" {FIRST_URL} ", "", SECOND_URL],
             markets=[f"  {MARKET}  ", "B2 Market"], url_markets={}, cmi_report_url="https://www.coherentmarketinsights.com/x"))
-    check("fetch competitor: the ONE kept market and the trimmed pasted urls are used; CMI ids and link are ignored",
-          seen["picked"] == [] and seen["urls"] == [FIRST_URL, SECOND_URL] and seen["markets"] == [MARKET]
+    check("fetch competitor: the ONE kept market and the FIRST trimmed url are used; CMI ids and link are ignored",
+          seen["picked"] == [] and seen["urls"] == [FIRST_URL] and seen["markets"] == [MARKET]
           and seen["cmi_pages"] == [], str(seen))
-    check("fetch competitor: the run records the same market and urls",
-          run.picked_markets == [MARKET] and run.picked_urls == [FIRST_URL, SECOND_URL] and run.picked_report_ids == [],
+    check("fetch competitor: the run records the same market and the one url",
+          run.picked_markets == [MARKET] and run.picked_urls == [FIRST_URL] and run.picked_report_ids == [],
           f"{run.picked_markets} / {run.picked_urls} / {run.picked_report_ids}")
 finally:
     drop_run()

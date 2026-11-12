@@ -70,7 +70,7 @@ const state = {
   filename: null,
   sponsorIdx: 0,
   clientPicks: {},          // host -> {on, paraIdx}: the clients the editor ticked and the paragraph chosen for each
-  run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, pickedCmi, pickedMarkets, reportUrls,
+  run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, pickedCmi, pickedMarkets, foundReports, foundPick, compLink,
                          //   sheets: {cmi, competitor}, reportTab, activeKind, ... } (see "Reports step" below)
   result: null,          // final RevampResult-equivalent from the backend
   nav: "article",        // article | step1 | reports | evidence | facts | write | final
@@ -142,8 +142,17 @@ async function resumeRunIfAny() {
     const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
       factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null,
       pickedCmi: (data.candidates || []).find((c) => (data.picked_report_ids || []).includes(c.news_id)) || null, cmiUrl: "",
-      pickedMarkets: data.picked_markets || [], reportUrls: [""], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [],
-      sheets: { cmi: null, competitor: null }, reportTab: "cmi", activeKind: null, foundReports: data.found_reports || [], pickedFound: [] };
+      pickedMarkets: data.picked_markets || [], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [],
+      sheets: { cmi: null, competitor: null }, reportTab: "cmi", activeKind: null, foundReports: data.found_reports || [], foundPick: "", compLink: "" };
+    // The Competitor screen's own choice (a market and the report found for it, or one pasted link) comes back as it was left.
+    const choice = data.competitor_choice || {};
+    if (choice.link || choice.market) {
+      run.compLink = choice.link || "";
+      run.pickedMarkets = choice.market ? [choice.market] : [];
+      run.foundReports = choice.market ? (data.found_reports || []).filter((r) => r.market === choice.market) : [];
+      run.foundSearched = !!choice.market && (data.picked_markets || [])[0] === choice.market;
+      run.foundPick = run.foundReports.some((r) => r.url === choice.found_url) ? choice.found_url : "";
+    }
     // Both Reports tabs' fact sheets come back from the server, so a reload loses neither.
     Object.entries(data.report_tabs || {}).forEach(([kind, t]) => {
       run.sheets[kind] = { report: t.report, factSheet: t.fact_sheet, reportMode: t.report_mode, warnings: t.warnings || [], confirmed: false };
@@ -603,7 +612,7 @@ function isCmiLink(url) {
 document.getElementById("start-btn").addEventListener("click", async () => {
   const sponsor = currentSponsor();
   if (!sponsor) return;
-  state.run = { stage: "pending", sponsor, pickedCmi: null, cmiUrl: "", pickedMarkets: [], reportUrls: [""], sheets: { cmi: null, competitor: null }, reportTab: "cmi" };
+  state.run = { stage: "pending", sponsor, pickedCmi: null, cmiUrl: "", pickedMarkets: [], foundReports: [], foundPick: "", compLink: "", sheets: { cmi: null, competitor: null }, reportTab: "cmi" };
   setNav("step1");
   render();
   await runStep1();
@@ -675,13 +684,6 @@ document.getElementById("reports-back-btn").addEventListener("click", () => {
   render();
 });
 
-document.getElementById("step1-add-url-btn").addEventListener("click", () => {
-  if (!state.run || !Array.isArray(state.run.reportUrls)) return;
-  if (state.run.reportUrls.length >= MAX_REPORT_URLS) return;
-  state.run.reportUrls.push("");
-  renderStep1UrlInputs();
-});
-
 function clearCmiPick() {
   if (!state.run) return;
   state.run.pickedCmi = null;
@@ -715,12 +717,67 @@ document.getElementById("step1-cmi-url").addEventListener("input", (e) => {
 });
 document.getElementById("step1-cmi-url-check").addEventListener("click", () => checkReportUrl(document.getElementById("step1-cmi-url-block"), true));
 
+// The Competitor screen holds ONE choice: a suggested market (then one of the reports found for it) or one pasted link.
+// state.run.pickedMarkets = [market] | [], state.run.foundPick = the chosen found report's url, state.run.compLink = the pasted link.
+function clearCompetitorMarket() {
+  const run = state.run;
+  run.pickedMarkets = [];
+  run.foundReports = [];
+  run.foundPick = "";
+  run.foundSearched = false;
+  document.querySelectorAll("#step1-suggested .market-option").forEach((el) => {
+    el.classList.remove("selected");
+    el.querySelector("input").checked = false;
+  });
+  renderFoundReports();
+}
+
+function clearCompetitorLink() {
+  const run = state.run;
+  run.compLink = "";
+  const input = document.getElementById("reports-competitor-url");
+  const status = document.getElementById("reports-competitor-url-status");
+  if (input) input.value = "";
+  if (status) { status.hidden = true; status.textContent = ""; status.className = "url-check-result"; }
+}
+
+// Remembers the screen's choice on the server (POST /reports/competitor_choice) so a reload restores it.
+let compChoiceTimer = null;
+function saveCompetitorChoice() {
+  const run = state.run;
+  if (!run || !run.token) return;
+  clearTimeout(compChoiceTimer);
+  compChoiceTimer = setTimeout(() => {
+    apiPost("/reports/competitor_choice", {
+      run_token: run.token, market: (run.pickedMarkets || [])[0] || "", found_url: run.foundPick || "", link: (run.compLink || "").trim(),
+    }).catch(() => {});
+  }, 300);
+}
+
 document.getElementById("step1-agent-clear").addEventListener("click", () => {
   if (!state.run) return;
-  state.run.pickedMarkets = [];
-  state.run.foundReports = [];
-  state.run.pickedFound = [];
-  renderReportsPickers();
+  clearCompetitorMarket();
+  updateReportsControls();
+  saveCompetitorChoice();
+});
+
+// Typing a link is the "or" choice: it clears the market and the report found for it.
+document.getElementById("reports-competitor-url").addEventListener("input", (e) => {
+  const run = state.run;
+  if (!run) return;
+  run.compLink = e.target.value;
+  if (e.target.value.trim() && (run.pickedMarkets.length || run.foundReports.length || run.foundSearched)) clearCompetitorMarket();
+  showCompetitorRowError(document.getElementById("reports-competitor-url-block"), e.target.value);
+  updateReportsControls();
+  saveCompetitorChoice();
+});
+document.getElementById("reports-competitor-url-check").addEventListener("click", () => checkReportUrl(document.getElementById("reports-competitor-url-block")));
+document.getElementById("reports-competitor-url-clear").addEventListener("click", () => {
+  if (!state.run) return;
+  clearCompetitorLink();
+  showCompetitorRowError(document.getElementById("reports-competitor-url-block"), "");
+  updateReportsControls();
+  saveCompetitorChoice();
 });
 
 // ---------------------------------------------------------------- Reports step (Step 2)
@@ -734,7 +791,10 @@ const REPORT_KINDS = ["cmi", "competitor"];
 function ensureReportState(run) {
   if (!run.sheets) run.sheets = { cmi: null, competitor: null };
   if (!REPORT_KINDS.includes(run.reportTab)) run.reportTab = "cmi";
-  if (!Array.isArray(run.pickedFound)) run.pickedFound = [];
+  if (!Array.isArray(run.pickedMarkets)) run.pickedMarkets = [];
+  if (!Array.isArray(run.foundReports)) run.foundReports = [];
+  if (typeof run.foundPick !== "string") run.foundPick = "";
+  if (typeof run.compLink !== "string") run.compLink = "";
 }
 
 function hasAnyReportSheet() {
@@ -748,17 +808,19 @@ function reportsFetchBody(kind) {
   if (kind === "cmi") {
     return { run_token: run.token, kind, report_ids: run.pickedCmi ? [run.pickedCmi.news_id] : [], cmi_report_url: (run.cmiUrl || "").trim() };
   }
-  const found = run.pickedFound || [];
-  const urlMarkets = {};
-  (run.foundReports || []).forEach((r) => { if (found.includes(r.url)) urlMarkets[r.url] = r.market; });
-  return { run_token: run.token, kind, markets: run.pickedMarkets || [], report_urls: [...found, ...step1PickedUrls()], url_markets: urlMarkets };
+  // exactly one report: the pasted link (no market), or the one report chosen among those found for the picked market
+  const link = competitorLink();
+  if (link) return { run_token: run.token, kind, markets: [], report_urls: [link], url_markets: {} };
+  const found = (run.foundReports || []).find((r) => r.url === run.foundPick);
+  const market = (found && found.market) || (run.pickedMarkets || [])[0] || "";
+  return { run_token: run.token, kind, markets: market ? [market] : [], report_urls: found ? [found.url] : [], url_markets: found ? { [found.url]: market } : {} };
 }
 
 function canFetchReport(kind) {
   const run = state.run;
   if (!run) return false;
   if (kind === "cmi") return !!(run.pickedCmi || (run.cmiUrl || "").trim());
-  return (run.pickedMarkets || []).length > 0 || (run.pickedFound || []).length > 0 || step1PickedUrls().length > 0;
+  return !!competitorLink() || (run.foundReports || []).some((r) => r.url === run.foundPick);
 }
 
 // Keeps a /reports/fetch or /reports/confirm answer under its tab and makes that tab's sheet the active one.
@@ -814,12 +876,13 @@ document.getElementById("reports-find-btn").addEventListener("click", async () =
   try {
     const data = await apiPost("/step2/find_reports", { run_token: run.token, markets: run.pickedMarkets });
     run.foundReports = data.reports || [];
-    run.pickedFound = [];
+    run.foundPick = "";
     run.foundSearched = true;
   } catch (e) {
     showError("Step 2 (find competitor reports)", e);
   }
   run.finding = false;
+  saveCompetitorChoice();
   render();
 });
 
@@ -1109,13 +1172,10 @@ function renderRunControls() {
 }
 
 // ---------------------------------------------------------------- step 1 helpers (report pick + own links)
-// At most this many "own link" inputs exist; the Add button disappears once reached.
-const MAX_REPORT_URLS = 6;
-
-// Non-empty trimmed competitor links — exactly what the competitor tab sends to /reports/fetch as report_urls.
-function step1PickedUrls() {
-  // Competitor links only: a pasted CMI link belongs in the CMI tab, so it is left out here.
-  return (state.run.reportUrls || []).map((u) => String(u || "").trim()).filter(Boolean).filter((u) => !isCmiLink(u));
+// The competitor link the editor pasted, trimmed ('' when none): a pasted CMI link belongs in the CMI tab, so it is left out here.
+function competitorLink() {
+  const link = String((state.run && state.run.compLink) || "").trim();
+  return isCmiLink(link) ? "" : link;
 }
 
 // Competitor rows refuse a CMI link inline: its figures would be treated as a competitor's and adjusted.
@@ -1187,10 +1247,11 @@ function updateReportsControls() {
   document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
   const hints = {
     cmi: run.pickedCmi ? `Report chosen: ${run.pickedCmi.keyword}` : (run.cmiUrl || "").trim() ? "The pasted CMI report link will be read." : "Pick a CMI report or paste its link.",
-    competitor: (run.pickedFound || []).length ? `${run.pickedFound.length} found report(s) ticked.`
-      : step1PickedUrls().length ? `${step1PickedUrls().length} pasted link(s) will be read.`
-      : hasMarket ? "No report ticked: the agent reads the best-matching reports for the market." : "Pick a market, or paste a report link.",
+    competitor: competitorLink() ? "The pasted report link will be read."
+      : canFetchReport("competitor") ? "The chosen report will be read."
+      : hasMarket ? "Find reports for this market, then choose one." : "Pick a market, or paste one report link.",
   };
+  document.getElementById("reports-competitor-url-clear").hidden = !(run.compLink || "").trim();
   for (const kind of REPORT_KINDS) {
     const sheet = run.sheets[kind];
     const btn = document.getElementById(`reports-${kind}-fetch-btn`);
@@ -1211,42 +1272,12 @@ function clip(text, max) {
   return s.length > max ? s.slice(0, max - 1).replace(/\s+\S*$/, "") + "\u2026" : s;
 }
 
-// Own-link rows are (re)built from state.run.reportUrls, so a re-render never loses what was
-// typed; typing itself only writes back to state and never re-renders (that would drop focus).
-function renderStep1UrlInputs() {
-  const wrap = document.getElementById("step1-report-urls");
-  const addBtn = document.getElementById("step1-add-url-btn");
-  if (!wrap || !addBtn || !state.run) return;
-  if (!Array.isArray(state.run.reportUrls)) state.run.reportUrls = [""];
-
-  wrap.innerHTML = "";
-  state.run.reportUrls.forEach((url, i) => {
-    const entry = document.createElement("div");
-    entry.className = "report-url-entry";
-    entry.innerHTML = `
-      <div class="report-url-row">
-        <input type="text" class="text-input report-url-input" placeholder="Paste a report link (https://...)" value="${escapeHtml(url || "")}">
-        <button type="button" class="btn btn-secondary btn-small report-url-check">Check</button>
-        <button type="button" class="report-url-remove" title="Remove this link"${i === 0 ? " hidden" : ""}>&times;</button>
-      </div>
-      <p class="url-check-result" hidden></p>
-    `;
-    entry.querySelector("input").addEventListener("input", (e) => {
-      state.run.reportUrls[i] = e.target.value;
-      showCompetitorRowError(entry, e.target.value);
-      updateReportsControls();
-    });
-    entry.querySelector(".report-url-check").addEventListener("click", () => checkReportUrl(entry));
-    entry.querySelector(".report-url-remove").addEventListener("click", () => {
-      state.run.reportUrls.splice(i, 1);
-      if (!state.run.reportUrls.length) state.run.reportUrls = [""];   // one input remains as the minimum
-      renderStep1UrlInputs();
-      updateReportsControls();
-    });
-    wrap.appendChild(entry);
-    showCompetitorRowError(entry, url);
-  });
-  addBtn.hidden = state.run.reportUrls.length >= MAX_REPORT_URLS;
+// The pasted link's box follows state.run.compLink (typing writes back to state and never re-renders: that would drop focus).
+function syncCompetitorLinkInput() {
+  const input = document.getElementById("reports-competitor-url");
+  if (!state.run || !input) return;
+  if (input.value !== state.run.compLink) input.value = state.run.compLink;
+  showCompetitorRowError(document.getElementById("reports-competitor-url-block"), state.run.compLink);
 }
 
 // Optional early feedback on one own link — asks the backend to look at it. Whatever the check
@@ -1387,12 +1418,15 @@ function renderReportsPickers() {
     label.className = "market-option" + (on ? " selected" : "");
     label.innerHTML = `<input type="radio" name="agent-pick" value="${escapeHtml(name)}" ${on ? "checked" : ""}><span class="market-name">${escapeHtml(name)}</span>`;
     label.querySelector("input").addEventListener("change", () => {
-      if (run.pickedMarkets[0] !== name) { run.foundReports = []; run.pickedFound = []; run.foundSearched = false; }
+      if (run.pickedMarkets[0] !== name) { run.foundReports = []; run.foundPick = ""; run.foundSearched = false; }
       run.pickedMarkets = [name];
+      clearCompetitorLink();      // a market and a pasted link are alternatives: choosing one clears the other
+      showCompetitorRowError(document.getElementById("reports-competitor-url-block"), "");
       document.querySelectorAll("#step1-suggested .market-option").forEach((el) => el.classList.remove("selected"));
       label.classList.add("selected");
       renderFoundReports();
       updateReportsControls();
+      saveCompetitorChoice();
     });
     return label;
   }, "The agent has no market names to suggest for this article. Paste a competitor report link below.");
@@ -1424,35 +1458,37 @@ function renderReportsPickers() {
     });
 
   renderFoundReports();
-  renderStep1UrlInputs();
+  syncCompetitorLinkInput();
   updateReportsControls();
 }
 
-// The competitor reports /step2/find_reports found for the picked market, as tickable rows.
+// The competitor reports /step2/find_reports found for the picked market, as radio rows: the editor chooses exactly ONE.
 function renderFoundReports() {
   const run = state.run;
   const block = document.getElementById("reports-found-block");
   const found = run.foundReports || [];
   block.hidden = !found.length && !run.foundSearched;
   if (block.hidden) return;
-  if (!Array.isArray(run.pickedFound)) run.pickedFound = [];
   const list = document.getElementById("reports-found-list");
   list.innerHTML = "";
+  document.getElementById("reports-found-hint").hidden = !found.length;
   if (!found.length) {
-    list.innerHTML = `<p class="market-empty">No competitor report was found for this market. Paste a link of your own below, or fetch anyway and let the agent search again.</p>`;
+    list.innerHTML = `<p class="market-empty">No readable competitor report was found for this market. Paste a report link of your own below instead.</p>`;
     return;
   }
   found.forEach((r) => {
     const label = document.createElement("label");
-    const on = run.pickedFound.includes(r.url);
+    const on = run.foundPick === r.url;
     label.className = "market-option" + (on ? " selected" : "");
-    label.innerHTML = `<input type="checkbox" value="${escapeHtml(r.url)}" ${on ? "checked" : ""}>
+    label.innerHTML = `<input type="radio" name="found-pick" value="${escapeHtml(r.url)}" ${on ? "checked" : ""}>
       <span class="market-name"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.title || r.host)}">${escapeHtml(clip(r.title || r.host, 110))}</a>
-      <span class="option-caption"><span class="host-chip">${escapeHtml(r.host)}</span>${r.snippet ? escapeHtml(clip(r.snippet, 150)) : ""}</span></span>`;
-    label.querySelector("input").addEventListener("change", (e) => {
-      run.pickedFound = e.target.checked ? [...run.pickedFound, r.url] : run.pickedFound.filter((u) => u !== r.url);
-      label.classList.toggle("selected", e.target.checked);
+      <span class="option-caption"><span class="host-chip">${escapeHtml(r.host)}</span>${r.market ? `<span class="found-market">${escapeHtml(r.market)}</span>` : ""}${r.snippet ? escapeHtml(clip(r.snippet, 150)) : ""}</span></span>`;
+    label.querySelector("input").addEventListener("change", () => {
+      run.foundPick = r.url;
+      list.querySelectorAll(".market-option").forEach((el) => el.classList.remove("selected"));
+      label.classList.add("selected");
       updateReportsControls();
+      saveCompetitorChoice();
     });
     list.appendChild(label);
   });
@@ -1588,10 +1624,9 @@ function factSheetViewHtml(fs, kind) {
   }
 
   const removed = (fs.editor_removed || []).map((r) => `<li>${escapeHtml(r.text)} <span class="option-caption">(${escapeHtml(r.kind)})</span></li>`).join("");
-  const audit = (fs.variance || []).length;
   return `<table class="fs-table${competitor ? " fs-table-competitor" : ""}"><thead><tr><th>Fact</th>${competitor ? "<th>Original (competitor)</th>" : ""}`
     + `<th>${competitor ? "Adjusted (used in the article)" : "Value"}</th><th>Source</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
-    + (competitor && audit ? `<p class="field-hint">${audit} figure(s) were moved by 3-5%; the competitor's own value is shown beside each. Values you enter yourself are used exactly as typed.</p>` : "")
+    + (competitor ? `<p class="field-hint fs-variance-note">Competitor figures are moved by 3-5%; the article uses the adjusted value. The competitor's own value is shown beside each. Values you edit yourself are used as entered, never adjusted.</p>` : "")
     + (removed ? `<div class="fs-removed"><strong>Removed by the editor</strong><ul class="plain-list">${removed}</ul></div>` : "");
 }
 
@@ -1647,6 +1682,8 @@ function factSheetEditHtml(d, fs, kind) {
     g.items.forEach((it, j) => {
       out.push(`<div class="fs-edit-row"><input type="radio" class="fs-lead" name="fs-lead-${i}" data-lead="${i}" value="${j}" ${g.leadIdx === j ? "checked" : ""} title="Leading category">`
         + `${inp(`segments.${i}.items.${j}.name`, it.name, "Category")}${inp(`segments.${i}.items.${j}.figure`, it.figure, "Share or amount (optional)")}${x("remove-cat", `data-i="${i}" data-j="${j}"`)}</div>`);
+      const was = kind === "competitor" ? (((fs.segments || []).find((s) => s.id === g.id) || {}).figures || {})[it.name] : null;
+      if (was && was.original_figure) out.push(`<div class="fs-hint">Competitor original: ${escapeHtml(was.original_figure)} &middot; adjusted: ${escapeHtml(was.figure)}</div>`);
     });
     out.push(`<div class="btn-row">${btn("add-cat", "Add a category", `data-i="${i}"`)}${btn("no-lead", "No leading category", `data-i="${i}"`)}</div></div>`);
   });
@@ -1661,6 +1698,8 @@ function factSheetEditHtml(d, fs, kind) {
       out.push(`<div class="fs-edit-row">${inp(`${key}.${i}.text`, e.text, "Statement")}`
         + (key === "segment_drivers" ? `${inp(`${key}.${i}.split`, e.split, "Split")}${inp(`${key}.${i}.name`, e.name, "Category")}` : "")
         + `${x("remove-item", `data-key="${key}" data-i="${i}"`)}</div>`);
+      const was = kind === "competitor" ? (fs[key] || []).find((s) => s.id === e.id) : null;
+      if (was && was.original_text) out.push(`<div class="fs-hint">Competitor original: ${escapeHtml(was.original_text)}</div>`);
     });
     if (!d[key].length) out.push(`<p class="fs-note">${FS_GAP}</p>`);
     out.push(`<div class="btn-row">${btn("add-item", "Add one", `data-key="${key}"`)}</div></section>`);

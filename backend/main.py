@@ -9,6 +9,7 @@ Serves the JSON API consumed by ``../frontend`` (also served statically from
                   search yet, since the human hasn't confirmed a market to search for.
     POST /reports/fetch   { run_token, kind: "cmi"|"competitor", ... } -> { kind, report, fact_sheet, report_mode, warnings, confirmed }
                   Step 2 (Reports): read one tab's chosen report into a fact sheet.
+    POST /reports/competitor_choice { run_token, market, found_url, link } -> the stored choice (restored by GET /run)
     POST /reports/confirm { run_token, kind?, fact_sheet_edits } -> same shape, confirmed: true
                   Step 2 (Reports): apply the editor's edits to the fact sheet and confirm it.
     POST /evidence (alias /step2) { run_token } -> { report, hits, fact_sheet, demand, publisher, ... }
@@ -333,6 +334,7 @@ class RunState:
     report_tabs: dict[str, dict] = field(default_factory=dict)
     report_warnings: list[str] = field(default_factory=list)   # the active tab's warnings (shown above its fact sheet)
     fact_sheet_confirmed: bool = False
+    competitor_choice: dict = field(default_factory=dict)   # the Competitor screen's picks: {market, found_url, link}
     step2_timer: "StageTimer | None" = None   # the running Reports/Evidence step's timer: GET /step2/progress reads which stages are live
 
 
@@ -1130,6 +1132,10 @@ def _use_outside_pages(
     return {}, [], {}
 
 
+class ReportUnusable(PipelineError):
+    """The ONE report the editor pasted could not be read or gave no usable figure: /reports/fetch answers 422 with the reason."""
+
+
 def _build_reports(
     run: RunState, chosen: list[reports.CatalogEntry], urls: list[str], markets=(), url_markets=None, cmi_pages=(),
     timer: "StageTimer | None" = None,
@@ -1162,6 +1168,9 @@ def _build_reports(
     if not market:
         raise PipelineError("The agent could not name this article's market. Pick a matched report and try again.")
     outside_texts: dict[str, str] = {}
+    # A link the editor pasted names its own report: nothing else is searched or substituted for it (a suggested market,
+    # by contrast, may fall back to other reports found for it and, last, to the web).
+    pasted = bool(urls) and not markets
     # R3: with a CMI report chosen, no outside report is read at all — the branch below runs only for a market
     # pick (search finds the market's reports) or pasted links.
     if not cmi_reports:
@@ -1184,7 +1193,7 @@ def _build_reports(
                 else:
                     pages = [(u, t, market) for u, t in external_reports.find_pages(market, hosts, run.logger)]
             ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, pages, titles, warnings, run.logger)
-            if not ext_sources and urls:
+            if not ext_sources and urls and not pasted:
                 # Nothing the editor chose could be used: try the other reports from the same list rather than stop.
                 spare = [(r["url"], external_reports.read_page(r["url"], run.logger), r.get("market") or market)
                          for r in run.found_reports if r.get("url") and r["url"] not in urls][:3]
@@ -1199,13 +1208,21 @@ def _build_reports(
                 sheets.append(ext_sheet)
                 sources += ext_sources
     if not sheets:
+        if pasted:
+            raise ReportUnusable(" ".join(
+                warnings + ["No figures were taken from this link. Paste another report link, or pick a suggested market "
+                            "and let the agent find a report."]))
         # No usable report anywhere: before giving up, search the web for the market's own size, forecast and
         # CAGR (one outside page, the same strict checks, varied 3-5%). Only when even that finds nothing does
         # the step fail.
         fs = facts._empty_fact_sheet()
         fs.update({"sources": [], "variance": [], "report_mode": "external"})
         with timer.stage("Headline figures from web"):
-            warnings += facts.fill_headline_from_web(fs, market, hosts, run.logger)
+            filled = facts.fill_headline_from_web(fs, market, hosts, run.logger)
+        if urls and len(fs["gaps"]) < 3:
+            warnings.append("The report you chose gave no usable figures, so the agent took the market's headline figures "
+                            "from a web search instead.")
+        warnings += filled
         if len(fs["gaps"]) == 3:
             raise PipelineError(" ".join(
                 [f"No report could be found for {market}."] + warnings
@@ -1230,8 +1247,17 @@ def _build_reports(
         # A non-CMI sheet missing ALL three headline figures gets them from one web-found outside page (marked
         # external and varied); a sheet that already states one of them is never mixed with a second source.
         if len(fs["gaps"]) == 3:
-            with timer.stage("Headline figures from web"):
-                warnings += facts.fill_headline_from_web(fs, market, hosts, run.logger)
+            if pasted:
+                warnings.append(
+                    "The page states no market size, forecast or growth rate, so none is used. Press Edit to enter them "
+                    "yourself, or paste another link.")
+            else:
+                with timer.stage("Headline figures from web"):
+                    filled = facts.fill_headline_from_web(fs, market, hosts, run.logger)
+                if len(fs["gaps"]) < 3:
+                    warnings.append("The report states no market size, forecast or growth rate, so the agent took them from "
+                                    "a web search instead.")
+                warnings += filled
     # R3: a CMI report is the only source — no figure gap search, no figure backing. A headline figure the
     # report itself does not state stays a gap (the article states no figure for it). Only the non-CMI web
     # fill above (fill_headline_from_web) may add outside figures.
@@ -1407,6 +1433,10 @@ def _resolve_report_pick(run: RunState, req: ReportsFetchRequest) -> tuple[list[
     for u in urls:
         if config.is_cmi_url(u):
             raise HTTPException(400, f"The link {u} is a CMI report link. Paste it in the CMI report link box, not among the competitor links.")
+    # One report only: the editor chose either a found report or one link of their own.
+    if len(urls) > 1:
+        run.logger.warning(f"REPORTS: {len(urls)} competitor links were sent; only the first ({urls[0]}) is used")
+        urls = urls[:1]
     return [], urls, _clean_markets(req.markets), []
 
 
@@ -1437,6 +1467,9 @@ def reports_fetch(req: ReportsFetchRequest) -> dict:
     timer = run.step2_timer = StageTimer(run.logger, "Reports")
     try:
         built = _build_reports(run, picked, urls, markets=markets, url_markets=req.url_markets or {}, cmi_pages=cmi_pages, timer=timer)
+    except ReportUnusable as e:
+        run.logger.warning(f"REPORTS: the chosen report could not be used: {e}")
+        raise HTTPException(422, str(e))
     except (PipelineError, LLMError, LiveFetchError) as e:
         raise _pipeline_failure(run.logger, "Reports step", e)
     timer.summary()
@@ -1445,6 +1478,24 @@ def reports_fetch(req: ReportsFetchRequest) -> dict:
     fs = run.fact_sheet
     run.logger.info(f"REPORTS DONE ({req.kind}) — report {run.report.name} ({run.report_mode}), fact sheet gaps: {fs['gaps'] or 'none'}")
     return _reports_payload(run)
+
+
+class CompetitorChoiceRequest(BaseModel):
+    """POST /reports/competitor_choice: what the Competitor screen currently holds, so a tab switch or reload restores it.
+    It is one or the other: a suggested market (with the found report picked, if any) or one pasted link."""
+    run_token: str | None = None
+    market: str = ""
+    found_url: str = ""
+    link: str = ""
+
+
+@app.post("/reports/competitor_choice")
+def reports_competitor_choice(req: CompetitorChoiceRequest) -> dict:
+    run = _get_run(req.run_token)
+    link = (req.link or "").strip()
+    market = "" if link else (req.market or "").strip()
+    run.competitor_choice = {"market": market, "found_url": "" if link else (req.found_url or "").strip(), "link": link}
+    return run.competitor_choice
 
 
 @app.post("/reports/confirm")
@@ -1733,6 +1784,7 @@ def get_run(run_token: str) -> dict:
         "picked_markets": run.picked_markets,
         "picked_report_ids": run.picked_report_ids,
         "picked_urls": run.picked_urls,
+        "competitor_choice": run.competitor_choice,
         "sources": (run.fact_sheet or {}).get("sources", []),
     }
 
