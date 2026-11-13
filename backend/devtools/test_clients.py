@@ -221,6 +221,11 @@ inside_cmi = [{"heading": "", "sop": [], "paragraphs": ["Lead-in about the [[CMI
 fixed = clients.normalize_tokens(inside_cmi, c_one, LOG)[0]["paragraphs"]
 check("tokens: the link's words inside the report link are never linked again",
       "[[CLIENT_LINK" not in " ".join(fixed) and "[[CMI_LINK:Research Paper Help Market]]" in fixed[0], str(fixed))
+for bad in ("[[CLIENT_LINK:research paper help]]", "[[CLIENT_LINK:L1]]", "[[CLIENT_LINK|Research Paper Help]]", "[[CLIENT_LINK:paper writing]]"):
+    malformed = [{"heading": "", "sop": [], "paragraphs": ["Lead-in.", f"Students turn to {bad} every term."]}]
+    fixed = clients.normalize_tokens(malformed, c_one, LOG)[0]["paragraphs"][1]
+    check(f"tokens: the malformed token {bad} becomes the link (found live: no link id, printed raw)",
+          "[[CLIENT_LINK:L1|research paper help]]" in fixed and fixed.count("[[") == 1, fixed)
 absent = [{"heading": "", "sop": [], "paragraphs": ["Lead-in.", "Nothing about it here."]}]
 fixed = clients.normalize_tokens(absent, c_one, LOG)
 check("tokens: a link the writer left out stays missing, for the check to report", clients.link_problems(fixed, c_one))

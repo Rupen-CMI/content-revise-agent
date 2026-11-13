@@ -322,12 +322,36 @@ def plain_sections(sections: list[dict]) -> list[dict]:
     return [{**s, "paragraphs": [plain(p) for p in s["paragraphs"]]} for s in sections]
 
 
+# A client link token the writer got the shape of wrong: no link id ("[[CLIENT_LINK:private label skincare]]", found live,
+# printed raw in the draft), no words ("[[CLIENT_LINK:L1]]") or a bar for the colon. Anything that is not a whole token.
+_MALFORMED_TOKEN_RE = re.compile(r"\[\[CLIENT_LINK[:|]\s*(?!L\d+\|)([^\]]*?)\s*\]\]")
+
+
+def _repair_malformed_tokens(text: str, table: dict, logger: logging.Logger) -> str:
+    """Each malformed client link token becomes the whole token of the link it names (by id, or by its registered words, or
+    the run's only link when it names neither); one that names no link is reduced to its words."""
+    def fix(m: re.Match) -> str:
+        inner = m.group(1).strip()
+        lid = inner if inner in table else next(
+            (k for k, l in table.items() if l["anchor"] and _squash(l["anchor"]) == _squash(inner)), None)
+        if lid is None and len(table) == 1:
+            lid = next(iter(table))
+        if lid is None:
+            logger.info(f"[write] a malformed client link token {m.group(0)!r} names no link: left as plain words")
+            return inner
+        logger.info(f"[write] a malformed client link token {m.group(0)!r} was rewritten as link {lid}")
+        return f"[[CLIENT_LINK:{lid}|{table[lid]['anchor']}]]"
+    return _MALFORMED_TOKEN_RE.sub(fix, text)
+
+
 def normalize_tokens(sections: list[dict], clients: list[Client], logger: logging.Logger) -> list[dict]:
     """Make every client link in the draft one correct token, in the opening. The linked words are the registered ones, never the
     writer's rewording; a token for an unknown link, or a second token for a link, is reduced to plain words; a link whose words
     stand in the opening without a token is turned into its token. A link the writer left out stays missing (the check reports it)."""
     table = {l["id"]: l for c in clients for l in c.links}
     seen: set[str] = set()
+    for s in sections:
+        s["paragraphs"] = [_repair_malformed_tokens(p, table, logger) for p in s["paragraphs"]]
     for s in sections:
         for pi, p in enumerate(s["paragraphs"]):
             def fix(m: re.Match) -> str:
