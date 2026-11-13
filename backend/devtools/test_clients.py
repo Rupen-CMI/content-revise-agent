@@ -229,6 +229,30 @@ for bad in ("[[CLIENT_LINK:research paper help]]", "[[CLIENT_LINK:L1]]", "[[CLIE
 absent = [{"heading": "", "sop": [], "paragraphs": ["Lead-in.", "Nothing about it here."]}]
 fixed = clients.normalize_tokens(absent, c_one, LOG)
 check("tokens: a link the writer left out stays missing, for the check to report", clients.link_problems(fixed, c_one))
+# A report link the writer merged a client link's words into ("[[CMI_LINK:Language Services Market|converting text
+# from one language to another]]", found live: the client's link then went missing and its check failed). The report
+# link is cut back to the report's name and the client's token takes the words' place, right after it.
+merged = [{"heading": "", "sop": [], "paragraphs": [
+    "Lead-in about the market.",
+    "It is the work of [[CMI_LINK:Research Paper Help Market|research paper help]], carried out for students."]}]
+fixed = clients.normalize_tokens(merged, c_one, LOG)[0]["paragraphs"][1]
+check("tokens: a report link's bar suffix that is a client link's words becomes the client's token after the report link",
+      "the work of [[CMI_LINK:Research Paper Help Market]] [[CLIENT_LINK:L1|research paper help]], carried out" in fixed,
+      fixed)
+check("tokens: the repaired links pass the backlink check", not clients.link_problems(
+    [{"heading": "", "sop": [], "paragraphs": [fixed]}], c_one),
+    str(clients.link_problems([{"heading": "", "sop": [], "paragraphs": [fixed]}], c_one)))
+self_named = [{"heading": "", "sop": [], "paragraphs": [
+    "The [[CMI_LINK:Research Paper Help Market|Research Paper Help Market]] grows."]}]
+fixed = clients.normalize_tokens(self_named, c_one, LOG)[0]["paragraphs"][0]
+check("tokens: a report link whose suffix repeats the report's own name is cut to the plain report link",
+      fixed == "The [[CMI_LINK:Research Paper Help Market]] grows." and "[[CLIENT_LINK" not in fixed, fixed)
+both = [{"heading": "", "sop": [], "paragraphs": [
+    "Students look for [[CLIENT_LINK:L1|research paper help]] today, and the work of "
+    "[[CMI_LINK:Research Paper Help Market|Research paper help]] is steady."]}]
+fixed = clients.normalize_tokens(both, c_one, LOG)[0]["paragraphs"][0]
+check("tokens: a suffix naming an already-tokenized client (case-insensitively) is only cut",
+      fixed.count("[[CLIENT_LINK:L1|") == 1 and "[[CMI_LINK:Research Paper Help Market]]" in fixed, fixed)
 
 # ------------------------------------------------------------------ every link renders to its own page
 import copy  # noqa: E402

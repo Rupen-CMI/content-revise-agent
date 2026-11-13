@@ -344,6 +344,32 @@ def _repair_malformed_tokens(text: str, table: dict, logger: logging.Logger) -> 
     return _MALFORMED_TOKEN_RE.sub(fix, text)
 
 
+# A report link token the writer gave a bar suffix ("[[CMI_LINK:Language Services Market|converting text from one
+# language to another]]", found live: the suffix was a client link's registered words, so the client's link never
+# appeared and its check failed; or the report's own name twice over). The report link carries the report's name only.
+_CMI_BAR_TOKEN_RE = re.compile(r"\[\[CMI_LINK:([^|\]]+?)\s*\|([^\]]*)\]\]")
+
+
+def _repair_cmi_tokens(text: str, table: dict, taken: set[str], logger: logging.Logger) -> str:
+    """A CMI report link written with a bar suffix is cut back to the plain [[CMI_LINK:<report name>]]. When the
+    suffix is the registered words of a client link that no token carries yet, that client's token takes the
+    words' place right after the report link — the writer wrote the linked words there, and the report link
+    keeps its own shape and position (the market's first mention). A link already tokenized elsewhere only
+    loses the suffix."""
+    def fix(m: re.Match) -> str:
+        plain = f"[[CMI_LINK:{m.group(1).strip()}]]"
+        lid = next((k for k, l in table.items()
+                    if l["anchor"] and _squash(l["anchor"]) == _squash(m.group(2)) and k not in taken), None)
+        if lid is None:
+            logger.info(f"[write] the report link {plain!r} was written with a bar suffix: the suffix is cut")
+            return plain
+        taken.add(lid)
+        logger.info(f"[write] the report link {plain!r} carried the words of client link {lid}: the client's token "
+                    "is set right after it")
+        return f"{plain} [[CLIENT_LINK:{lid}|{table[lid]['anchor']}]]"
+    return _CMI_BAR_TOKEN_RE.sub(fix, text)
+
+
 def normalize_tokens(sections: list[dict], clients: list[Client], logger: logging.Logger) -> list[dict]:
     """Make every client link in the draft one correct token, in the opening. The linked words are the registered ones, never the
     writer's rewording; a token for an unknown link, or a second token for a link, is reduced to plain words; a link whose words
@@ -352,6 +378,11 @@ def normalize_tokens(sections: list[dict], clients: list[Client], logger: loggin
     seen: set[str] = set()
     for s in sections:
         s["paragraphs"] = [_repair_malformed_tokens(p, table, logger) for p in s["paragraphs"]]
+    # a report link's bar suffix that is a client link's registered words becomes that client's token only when no
+    # token for it stands anywhere yet (the fix pass below reduces a second one to plain words)
+    taken = {m.group(1) for s in sections for p in s["paragraphs"] for m in TOKEN_RE.finditer(p)}
+    for s in sections:
+        s["paragraphs"] = [_repair_cmi_tokens(p, table, taken, logger) for p in s["paragraphs"]]
     for s in sections:
         for pi, p in enumerate(s["paragraphs"]):
             def fix(m: re.Match) -> str:
