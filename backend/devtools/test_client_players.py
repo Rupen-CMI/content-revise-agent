@@ -82,6 +82,8 @@ EVIDENCE = [
      "detail": "", "source": "Yahoo Finance, 2026-08", "tags": ["players"], "group": "news"},
     {"id": "W3", "fact": "Ahrefs expanded its crawler index across North America in September.",
      "detail": "", "source": "VentureBeat, 2026-09", "tags": ["trends"], "group": "news"},
+    {"id": "W4", "fact": "WebFX published six reasons businesses should invest in SEO.",
+     "detail": "", "source": "WebFX, 2026-10", "tags": ["subsegment:On-Page SEO"], "group": "news"},
 ]
 inp = planning.build_inputs(MARKET, fs, EVIDENCE, {"questions": [], "terms": [], "long_tail": []}, {},
                             45, clients=[c], logger=LOG, sectioned=True)
@@ -93,6 +95,7 @@ check("inputs: key-players evidence naming the client is left out of the plan", 
 check("inputs: the other key-players evidence survives (W2)",
       "W2" in inp.items and inp.items["W2"]["sections"] == {"key_players"})
 check("inputs: evidence of another section is never touched (W3)", "W3" in inp.items)
+check("inputs: evidence of any other section naming the client is left out too (W4, found live)", "W4" not in inp.items, str(list(inp.items)))
 check("inputs: the fs.players fact sits in the key-players section",
       inp.items["fs.players"]["sections"] == {"key_players"})
 

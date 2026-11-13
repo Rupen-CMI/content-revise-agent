@@ -204,11 +204,9 @@ class PlanInputs:
 
 
 def _names_client(e: dict, client_list: list, log: logging.Logger) -> bool:
-    """A key-players evidence item whose fact names a client is left out of the plan (logged): the client is never
-    named in the post — its backlink is its only mention — so the writer is never handed its name."""
-    tags = e.get("tags") or []
-    if not ("players" in tags or any((sec := ev_sections.tag_section(t)) and sec[0] == "key_players" for t in tags)):
-        return False
+    """An evidence item whose fact names a client is left out of the plan (logged), whatever its section: the client is
+    never named in the post — its backlink is its only mention — so the writer is never handed its name (found live: a
+    client's own blog post was selected as sub-segment evidence)."""
     host = next(iter(clients_mod.naming_hosts(e.get("fact", ""), client_list)), None) if isinstance(e.get("fact"), str) else None
     if not host:
         return False
@@ -237,7 +235,7 @@ def build_inputs(
     log = logger or logging.getLogger(__name__)
     if clients:
         # the client is never named in the post (its backlink is its only mention): the key-player list and the
-        # key-players evidence lose every entry that names a client before any prompt is built from them
+        # evidence lose every entry that names a client before any prompt is built from them
         fs["players"] = clients_mod.scrub_players(list(fs.get("players") or []), list(clients), log)
         evidence_items = [e for e in evidence_items if not _names_client(e, list(clients), log)]
     for f in facts.flatten_fact_sheet(fs):
