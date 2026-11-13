@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import time
@@ -3215,9 +3216,19 @@ def _drop_repeated_tags(sections: list[dict], logger: logging.Logger) -> list[di
 
 def _paragraph_text(entry) -> str:
     """A "paragraphs" entry is a string, or an object {"paragraph": "..."} when the prompt asks the writer to name what
-    each paragraph is about (the sub-segment analyses: segment, sub-segment, paragraph)."""
+    each paragraph is about (the sub-segment analyses: segment, sub-segment, paragraph). The writer sometimes hands
+    those objects back as JSON text inside the list instead of as objects; printed as-is that leaks serialized JSON
+    into the draft (name_outside_sources then even credits it ", per <source>"), so JSON text decodes here and its
+    paragraph text is taken the same way. Prose that merely opens with a brace is kept unchanged."""
     if isinstance(entry, dict):
-        return str(entry.get("paragraph") or entry.get("text") or "")
+        return _paragraph_text(entry.get("paragraph") or entry.get("text") or "")
+    if isinstance(entry, list):     # both sub-segment objects wrapped in one JSON string: one paragraph each
+        return "\n".join(x for x in (_paragraph_text(i) for i in entry) if x.strip())
+    if isinstance(entry, str) and entry.lstrip()[:1] in ("{", "["):
+        try:
+            return _paragraph_text(json.loads(entry))
+        except ValueError:
+            return entry    # not JSON after all: keep the text as the writer wrote it
     return str(entry)
 
 
@@ -3874,7 +3885,8 @@ def _revise_pass(
             {
                 "heading": str(s.get("heading") or ""),
                 "sop": [str(t) for t in s.get("sop") or [] if str(t) in _VALID_SOP_TAGS],
-                "paragraphs": [_plain(str(p)) for p in s.get("paragraphs") or [] if str(p).strip()],
+                "paragraphs": [_plain(q) for p in s.get("paragraphs") or [] if _paragraph_text(p).strip()
+                               for q in _split_fused_paragraphs(_paragraph_text(p))],
             }
             for s in revised.get("sections") or []
         ]

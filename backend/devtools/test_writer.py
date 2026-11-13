@@ -2,6 +2,7 @@
 
 Run from backend/: python devtools/test_writer.py
 """
+import json
 import logging
 import sys
 from pathlib import Path
@@ -516,6 +517,55 @@ check("assembly: a section the model left out keeps its heading with an editor n
       [s["sop"][0] for s in sections[2:]] == list(planning.ORDER)
       and next(s for s in sections if s["sop"] == ["key_players"])["paragraphs"][0].startswith("[EDITOR")
       and next(s for s in sections if s["sop"] == ["key_players"])["heading"] == next(p["heading"] for p in plan["sections"] if p["sop"] == "key_players"))
+
+# ------------------------------------------------------------------ the sub-segment JSON leak (serialized objects never print)
+# Seen live (Skin Care Products Market): the writer returned the two sub-segment analyses as JSON text inside
+# "paragraphs" instead of as objects; the old extraction printed the raw JSON, and name_outside_sources then
+# even credited the first object ", per USA TODAY on MSN" AFTER the serialized object. Every shape the model
+# may return (dict, a JSON string encoding one, a JSON string encoding both, plain prose) now comes out as text.
+inp_sub = make_inputs()
+inp_sub.items["W2"]["source"] = "USA TODAY on MSN, 2026-11"
+inp_sub.items["W2"]["text"] = "Female buyers account for 39.9 percent of purchases."
+para_f = ("Female buyers lead the consumer split of the Zzz Widget Services Market with 39.9% of purchases "
+          "in 2025, and the market's routine-led pattern starts with them.")
+para_o = ("Online channels lead the distribution split of the Zzz Widget Services Market, because "
+          "routine-led buyers shop there first.")
+obj_f = {"segment": "By End User", "sub_segment": "Female", "paragraph": para_f}
+obj_o = {"segment": "By Distribution Channel", "sub_segment": "Online", "paragraph": para_o}
+sub_written = {
+    "intro": {"paragraphs": ["Lead-in [[CMI_LINK:Zzz Widget Services Market]].", prompts.SPONSOR_TOKEN]},
+    "transition": {"paragraphs": ["Why it matters."]},
+    "sections": [{"sop": "subsegment", "heading": "Sub-Segment Analysis", "paragraphs": []}],
+}
+for label, shapes in (
+    ("two JSON-string objects", [json.dumps(obj_f), json.dumps(obj_o)]),
+    ("one JSON string holding both", [json.dumps([obj_f, obj_o])]),
+    ("two dict objects", [obj_f, obj_o]),
+    ("dicts keyed \"text\"", [{"segment": "By End User", "sub_segment": "Female", "text": para_f},
+                              {"segment": "By Distribution Channel", "sub_segment": "Online", "text": para_o}]),
+):
+    sub_secs = writer.assemble_sections(
+        {**sub_written, "sections": [{**sub_written["sections"][0], "paragraphs": shapes}]}, plan, LOG)
+    paras = next(s for s in sub_secs if s["sop"] == ["subsegment"])["paragraphs"]
+    check(f"sub-segment leak: {label} come out as the two prose paragraphs", paras == [para_f, para_o], str(paras))
+    check(f"sub-segment leak: {label} leave no serialized JSON in the draft",
+          not any('{"segment"' in p or '"paragraph"' in p for p in paras), str(paras))
+check("sub-segment leak: prose that merely opens with a brace is kept as written",
+      next(s for s in writer.assemble_sections(
+          {**sub_written, "sections": [{**sub_written["sections"][0],
+                                        "paragraphs": ["{not JSON at all, yet the market grows}"]}]},
+          plan, LOG) if s["sop"] == ["subsegment"])["paragraphs"]
+      == ["{not JSON at all, yet the market grows}"])
+# the same bad shape through the source-naming step: the credit lands inside the prose sentence, never after
+# a serialized object (the live run's stray ", per USA TODAY on MSN" sat after the JSON's closing brace)
+named = writer.name_outside_sources(
+    writer.assemble_sections(
+        {**sub_written, "sections": [{**sub_written["sections"][0],
+                                      "paragraphs": [json.dumps(obj_f), json.dumps(obj_o)]}]}, plan, LOG),
+    inp_sub, LOG)
+check("sub-segment leak: the source credit lands inside the prose sentence",
+      next(s for s in named if s["sop"] == ["subsegment"])["paragraphs"]
+      == [para_f[:-1] + ", per USA TODAY on MSN.", para_o], str(named))
 
 # ------------------------------------------------------------------ prompt
 sponsor = Paragraph(index=0, text="Teams can ask Acme Corp for help with scraping at scale today.", links=[Link(anchor="Acme Corp", url="https://acmecorp.com")])
