@@ -876,6 +876,7 @@ async function saveFactSheetEdits(kind, edits) {
 
 for (const kind of REPORT_KINDS) {
   document.getElementById(`reports-${kind}-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
+  document.getElementById(`reports-${kind}-link-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
 }
 
 document.getElementById("reports-find-btn").addEventListener("click", async () => {
@@ -1287,22 +1288,30 @@ function updateReportsControls() {
   document.getElementById("step1-agent-clear").hidden = !hasMarket;
   document.getElementById("reports-find-btn").disabled = busy || !hasMarket;
   document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
+  // the hint beside "Fetch selected report" speaks of the list only; a bad pasted link is reported in its own row
   const hints = {
-    cmi: run.pickedCmi ? `Report chosen: ${run.pickedCmi.keyword}` : cmiLink() ? "The pasted CMI report link will be read."
-      : (run.cmiUrl || "").trim() ? "Fix the pasted link: only coherentmarketinsights.com report links go here." : "Pick a CMI report or paste its link.",
-    competitor: competitorLink() ? "The pasted report link will be read."
-      : (run.compLink || "").trim() ? "Fix the pasted link: it must be a report page outside coherentmarketinsights.com."
-      : canFetchReport("competitor") ? "The chosen report will be read."
-      : hasMarket ? "Find reports for this market, then choose one." : "Pick a market, or paste one report link.",
+    cmi: (run.cmiUrl || "").trim() ? "A link is pasted below: Fetch link reads it instead."
+      : run.pickedCmi ? `Report chosen: ${run.pickedCmi.keyword}` : "Pick a CMI report, or paste its link below.",
+    competitor: (run.compLink || "").trim() ? "A link is pasted below: Fetch link reads it instead."
+      : canFetchReport("competitor") ? "The chosen report will be read." : "Choose one of the reports found.",
   };
   document.getElementById("reports-competitor-url-clear").hidden = !(run.compLink || "").trim();
+  // Each source has its own fetch button next to it: "Fetch selected report" under the list (enabled while the link box is
+  // empty) and "Fetch link" in the link row (enabled when the box holds a usable link). Both call runReportsFetch(kind).
+  const listPick = {
+    cmi: !!run.pickedCmi && !(run.cmiUrl || "").trim(),
+    competitor: !competitorLink() && (run.foundReports || []).some((r) => r.url === run.foundPick),
+  };
+  const linkOk = { cmi: !!cmiLink(), competitor: !!competitorLink() };
   for (const kind of REPORT_KINDS) {
     const sheet = run.sheets[kind];
     const btn = document.getElementById(`reports-${kind}-fetch-btn`);
-    btn.disabled = busy || !canFetchReport(kind);
-    btn.querySelector("span").textContent = sheet ? "Fetch report again" : "Fetch report";
+    btn.disabled = busy || !listPick[kind];
+    btn.querySelector("span").textContent = sheet ? "Fetch selected report again" : "Fetch selected report";
+    document.getElementById(`reports-${kind}-link-fetch-btn`).disabled = busy || !linkOk[kind];
     document.getElementById(`reports-${kind}-fetch-hint`).textContent = hints[kind];
   }
+  document.getElementById("reports-competitor-list-fetch").hidden = !(run.foundReports || []).length;
   const sheet = run.sheets[run.reportTab];
   document.getElementById("reports-confirm-btn").disabled = busy || !sheet;
   document.getElementById("reports-confirm-hint").textContent = sheet
