@@ -102,6 +102,11 @@ try:
           and snap["found_reports"] == [] and snap["picked_markets"] == []
           and snap["picked_report_ids"] == [] and snap["picked_urls"] == [],
           str({k: snap[k] for k in fresh_keys}))
+    check("get_run: the agent's own market (external_reports.own_market) is surfaced for the merged Market & Reports screen",
+          snap["own_market"] == "", str(snap.get("own_market")))
+    run.orient = {"topic_summary": "the topic", "bridge_angle": "the angle", "own_market": "Widget Market, By End User"}
+    check("get_run: the run's orient own_market comes back bare-named (segmentation qualifier stripped)",
+          main.get_run(TOKEN)["own_market"] == "Widget Market", str(main.get_run(TOKEN)["own_market"]))
     # whatever the pipeline writes on the RunState later is read back too
     run.report_mode = "mixed"
     run.warnings = ["Two markets were dropped: too many."]

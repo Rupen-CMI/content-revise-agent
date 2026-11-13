@@ -4,7 +4,7 @@
 Run from backend/: python devtools/test_event_filter.py"""
 import logging
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -255,6 +255,25 @@ sel6, calls6 = run_with(
 check("run_select: a first pass that keeps five real events after the rule does not run a second pass",
       len(calls6) == 1 and [e["id"] for e in sel6["evidence"]] == ["W1", "W3", "W4", "W5", "W6"],
       f"calls={len(calls6)} ids={[e['id'] for e in sel6['evidence']]}")
+
+# ------------------------------------------------------------------ news freshness window: 365 days
+# The deterministic news window (search._MAX_NEWS_AGE) is the report facts' 365-day rule
+# (freshness.STALE_AFTER); the old 180-day window discarded relevant 180-365-day items.
+import freshness  # noqa: E402
+check("freshness: the news window is the report facts' 365-day window",
+      search._MAX_NEWS_AGE == freshness.STALE_AFTER == timedelta(days=365), str(search._MAX_NEWS_AGE))
+recent = search.SearchHit("Acme enters the Zzz widget services market with a regional launch",
+                          "snippet", "https://fresh.example.org/r1", "",
+                          datetime.now(timezone.utc) - timedelta(days=300), is_news=True)
+stale_news = search.SearchHit("Beta exits the Zzz widget services market after a poor season",
+                              "snippet", "https://fresh.example.org/r2", "",
+                              datetime.now(timezone.utc) - timedelta(days=400), is_news=True)
+kept_fresh = search.filter_hits([recent, stale_news], ["Zzz Widget Services Market"], logger=LOG)
+check("freshness: a 300-day-old news item is kept",
+      [h.title for h in kept_fresh] == [recent.title], str([h.title for h in kept_fresh]))
+check("freshness: a 400-day-old news item is dropped",
+      all(h.title != stale_news.title for h in kept_fresh) and len(kept_fresh) == 1,
+      str([h.title for h in kept_fresh]))
 
 print()
 print("all event filter tests passed" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}")

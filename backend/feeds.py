@@ -209,6 +209,11 @@ class _Bing:
                 self._logger.warning(f"[bing] {self._failed_in_a_row} failed queries in a row — abandoning Bing for this run")
             return []
         self._failed_in_a_row = 0
+        # Every hit carries the query that found it (the query-yield measurement reads it). A page two queries found is
+        # two objects; the duplicate merge keeps the first copy, so the first query wins.
+        for h in hits:
+            if not h.query:
+                h.query = query
         self._logger.info(f"[bing{' web' if web else ''}] {query!r} -> {len(hits)} result(s)")
         return hits
 
@@ -236,6 +241,8 @@ class _Bing:
                 unquoted = " ".join(q.replace('"', "").split())
                 self._logger.info(f"[bing] {q!r} gave 0 result(s) and its section has no hit yet; retrying without the quotes: {unquoted!r}")
                 batch = self.search(unquoted)
+                for h in batch:
+                    h.query = q    # the yield measurement counts the retry for the query the plan wrote
             for h in batch:
                 h.add_sections(tag)
             if batch:
@@ -321,7 +328,7 @@ def _topical_filter(phrases: list[str], key_players: list[str], topic_terms: lis
         return (
             any(search.stem_hit(w, s) for w in words for s in stems)
             or any(rx.search(text) for _, rx in players)
-            or any(rx.search(text) for rx in topics)
+            or any(rx.search(text) for _, rx in topics)
         )
 
     return ok

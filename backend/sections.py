@@ -13,6 +13,7 @@ import hashlib
 import logging
 import re
 
+import config
 import search
 
 # The sections whose queries run (a hit found by none of the specific ones is "market"), and the sections SELECT may assign.
@@ -22,26 +23,46 @@ EVIDENCE_SECTIONS = ("trends", "subsegment", "us", "key_players")
 # Fewest selected items a section should have; a section below it is warned about as thin (there is no top-up search).
 MINIMUMS = {"trends": 6, "subsegment": 1, "us": 2, "key_players": 3}
 
-# THE BING BUDGET. One run spends about 28 Bing queries (~2.8 s each, strictly one at a time), allotted per section; the
-# extra rounds that used to follow (a broader round, a per-section top-up, a separate U.S. search) added next to nothing.
-#   trends        the model's trends queries (one per target: three drivers, two opportunities, a spare)
-#   sub-segment   per fixed sub-segment: the evidence-prep call's own three queries for it, in the category's everyday
-#                 words; the code-built shape below is only the stand-in when the model wrote none
-#   us            code-built U.S. queries (the section's own search; every page kept must name the U.S. in its text)
-#   key_players   code-built, one per company (pipeline._player_news_queries)
+# THE BING BUDGET. One run spends 35 Bing keyword queries (~2.8 s each, strictly one at a time) plus the 3 site: ones, allotted per section;
+# the extra rounds that used to follow (a broader round, a per-section top-up, a separate U.S. search) added next to nothing.
+# Raised from 6/3/3/6/4 (25 with two sub-segments) after live runs showed the cut dropping evidence hard (EV charger 33 -> 13
+# selected items): the queries themselves were stiff too ("anchor phrase in quotes" + a word or two), so the query-writing
+# rules moved to natural news-search phrasing too (prompts._QUERY_RULES_NATURAL). config.QUERY_STYLE picks the row: "natural"
+# (default) or "terse", which brings the previous budget, rules and code-built U.S./key-player queries back for an A/B run.
+#   trends        the model's trends queries (one per target: three drivers, two opportunities, spares)
+#   subsegment    per fixed sub-segment: the evidence-prep call's queries for it, in the category's everyday words;
+#                 SUBSEGMENT_WORDS build the stand-in when the model wrote none
+#   us            natural: the model's U.S. queries; the code-built templates (us_search.us_news_queries) stand in when it
+#                 wrote none (terse: always the templates)
+#   key_players   natural: the model's, one per company; the code-built ones (pipeline._player_news_queries) stand in when it
+#                 wrote none (terse: always the code-built ones)
 #   market        the model's general queries
 # plus at most BING_SITE_QUERIES site: queries (feeds._BING_MAX_SITE_QUERIES): the three broadest news hosts.
-TREND_QUERIES = 6
-SUBSEGMENT_QUERIES = 3          # per sub-segment (see SUBSEGMENT_QUERY_WORDS for the code-built stand-in)
-US_QUERIES = 3
-PLAYER_QUERIES = 6
-MARKET_QUERIES = 4
-SUBSEGMENT_QUERY_WORDS = ("demand", "launch", "news")
+_BUDGETS = {
+    "natural": {"trends": 8, "subsegment": 4, "us": 5, "key_players": 8, "market": 6},
+    "terse": {"trends": 6, "subsegment": 3, "us": 3, "key_players": 6, "market": 4},
+}
+_SUBSEGMENT_WORDS = {"natural": ("demand", "launch", "news", "adoption"), "terse": ("demand", "launch", "news")}
 BING_SITE_QUERIES = 3
+
+
+def natural_style() -> bool:
+    """True for config.QUERY_STYLE "natural" (the default; any value but "terse"), False for the previous "terse" behaviour."""
+    return config.QUERY_STYLE != "terse"
+
+
+def allot(section: str) -> int:
+    """The keyword queries one section is allotted (per sub-segment for "subsegment") in the active query style."""
+    return _BUDGETS["natural" if natural_style() else "terse"][section]
+
+
+def subsegment_words() -> tuple[str, ...]:
+    """The words the code-built sub-segment queries end in, one per allotted query."""
+    return _SUBSEGMENT_WORDS["natural" if natural_style() else "terse"]
+
 # A zero-result QUOTED query is retried unquoted only while its section has no hit at all, and at most this often a run.
 UNQUOTED_RETRIES = search.UNQUOTED_RETRIES
 
-TREND_TARGETS = TREND_QUERIES
 _SUBSEGMENTS = 2
 _QUERIES_PER_SECTION_MAX = 8
 _TARGET_CHARS = 220
@@ -154,6 +175,18 @@ def _short(text: str) -> str:
     return text if len(text) <= _TARGET_CHARS else text[:_TARGET_CHARS].rsplit(" ", 1)[0]
 
 
+def _market_everyday(market: str) -> str:
+    """The market's name the way people type it into a search box: no leading "Global", no trailing "Market" ("Home EV
+    Charger Market" -> "home ev charger"). The everyday phrasing the query prompt offers the model beside the report name;
+    the natural-query rules ask it for more synonyms on its own."""
+    words = re.findall(r"[a-z0-9]+", (market or "").lower())
+    while words and words[0] == "global":
+        words.pop(0)
+    while words and words[-1] in ("market", "markets"):
+        words.pop()
+    return " ".join(words) or (market or "").strip()
+
+
 def _subsegment_reason(fs: dict, split: str, name: str) -> str:
     """The report's own reason a sub-segment category leads: its segment driver (fs.segment_drivers) when one names this
     split and category, else the split's dominance quote when it names the category, else '' (the prompt then writes the
@@ -169,7 +202,7 @@ def _subsegment_reason(fs: dict, split: str, name: str) -> str:
 
 def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict] | None = None) -> dict[str, list[dict]]:
     """What each section's search looks for, from the confirmed fact sheet alone. Every target is {"text", ...}:
-      trends        the top drivers, then opportunities (TREND_TARGETS targets, one query each);
+      trends        the top drivers, then opportunities (allot("trends") targets, one query each);
       subsegment    the two fixed sub-segments (subsegments, or choose_subsegments), each with the report's own reason
                     the category leads (_subsegment_reason), so the query prompt can phrase the queries per sub-segment;
       us            the report's own U.S. statements, as seeds;
@@ -180,7 +213,7 @@ def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict
     opportunities = [e for e in fs.get("opportunities") or [] if e.get("text")]
     ordered = [("drivers", e) for e in drivers[:3]] + [("opportunities", e) for e in opportunities[:2]]
     spare = [("drivers", e) for e in drivers[3:]] + [("opportunities", e) for e in opportunities[2:]]
-    ordered = (ordered + spare)[:TREND_TARGETS]
+    ordered = (ordered + spare)[:allot("trends")]
     picks = subsegments if subsegments is not None else choose_subsegments(fs)
     subs = [{"split": p["split"], "name": p["name"], "basis": p.get("basis", ""), "text": f"{p['name']} ({p['split']})"} for p in picks]
     for t in subs:
@@ -190,13 +223,16 @@ def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict
         "subsegment": subs,
         "us": [{"text": _short(e["text"])} for e in (fs.get("us") or [])[:3] if e.get("text")],
         "key_players": [{"text": n} for n in search.clean_player_names(list(key_players))],
-        "market": [{"text": market}],
+        "market": [{"text": market, "everyday": _market_everyday(market)}],
     }
 
 
 def format_targets(plan: dict) -> str:
-    """The plan as the query-writing prompt reads it: one block per section the model writes queries for (trends, the fixed
-    sub-segments and the market as a whole; the U.S. and key-player queries are built in code, see budgeted_queries)."""
+    """The plan as the query-writing prompt reads it: one block per section the model writes queries for. In the natural
+    style (config.QUERY_STYLE, the default) that is every section — trends, the fixed sub-segments, the U.S. (the report's
+    own U.S. statements are the seeds), the key players (the cleaned names) and the market (with its everyday wording); in
+    the terse style only the trends, sub-segment and market blocks are printed (the U.S. and key-player queries are built
+    in code, see budgeted_queries)."""
     def lines(key: str, empty: str) -> str:
         return "\n".join(f"- {t['text']}" for t in plan.get(key) or []) or f"- {empty}"
 
@@ -204,14 +240,35 @@ def format_targets(plan: dict) -> str:
         f"- {t['name']} (split {t['split']})" + (f" — the report's reason it leads: {t['reason']}" if t.get("reason") else "")
         for t in plan.get("subsegment") or []
     ) or "(no sub-segments fixed: write no subsegment queries)"
+    market_lines = lines("market", "(the market)")
+    everyday = next((t.get("everyday") for t in plan.get("market") or [] if t.get("everyday")), "")
+    if natural_style():
+        market_lines = market_lines + (f' (everyday wording: "{everyday}")' if everyday else "")
+        us_lines = lines("us", "(no U.S. statements: ask what is happening with the market in the United States)")
+        player_lines = lines("key_players", "(no known players: ask about the market's leading companies)")
+        return "\n".join([
+            f"TRENDS ({allot('trends')} queries, one per target; each target is a driver or opportunity the news should show happening):",
+            lines("trends", "(no targets: ask what is changing in the market itself)"),
+            f"SUB-SEGMENTS ({allot('subsegment')} queries for EACH sub-segment below, returned under the \"subsegment\" key keyed "
+            f"by the sub-segment's name; the reason is the report's own statement of why the category leads):",
+            sub_lines,
+            f"U.S. ({allot('us')} queries; the report's own U.S. statements below are the seeds — the news you look for shows "
+            f"them happening; name the U.S. naturally in every query: \"US\", \"American\", a U.S. state or agency where it fits):",
+            us_lines,
+            f"KEY PLAYERS ({allot('key_players')} queries, one per company; the company's own news — a launch, an acquisition, "
+            f"funding, a partnership, an expansion — is what this section reads):",
+            player_lines,
+            f"MARKET ({allot('market')} general queries on recent developments in the market as a whole):",
+            market_lines,
+        ])
     return "\n".join([
-        f"TRENDS ({TREND_QUERIES} queries, one per target; each target is a driver or opportunity the news should show happening):",
+        f"TRENDS ({allot('trends')} queries, one per target; each target is a driver or opportunity the news should show happening):",
         lines("trends", "(no targets: ask what is changing in the market itself)"),
-        f"SUB-SEGMENTS ({SUBSEGMENT_QUERIES} queries for EACH sub-segment below, returned under the \"subsegment\" key keyed "
+        f"SUB-SEGMENTS ({allot('subsegment')} queries for EACH sub-segment below, returned under the \"subsegment\" key keyed "
         f"by the sub-segment's name; the reason is the report's own statement of why the category leads):",
         sub_lines,
-        f"MARKET ({MARKET_QUERIES} general queries on recent developments in the market as a whole):",
-        lines("market", "(the market)"),
+        f"MARKET ({allot('market')} general queries on recent developments in the market as a whole):",
+        market_lines,
     ])
 
 
@@ -276,20 +333,20 @@ def fallback_queries(plan: dict, core: str, market_templates: list[str]) -> dict
 
 
 def subsegment_fallback_queries(core: str, subsegments: list[dict]) -> dict[str, list[str]]:
-    """Code-built queries per sub-segment, {cleaned category name: [SUBSEGMENT_QUERIES queries]}: the category's own name
+    """Code-built queries per sub-segment, {cleaned category name: [allot('subsegment') queries]}: the category's own name
     plus the market's core noun and one word each ("<category> <market core> demand" / "launch" / "news"). Only the stand-in
     for a sub-segment the model wrote no queries for (see budgeted_queries)."""
     out: dict[str, list[str]] = {}
     for s in subsegments:
         name = " ".join(re.sub(r"[\"“”]", " ", str(s.get("name") or "")).split())
         if name:
-            out[name] = [f"{name} {core} {word}".strip() for word in SUBSEGMENT_QUERY_WORDS[:SUBSEGMENT_QUERIES]]
+            out[name] = [f"{name} {core} {word}".strip() for word in subsegment_words()[:allot("subsegment")]]
     return out
 
 
 def subsegment_queries(core: str, subsegments: list[dict]) -> list[str]:
-    """The code-built sub-segment queries, flat (each category's name and the market's core noun, SUBSEGMENT_QUERIES each,
-    SUBSEGMENT_QUERY_WORDS one after another). The fallback shape budgeted_queries composes per sub-segment."""
+    """The code-built sub-segment queries, flat (each category's name and the market's core noun, allot('subsegment') each,
+    subsegment_words() one after another). The fallback shape budgeted_queries composes per sub-segment."""
     out: list[str] = []
     for qs in subsegment_fallback_queries(core, subsegments).values():
         for q in qs:
@@ -299,7 +356,7 @@ def subsegment_queries(core: str, subsegments: list[dict]) -> list[str]:
 
 
 def parse_subsegment_queries(raw, subsegments: list[dict]) -> dict[str, list[str]]:
-    """The model's sub-segment queries as {sub-segment name: [query, ...]}, at most SUBSEGMENT_QUERIES each, from the
+    """The model's sub-segment queries as {sub-segment name: [query, ...]}, at most allot('subsegment') each, from the
     query answer's "subsegment" part: a dict keyed by sub-segment name (the asked-for shape) or a flat list, whose queries
     are matched to a fixed sub-segment by the category words they share (match_subsegment). A query no sub-segment claims,
     and a sub-segment the model wrote nothing for, are left out — the code-built shape stands in for that one
@@ -311,7 +368,7 @@ def parse_subsegment_queries(raw, subsegments: list[dict]) -> dict[str, list[str
         if not name:
             return
         bucket = out.setdefault(name, [])
-        if q and q.lower() not in {x.lower() for x in bucket} and len(bucket) < SUBSEGMENT_QUERIES:
+        if q and q.lower() not in {x.lower() for x in bucket} and len(bucket) < allot("subsegment"):
             bucket.append(q)
 
     if isinstance(part, dict):
@@ -329,34 +386,39 @@ def parse_subsegment_queries(raw, subsegments: list[dict]) -> dict[str, list[str
 def budgeted_queries(
     grouped: dict[str, list[str]], core: str, subsegments: list[dict], us_queries: list[str], player_queries: list[str],
 ) -> dict[str, list[str]]:
-    """The one Bing budget, allotted per section (see TREND_QUERIES and its neighbours): the model's trends and market queries
-    cut to their allotment, the sub-segment queries the model wrote for the fixed sub-segments (grouped["subsegment"] as the
+    """The one Bing budget, allotted per section (see _BUDGETS): the model's queries cut to each
+    section's allotment, the sub-segment queries the model wrote for the fixed sub-segments (grouped["subsegment"] as the
     parsed {sub-segment: [queries]} map of parse_subsegment_queries; a sub-segment the model wrote none for keeps the
-    code-built shape), the U.S. queries, and the key-player queries from code (the model's own key-player queries only stand
-    in when code knows no player). The input is not changed."""
+    code-built shape). In the natural style (config.QUERY_STYLE, the default) the U.S. and key-player queries are the
+    model's own too, and the code-built templates (us_search.us_news_queries, pipeline._player_news_queries) stand in only
+    for a section the model wrote none for; in the terse style the code-built shapes always run, as before. The input is
+    not changed."""
     def cut(values, n: int) -> list[str]:
         return list(dict.fromkeys(" ".join(str(q).split()) for q in values or [] if str(q).strip()))[:n]
 
+    natural = natural_style()
+    model_us = cut(grouped.get("us"), allot("us")) if natural else []
+    model_players = cut(grouped.get("key_players"), allot("key_players")) if natural else []
     model_map = grouped.get("subsegment") if isinstance(grouped.get("subsegment"), dict) else {}
     sub_q: list[str] = []
     for name, fallback in subsegment_fallback_queries(core, subsegments).items():
-        model = cut(next((v for k, v in model_map.items() if isinstance(v, list) and _norm(k) == _norm(name)), []), SUBSEGMENT_QUERIES)
+        model = cut(next((v for k, v in model_map.items() if isinstance(v, list) and _norm(k) == _norm(name)), []), allot("subsegment"))
         for q in model or fallback:
             if q.lower() not in {x.lower() for x in sub_q}:
                 sub_q.append(q)
     return {
-        "trends": cut(grouped.get("trends"), TREND_QUERIES),
+        "trends": cut(grouped.get("trends"), allot("trends")),
         "subsegment": sub_q,
-        "us": cut(us_queries, US_QUERIES),
-        "key_players": cut(player_queries or grouped.get("key_players"), PLAYER_QUERIES),
-        "market": cut(grouped.get("market"), MARKET_QUERIES),
+        "us": model_us or cut(us_queries, allot("us")),
+        "key_players": model_players or cut(player_queries or grouped.get("key_players"), allot("key_players")),
+        "market": cut(grouped.get("market"), allot("market")),
     }
 
 
 def keyword_query_budget(subsegments: list[dict]) -> int:
     """The most keyword queries one run spends on Bing (the site: queries, BING_SITE_QUERIES, come on top)."""
-    return (TREND_QUERIES + SUBSEGMENT_QUERIES * min(len(subsegments), _SUBSEGMENTS) + US_QUERIES + PLAYER_QUERIES
-            + MARKET_QUERIES)
+    return (allot("trends") + allot("subsegment") * min(len(subsegments), _SUBSEGMENTS) + allot("us") + allot("key_players")
+            + allot("market"))
 
 
 # --------------------------------------------------------------------------------------------------- hits

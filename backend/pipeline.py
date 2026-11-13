@@ -35,14 +35,53 @@ _null_logger.propagate = False
 
 _BODY_CHARS = 12000
 
-# One Bing news query per cleaned key player (up to this many) is added in CODE in
-# run_search_evidence — the query prompt has a key-players category, but in the real run log not one
-# LLM query was written about the players' own news, and the players are where a market's
-# developments are reported.
-_PLAYER_QUERY_LIMIT = sections.PLAYER_QUERIES
+# One Bing news query per cleaned key player (up to sections.allot('key_players')) is built in CODE for run_search_evidence. In the natural
+# query style (config.QUERY_STYLE) the query prompt writes the key players' queries itself and this list is only the
+# fallback for a section the model wrote none for; in the terse style these always run — in the real run log that shape
+# came from, not one LLM query was written about the players' own news, and the players are where a market's developments
+# are reported.
 # The section search runs the Bing budget sections.keyword_query_budget allots per section (see sections.py); every section keeps
 # up to this many hits of its own in the shortlist.
 _SECTION_HIT_FLOOR = 8
+
+
+def _log_query_yields(
+    raw_hits: list[search.SearchHit], hits: list[search.SearchHit], query_sections: dict[str, list[str]],
+    logger: logging.Logger,
+) -> None:
+    """The query-yield measurement: one [query-yield] line per Bing query that returned anything, after the filtering —
+    "<section> | <query> | raw N | kept M", where kept are the hits from that query that passed filter_hits and the
+    shortlist cap. Hits carry the query that found them (search.SearchHit.query, first query wins on duplicates), so this
+    is how the query-writing style (config.QUERY_STYLE) is judged: raw without kept is a query the filters throw away,
+    nothing at all is a query no headline matches."""
+    raw_by_q: dict[str, int] = {}
+    for h in raw_hits:
+        if h.query:
+            raw_by_q[h.query] = raw_by_q.get(h.query, 0) + 1
+    if not raw_by_q:
+        return
+    kept_by_q: dict[str, int] = {}
+    for h in hits:
+        if h.query and h.query in raw_by_q:
+            kept_by_q[h.query] = kept_by_q.get(h.query, 0) + 1
+    for q, n in raw_by_q.items():
+        secs = "+".join((query_sections or {}).get(q.lower()) or ["-"])
+        logger.info(f"[query-yield] {secs} | {q} | raw {n} | kept {kept_by_q.get(q, 0)}")
+
+
+def _log_query_yields_selected(selection: dict, hits: list[search.SearchHit], logger: logging.Logger) -> None:
+    """One [query-yield-selected] line per Bing query whose hit produced selected evidence: "<query> | S", S the number of
+    selected items whose hit that query found (a selected item's W-id maps to hits[n - 1])."""
+    counts: dict[str, int] = {}
+    for e in selection.get("evidence") or []:
+        m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
+        if not m or not 1 <= int(m.group(1)) <= len(hits):
+            continue
+        q = hits[int(m.group(1)) - 1].query
+        if q:
+            counts[q] = counts.get(q, 0) + 1
+    for q, n in counts.items():
+        logger.info(f"[query-yield-selected] {q} | {n}")
 
 Segment = tuple[str, str | None]  # (text, hyperlink url or None)
 
@@ -581,7 +620,7 @@ def _market_core(market_name: str) -> str:
 
 
 def _player_news_queries(market_name: str, key_players: list[str]) -> list[str]:
-    """One Bing news query per cleaned key player (up to _PLAYER_QUERY_LIMIT), added in CODE rather
+    """One Bing news query per cleaned key player (up to sections.allot("key_players")), added in CODE rather
     than left to the query-writing LLM: in a real run log not one of the 24 LLM queries was written
     about the key players' own news, yet the players are exactly where a market's developments are
     reported ('Atlassian Jira project management', 'monday.com work management'). The query is
@@ -593,7 +632,7 @@ def _player_news_queries(market_name: str, key_players: list[str]) -> list[str]:
     head = core_tokens[-1] if core_tokens else ""
     anchor = " ".join(core_tokens[:-1]) if head in search._TECH_HEAD_SYNONYMS and len(core_tokens) > 1 else head
     queries = []
-    for player in search.clean_player_names(key_players)[:_PLAYER_QUERY_LIMIT]:
+    for player in search.clean_player_names(key_players)[:sections.allot("key_players")]:
         q = f"{player} {anchor}".strip()
         if q.lower() not in [x.lower() for x in queries]:
             queries.append(q)
@@ -883,7 +922,7 @@ def _llm_search_queries(
     try:
         fields = search_query_fields(market_name, key_players, segments)
         if plan is not None:
-            result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_SECTION_QUERIES_USER.format(
+            result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.section_queries_user().format(
                 section_targets=sections.format_targets(plan), **fields), call_name="search_queries", logger=logger)
         else:
             result = llm.chat_json(prompts.SEARCH_QUERIES_SYSTEM, prompts.SEARCH_QUERIES_USER.format(**fields),
@@ -958,9 +997,11 @@ def run_search_evidence(
     queries are built from the confirmed market name itself, so this never searches for a
     market the human ultimately rejected.
 
-    subsegments (the Evidence step's two fixed sub-segments): the evidence-prep call wrote their queries, three per
+    subsegments (the Evidence step's two fixed sub-segments): the evidence-prep call wrote their queries, sections.allot("subsegment") per
     sub-segment in the category's everyday words (sections.parse_subsegment_queries), and the code-built shape stands in
-    for a sub-segment the model wrote none for (section search only; see sections.budgeted_queries).
+    for a sub-segment the model wrote none for (section search only; see sections.budgeted_queries). In the natural query
+    style (config.QUERY_STYLE, the default) it wrote the U.S. and key-player queries too, with the code-built shapes as
+    their fallback.
 
     search_queries: pre-generated (queries, groups, topic_terms) from prepare_search_queries, so
     the stepwise API can overlap that LLM call with the other Step 2 prep. None (CLI / callers that
@@ -1089,6 +1130,7 @@ def run_search_evidence(
         before = len(hits)
         hits = us_search.mark_us_hits(hits)
         logger.info(f"[us-search] {sum(1 for h in hits if h.scope == 'us')} page(s) name the U.S.; {before - len(hits)} U.S.-only page(s) that do not were dropped")
+        _log_query_yields(raw_hits, hits, query_sections, logger)
     return hits
 
 
@@ -1821,6 +1863,7 @@ def run_select(
         logger.info(f"[select] second pass: first kept {first_kept}, second added {len(added)}")
     if sectioned:
         _merge_same_events(selection, hits, logger)
+        _log_query_yields_selected(selection, hits, logger)
     return selection
 
 

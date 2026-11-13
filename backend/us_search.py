@@ -1,5 +1,5 @@
 """The U.S. section's share of the market web search: the article's U.S. section has no other region to lean on, so it gets
-queries of its own (sections.US_QUERIES of them, inside the run's one Bing budget; no separate U.S. search runs).
+queries of its own (sections.allot("us") of them, inside the run's one Bing budget; no separate U.S. search runs).
 
 The queries are built here; the general search (pipeline.run_search_evidence) runs them with every other section's, and each
 hit they find carries the section "us". After the pages are read, every page found for "us" must name the U.S. in its own
@@ -14,7 +14,7 @@ _US_TEXT_RE = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican
 
 
 def us_news_queries(core: str) -> list[str]:
-    """The U.S. section's Bing queries for a market's core noun, best first (the budget takes the first sections.US_QUERIES)."""
+    """The U.S. section's Bing queries for a market's core noun, best first (the budget takes the first sections.allot("us"))."""
     # adoption, policy, company investment and news wording: size-style phrasings ("market growth", "statistics", "market share") bring
     # back research firms' own report pages, which the search filters drop, and leave no U.S. page
     return [

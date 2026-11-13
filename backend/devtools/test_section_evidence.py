@@ -155,9 +155,9 @@ check("sub-segments: the same sheet always gives the same pair", sections.choose
 
 # ------------------------------------------------------------------------------------------------ the search plan
 plan = pipeline.section_search_plan(FS, REPORT, FS["players"], picks)
-check("plan: trends are the top drivers then opportunities, one target each, as many as the trends allotment",
-      [t["kind"] for t in plan["trends"]] == ["drivers"] * 3 + ["opportunities"] * 2 + ["drivers"] and len(plan["trends"]) == sections.TREND_QUERIES
-      and plan["trends"][0]["text"].startswith("Driver 0"), str(plan["trends"]))
+check("plan: trends are the top drivers then opportunities, one target each, as many as the sheet offers up to the trends allotment",
+      [t["kind"] for t in plan["trends"]] == ["drivers"] * 3 + ["opportunities"] * 2 + ["drivers"] + ["opportunities"]
+      and len(plan["trends"]) == 7 and len(plan["trends"]) <= sections.allot("trends"), str(plan["trends"]))
 check("plan: the sub-segment targets are the two fixed ones, with the report's own reason the category leads",
       [t["name"] for t in plan["subsegment"]] == ["Software", "Services"]
       and plan["subsegment"][0]["reason"] == "Banks want audited workflows" and plan["subsegment"][1]["reason"] == "",
@@ -167,13 +167,16 @@ check("plan: there is no segmentation section in the search plan (it is written 
 check("plan: the U.S. seeds are the report's own U.S. statements", [t["text"] for t in plan["us"]] == [s["text"] for s in FS["us"]])
 check("plan: key players are the cleaned names ('Monday' becomes its domain)", [t["text"] for t in plan["key_players"]] == ["Acme", "monday.com"],
       str(plan["key_players"]))
-check("plan: the market target is the market's name", plan["market"] == [{"text": MARKET}])
+check("plan: the market target is the market's name with its everyday wording", plan["market"] == [{"text": MARKET, "everyday": "widget services"}])
 check("plan: with no drivers, opportunities fill the trends",
       len(pipeline.section_search_plan({**FS, "drivers": []}, REPORT, [])["trends"]) == 3)
-check("plan: the targets are printed for the query prompt, for the sections the model writes queries for only",
-      all(h in sections.format_targets(plan) for h in ("TRENDS", "SUB-SEGMENTS", "MARKET")) and "Driver 0" in sections.format_targets(plan)
-      and "Software (split By Type) — the report's reason it leads: Banks want audited workflows" in sections.format_targets(plan)
-      and not any(h in sections.format_targets(plan) for h in ("SEGMENTATION", "KEY PLAYERS", "U.S.")))
+targets_text = sections.format_targets(plan)
+check("plan: the targets are printed for the query prompt, for every section the model writes queries for (the natural style)",
+      all(h in targets_text for h in ("TRENDS", "SUB-SEGMENTS", "U.S.", "KEY PLAYERS", "MARKET")) and "Driver 0" in targets_text
+      and "Software (split By Type) — the report's reason it leads: Banks want audited workflows" in targets_text
+      and "U.S. banks lead widget adoption" in targets_text and "monday.com" in targets_text
+      and '(everyday wording: "widget services")' in targets_text
+      and not any(h in targets_text for h in ("SEGMENTATION",)), targets_text[:400])
 
 # ----------------------------------------------------------------------------------------------- grouped queries
 parsed = sections.parse_grouped_queries({
@@ -191,29 +194,32 @@ check("queries: one per section in turn, a query two sections wrote is run once 
 # ------------------------------------------------------------------------------------------ the Bing budget, per section
 core = pipeline._market_core(MARKET)
 us_qs = us_search.us_news_queries(core)
-player_qs = pipeline._player_news_queries(MARKET, ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta"])
-wide = {"trends": [f"trend {i}" for i in range(7)], "subsegment": ["model sub 1"], "us": ["model us"], "key_players": ["model player"],
-        "market": [f"market {i}" for i in range(5)]}
+player_qs = pipeline._player_news_queries(MARKET, ["Acme Corp", "Beta Inc", "Gamma Ltd", "Delta Co", "Epsilon LLC", "Zeta", "Eta Inc", "Theta Ltd", "Iota Co"])
+wide = {"trends": [f"trend {i}" for i in range(9)], "subsegment": ["model sub 1"], "market": [f"market {i}" for i in range(7)]}
+wide_with_model = {**wide, "us": ["model us"], "key_players": ["model player"]}
 budget = sections.budgeted_queries(wide, core, picks, us_qs, player_qs)
-check("budget: trends 6, each sub-segment 3, U.S. 3, key players 6, market 4 (25 keyword queries, 28 Bing queries with the site: ones) plus at most 3 site: queries",
-      [len(budget[s]) for s in ("trends", "subsegment", "us", "key_players", "market")] == [6, 6, 3, 6, 4]
-      and sum(len(v) for v in budget.values()) == sections.keyword_query_budget(picks) == 25 and feeds._BING_MAX_SITE_QUERIES == 3,
+check("budget: trends 8, each sub-segment 4, U.S. 5, key players 8, market 6 (35 keyword queries, 38 Bing queries with the site: ones) plus at most 3 site: queries",
+      [len(budget[s]) for s in ("trends", "subsegment", "us", "key_players", "market")] == [8, 8, 5, 8, 6]
+      and sum(len(v) for v in budget.values()) == sections.keyword_query_budget(picks) == 35 and feeds._BING_MAX_SITE_QUERIES == 3,
       str(budget))
 check("budget: the trends and market queries are the model's first ones, in order",
-      budget["trends"] == [f"trend {i}" for i in range(6)] and budget["market"] == [f"market {i}" for i in range(4)])
-check("budget: with no model sub-segment queries the code-built shape stands in, three per sub-segment",
-      budget["subsegment"] == [f"Software {core} demand", f"Software {core} launch", f"Software {core} news",
-                               f"Services {core} demand", f"Services {core} launch", f"Services {core} news"], str(budget["subsegment"]))
-check("budget: the U.S. queries are the section's own and each names the U.S.; the key-player queries are the code's, not the model's",
-      budget["us"] == us_qs[:3] and all("U.S." in q or "United States" in q for q in budget["us"]) and budget["key_players"] == player_qs[:6]
-      and "model player" not in budget["key_players"], str(budget))
-check("budget: with no known player the model's own key-player queries stand in",
-      sections.budgeted_queries(wide, core, picks, us_qs, [])["key_players"] == ["model player"])
+      budget["trends"] == [f"trend {i}" for i in range(8)] and budget["market"] == [f"market {i}" for i in range(6)])
+check("budget: with no model sub-segment queries the code-built shape stands in, four per sub-segment",
+      budget["subsegment"] == [f"Software {core} demand", f"Software {core} launch", f"Software {core} news", f"Software {core} adoption",
+                               f"Services {core} demand", f"Services {core} launch", f"Services {core} news", f"Services {core} adoption"], str(budget["subsegment"]))
+check("budget: with no model U.S. or key-player queries the code-built shapes fill the sections (each U.S. query names the U.S.)",
+      budget["us"] == us_qs and all("U.S." in q or "United States" in q for q in budget["us"]) and budget["key_players"] == player_qs[:8],
+      str(budget))
+check("budget: the model's own U.S. and key-player queries win when it wrote them (the code shapes are only the fallback)",
+      sections.budgeted_queries(wide_with_model, core, picks, us_qs, player_qs)["us"] == ["model us"]
+      and sections.budgeted_queries(wide_with_model, core, picks, us_qs, player_qs)["key_players"] == ["model player"])
+check("budget: with no code player queries the model's own key-player queries stand in",
+      sections.budgeted_queries(wide_with_model, core, picks, us_qs, [])["key_players"] == ["model player"])
 check("budget: no sub-segments, no sub-segment queries; the input groups are not changed",
-      sections.budgeted_queries(wide, core, [], us_qs, player_qs)["subsegment"] == [] and len(wide["trends"]) == 7
-      and sections.keyword_query_budget([]) == 19)
+      sections.budgeted_queries(wide, core, [], us_qs, player_qs)["subsegment"] == [] and len(wide["trends"]) == 9
+      and sections.keyword_query_budget([]) == 27)
 flat_budget, _ = sections.flatten_queries(budget)
-check("budget: flattened, every allotted query is there once (no section starves another)", len(flat_budget) == 25, str(len(flat_budget)))
+check("budget: flattened, every allotted query is there once (no section starves another)", len(flat_budget) == 35, str(len(flat_budget)))
 check("budget: the segmentation section is gone from the queries, the evidence sections and the counts",
       "segmentation" not in sections.QUERY_SECTIONS and "segmentation" not in sections.EVIDENCE_SECTIONS
       and "segmentation" not in sections.counts([], picks) and "segmentation" not in budget)
@@ -236,13 +242,18 @@ check("queries: one call returns the queries grouped by section (a segmentation 
       and queries["market"] == ['"widget" news'] and set(queries) == set(sections.QUERY_SECTIONS), str(queries))
 check("queries: topic terms are kept (deduplicated, lower-cased) and an unknown source group is dropped", terms == ["widget maker", "widget supply"] and groups == [],
       f"{terms} {groups}")
-check("queries: the prompt carries the trends, sub-segment and market targets, the shared query rules, and asks for no segmentation or U.S. queries",
-      "Driver 0" in seen_prompts[0] and "ANCHOR" in seen_prompts[0] and "SOURCE GROUPS" in seen_prompts[0]
+check("queries: the prompt carries every section's targets, the shared natural-query rules, and asks for the U.S. and key-player queries too",
+      "Driver 0" in seen_prompts[0] and "3 to 7 words" in seen_prompts[0] and "journalist's headline" in seen_prompts[0] and "SOURCE GROUPS" in seen_prompts[0]
       and "Software (split By Type) — the report's reason it leads: Banks want audited workflows" in seen_prompts[0]
-      and '"segmentation"' not in seen_prompts[0] and '"us"' not in seen_prompts[0]
+      and "U.S. banks lead widget adoption" in seen_prompts[0] and "monday.com" in seen_prompts[0]
+      and '"segmentation"' not in seen_prompts[0] and '"us"' in seen_prompts[0] and '"key_players"' in seen_prompts[0]
       and '"subsegment"' in seen_prompts[0] and "Never the literal" in seen_prompts[0], seen_prompts[0][:200])
 check("queries: the flat prompt of the old chain is untouched (still the 9 categories)", "9 categories" in prompts.SEARCH_QUERIES_USER
       and "grouped" not in prompts.SEARCH_QUERIES_USER)
+check("queries: both style prompts exist (the terse one keeps the old anchor rules and asks for no U.S. or key-player queries)",
+      "ANCHOR" in prompts.SEARCH_SECTION_QUERIES_TERSE_USER and '"us"' not in prompts.SEARCH_SECTION_QUERIES_TERSE_USER
+      and prompts.section_queries_user() == (prompts.SEARCH_SECTION_QUERIES_TERSE_USER if config.QUERY_STYLE == "terse"
+                                             else prompts.SEARCH_SECTION_QUERIES_NATURAL_USER), str(config.QUERY_STYLE))
 
 # the model's own sub-segment queries: parsed per sub-segment, the code-built shape standing in for one it wrote none for
 sub_answer = {"queries": {"trends": ['"widget" automation'], "market": ['"widget" news'],
@@ -265,7 +276,7 @@ check("queries: the sub-segment section label stays 'subsegment' (SELECT assigns
 sub_budget = sections.budgeted_queries(sub_queries, core, picks, us_qs, player_qs)
 check("budget: the model's queries fill their sub-segment's allotment, the code-built shape stands in for one it wrote none for",
       sub_budget["subsegment"] == ["audited workflow software for banks launch", "Software widget services demand",
-                                   f"Services {core} demand", f"Services {core} launch", f"Services {core} news"],
+                                   f"Services {core} demand", f"Services {core} launch", f"Services {core} news", f"Services {core} adoption"],
       str(sub_budget["subsegment"]))
 flat_sub = {"queries": {"subsegment": ["audited workflow software for banks launch", "widget services rollout", "nothing like either"]}}
 check("queries: a flat sub-segment list is matched to the fixed sub-segments by its words, the unmatched dropped",
@@ -278,8 +289,8 @@ check("queries: an unusable sub-segment part leaves nothing (the code-built shap
       and sections.parse_subsegment_queries({"subsegment": {"Software": ["x"]}}, []) == {})
 check("budget: a flat sub-segment list in the grouped queries is ignored in favour of the code-built shape",
       sections.budgeted_queries({**wide, "subsegment": ["model sub 1"]}, core, picks, us_qs, player_qs)["subsegment"]
-      == [f"Software {core} demand", f"Software {core} launch", f"Software {core} news",
-          f"Services {core} demand", f"Services {core} launch", f"Services {core} news"])
+      == [f"Software {core} demand", f"Software {core} launch", f"Software {core} news", f"Software {core} adoption",
+          f"Services {core} demand", f"Services {core} launch", f"Services {core} news", f"Services {core} adoption"])
 
 
 def failing_chat(*a, **kw):
@@ -403,6 +414,85 @@ few_us = [article(f"United States widget services pilot {i} announced", f"https:
 capped = sections.cap_hits(many + few_us, 20, 3)
 check("shortlist: every section keeps its own hits before the prolific one fills the rest",
       len(capped) == 20 and sum(1 for h in capped if h.sections == ["us"]) == 3 and capped[:2] == many[:2])
+
+# ----------------------------------------------------------------------------- the query-yield measurement (stub Bing)
+Q_TRENDS, Q_PLAYER, Q_SUB = '"widget" automation', "acme widget", f"software {core} demand"
+
+
+def yield_pages() -> list[search.SearchHit]:
+    """Bing results as feeds._Bing leaves them: each hit carries the query that found it (hit.query). The player query found
+    the very page the trends query found first, so the duplicate merge keeps the first copy (first query wins) and the player
+    query keeps nothing. The last hit is a publisher-feed item, which no query owns."""
+    out = []
+    for title, url, q, secs in [
+            ("Acme expands its widget services platform to Texas", "https://news.example/y0", Q_TRENDS, ["trends"]),
+            ("Acme expands its widget services platform to Texas", "https://news.example/y0", Q_PLAYER, ["key_players"]),
+            ("A vendor opens a second widget services lab", "https://news.example/y2", Q_SUB, ["subsegment"]),
+    ]:
+        h = article(title, url, secs=secs)
+        h.query = q
+        out.append(h)
+    out.append(article("Feed item about widget services buyers", "https://news.example/rss", secs=["market"]))
+    return out
+
+
+def fake_gather_yield(market_name, core, queries, groups, players, logger, topic_terms, after_keywords, **kw):
+    return yield_pages()
+
+
+yield_log = _Capture()
+LOG.addHandler(yield_log)
+try:
+    with patched((feeds, "gather", fake_gather_yield), (feeds, "ExcerptReader", StubReader)):
+        yield_hits = pipeline.run_search_evidence(
+            MARKET, SimpleNamespace(links=[]), [], LOG, key_players=["Acme Corp"], orient={}, search_queries=(copy.deepcopy(queries), [], ["widget"]),
+            subsegments=picks)
+finally:
+    LOG.removeHandler(yield_log)
+yield_lines = [m for m in yield_log.records if m.startswith("[query-yield]")]
+check("query yield: one line per Bing query after filtering, its section, raw count and kept count (a page a first query found is not kept for the second)",
+      f"[query-yield] trends | {Q_TRENDS} | raw 1 | kept 1" in yield_lines
+      and f"[query-yield] key_players | {Q_PLAYER} | raw 1 | kept 0" in yield_lines
+      and f"[query-yield] subsegment | {Q_SUB} | raw 1 | kept 1" in yield_lines and len(yield_lines) == 3, str(yield_lines))
+check("query yield: every kept hit carries the query that found it (first query wins), the feed item none",
+      {h.url: h.query for h in yield_hits if "news.example/y" in h.url} == {"https://news.example/y0": Q_TRENDS, "https://news.example/y2": Q_SUB}
+      and all(h.query == "" for h in yield_hits if h.url.endswith("rss")), str([(h.url, h.query) for h in yield_hits]))
+
+# ----------------------------------------------------------------------------- QUERY_STYLE=terse restores the old behaviour
+old_style = config.QUERY_STYLE
+try:
+    config.QUERY_STYLE = "terse"
+    check("terse: the section targets print only the three old blocks (no U.S., no key players, no everyday wording)",
+          all(h in sections.format_targets(plan) for h in ("TRENDS", "SUB-SEGMENTS", "MARKET"))
+          and not any(h in sections.format_targets(plan) for h in ("KEY PLAYERS", "U.S. (", "everyday wording")),
+          sections.format_targets(plan)[:200])
+    check("terse: the U.S. and key-player queries are the code-built ones even when the model wrote its own",
+          sections.budgeted_queries(wide_with_model, core, picks, us_qs, player_qs)["us"] == us_qs[:3]
+          and sections.budgeted_queries(wide_with_model, core, picks, us_qs, player_qs)["key_players"] == player_qs[:6])
+finally:
+    config.QUERY_STYLE = old_style
+
+old_style = config.QUERY_STYLE
+try:
+    config.QUERY_STYLE = "terse"
+    terse_prompt = prompts.evidence_prep_user()
+    terse_budget = sections.budgeted_queries(wide_with_model, core, picks, us_qs, player_qs)
+    check("terse: the prompt is the old stiff one (the anchor rules, no U.S./key-player query blocks)",
+          "ANCHOR" in terse_prompt and '"us"' not in terse_prompt and "KEY PLAYERS" not in terse_prompt
+          and "journalist's headline" not in terse_prompt and prompts.section_queries_user() == prompts.SEARCH_SECTION_QUERIES_TERSE_USER)
+    check("terse: the previous budget, trends 6, each sub-segment 3, U.S. 3, key players 6, market 4 (25 keyword queries)",
+          [len(terse_budget[s]) for s in ("trends", "subsegment", "us", "key_players", "market")] == [6, 6, 3, 6, 4]
+          and sections.keyword_query_budget(picks) == 25 and sections.keyword_query_budget([]) == 19, str(terse_budget))
+    check("terse: the old three-word sub-segment stand-in",
+          sections.budgeted_queries(wide, core, picks, us_qs, player_qs)["subsegment"]
+          == [f"Software {core} demand", f"Software {core} launch", f"Software {core} news",
+              f"Services {core} demand", f"Services {core} launch", f"Services {core} news"])
+    check("terse: the trends plan has the old six targets at most",
+          len(pipeline.section_search_plan({**FS, "drivers": [{"text": f"D{i}"} for i in range(9)]}, REPORT, [])["trends"]) == 6)
+finally:
+    config.QUERY_STYLE = old_style
+check("terse: restored, the natural prompt and budget are active again", "3 to 7 words" in prompts.evidence_prep_user()
+      and '"key_players"' in prompts.evidence_prep_user() and sections.keyword_query_budget(picks) == 35)
 
 # ------------------------------------------------------------------ pages read as the hits arrive (feeds.ExcerptReader)
 fetched: list[str] = []
@@ -578,6 +668,23 @@ check("select: a leftover 'context' goes to the section its hit was found for (t
 check("select: an undated hit is never a trend (its only section was trends, so it is dropped)", "W6" not in by_id)
 check("select: a 'us|trends' string takes its first entry", by_id["W9"]["section"] == "us")
 
+selected_log = _Capture()
+LOG.addHandler(selected_log)
+q_hits = pool()
+for h in q_hits:
+    h.query = f"query for {h.title.split()[0]}"
+try:
+    with patched((llm, "chat_json", select_chat)):
+        sel_q = pipeline.run_select(ARTICLE, ORIENT, SPONSOR, REPORT, q_hits, LOG, subsegments=SUBS)
+finally:
+    LOG.removeHandler(selected_log)
+sel_lines = [m for m in selected_log.records if m.startswith("[query-yield-selected]")]
+expected_sel = {f"query for {q_hits[int(e['id'][1:]) - 1].title.split()[0]}": 0 for e in sel_q["evidence"]}
+for e in sel_q["evidence"]:
+    expected_sel[f"query for {q_hits[int(e['id'][1:]) - 1].title.split()[0]}"] += 1
+check("query yield selected: one line per query whose hit produced selected evidence, S = the selected items from it",
+      expected_sel and sorted(sel_lines) == sorted(f"[query-yield-selected] {q} | {n}" for q, n in expected_sel.items()), f"{sel_lines} {expected_sel}")
+
 ctx_only = {"evidence": [ev(2, ["context"], "Beta launched cloud widget services across Europe in October 2026.")]}
 pipeline._assign_sections(ctx_only, pool(), SUBS, LOG)
 check("select: a 'context' item whose hit came from the sub-segment search goes to the sub-segment its text names",
@@ -708,7 +815,7 @@ started: list[bool] = []
 step1_stubs = [
     (main, "_start_claim_search", lambda orient, logger: started.append(True)),
     (main, "new_run_logger", lambda: (LOG, Path("never_written.log"))),
-    (pipeline, "run_orient", lambda article, sponsor, logger: {"suggested_markets": {"tier1": [], "tier2": [], "tier3": []}}),
+    (pipeline, "run_orient", lambda article, sponsor, logger: {"own_market": "Widget Market", "suggested_markets": {"tier1": [], "tier2": [], "tier3": []}}),
     (pipeline, "run_match_catalog", lambda orient, logger: []),
     (pipeline, "run_tier_catalog", lambda orient, article, candidates, logger: candidates),
     (pipeline, "own_market_report_note", lambda orient, candidates, logger: ""),
@@ -723,12 +830,15 @@ try:
     with patched(*step1_stubs):
         out = main.step1(req)
     check("claim search: not started by Step 1 in the market-first chain", started == [] and main._RUNS[out["run_token"]].claim_future is None, str(started))
+    check("step1: the response carries own_market, the agent's identified market for the merged Market & Reports screen",
+          out["own_market"] == "Widget Market", str(out.get("own_market")))
     config.CMI_CHAIN_V2 = False
     with patched(*step1_stubs):
         main.step1(req)
     check("claim search: the old chain still starts it", started == [True])
 finally:
     config.CMI_CHAIN_V2 = old_v2
+main._RUNS.pop(out["run_token"], None)
 
 print()
 if FAILURES:

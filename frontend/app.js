@@ -73,7 +73,7 @@ const state = {
   run: null,             // { stage, orient, candidates, hits, selection, report, evidence, title, sections, pickedCmi, pickedMarkets, foundReports, foundPick, compLink,
                          //   sheets: {cmi, competitor}, reportTab, activeKind, ... } (see "Reports step" below)
   result: null,          // final RevampResult-equivalent from the backend
-  nav: "article",        // article | step1 | reports | evidence | facts | write | final
+  nav: "article",        // article | reports | evidence | facts | write | final
 };
 
 function iconify(root = document) {
@@ -139,7 +139,7 @@ async function resumeRunIfAny() {
     if (state.sponsorIdx < 0) state.sponsorIdx = 0;
     restoreClientPicks(data.sponsor_indexes || [data.sponsor_index], (data.clients || []).map((c) => c.host));
 
-    const run = { token: data.run_token, orient: data.orient, candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
+    const run = { token: data.run_token, orient: data.orient, ownMarket: data.own_market || "", candidates: data.candidates, hits: data.hits, claimHits: data.claim_hits || {}, timings: data.timings || null, questions: data.questions || {}, longtails: data.long_tail_keywords || [],
       factSheet: data.fact_sheet || null, demand: data.demand || null, publisher: data.publisher || null, plan: data.plan || null,
       pickedCmi: (data.candidates || []).find((c) => (data.picked_report_ids || []).includes(c.news_id)) || null, cmiUrl: "",
       pickedMarkets: data.picked_markets || [], reportMode: data.report_mode || null, warnings: data.warnings || [], clients: data.clients || [],
@@ -188,9 +188,9 @@ async function resumeRunIfAny() {
     // A pasted CMI report link survives a reload too: the run records it among the picked urls (a saved choice wins).
     run.cmiUrl = run.cmiUrl || (data.picked_urls || []).find((u) => isCmiLink(u)) || "";
     state.run = run;
-    // a pointer saved before the Reports step existed holds an old key ("step2"...): start from the run's own stage instead
-    const stageNav = { orient_done: "step1", reports_ready: "reports", search_done: "evidence", select_done: "facts", write_done: "write" };
-    state.nav = NAV_ORDER.includes(pointer.nav) ? pointer.nav : (stageNav[run.stage] || "step1");
+    // a pointer saved before the merge holds an old key ("step1"...): start from the run's own stage instead
+    const stageNav = { orient_done: "reports", reports: "reports", reports_ready: "reports", search_done: "evidence", select_done: "facts", write_done: "write" };
+    state.nav = NAV_ORDER.includes(pointer.nav) ? pointer.nav : (stageNav[run.stage] || "reports");
     // a reload during the evidence search leaves the run at its confirmed Reports step
     if (run.stage === "reports_ready" && ["evidence", "facts", "write", "final"].includes(state.nav)) state.nav = "reports";
 
@@ -621,7 +621,9 @@ document.getElementById("start-btn").addEventListener("click", async () => {
   const sponsor = currentSponsor();
   if (!sponsor) return;
   state.run = { stage: "pending", sponsor, pickedCmi: null, cmiUrl: "", pickedMarkets: [], foundReports: [], foundPick: "", compLink: "", sheets: { cmi: null, competitor: null }, reportTab: "cmi" };
-  setNav("step1");
+  // Step 1 (orient + market tiering) runs while the merged Market & Reports screen shows its spinner;
+  // the run lands directly there, the summary card and the two report tabs appear when it finishes.
+  setNav("reports");
   render();
   await runStep1();
 });
@@ -632,7 +634,6 @@ document.getElementById("cancel-btn").addEventListener("click", () => {
   render();
 });
 document.getElementById("new-run-btn").addEventListener("click", resetForNewUpload);
-document.getElementById("step1-cancel-btn").addEventListener("click", () => { state.run = null; saveRunPointer(); render(); });
 document.getElementById("reports-cancel-btn").addEventListener("click", () => { state.run = null; saveRunPointer(); render(); });
 document.getElementById("step2-cancel-btn").addEventListener("click", () => { state.run = null; saveRunPointer(); render(); });
 document.getElementById("step3-cancel-btn").addEventListener("click", () => { state.run = null; saveRunPointer(); render(); });
@@ -650,6 +651,7 @@ async function runStep1() {
     state.run.stage = "orient_done";
     state.run.token = data.token || data.run_token;
     state.run.orient = data.orient;
+    state.run.ownMarket = data.own_market || "";
     state.run.candidates = data.candidates;
     state.run.warnings = data.warnings || [];
     saveRunPointer();
@@ -657,6 +659,7 @@ async function runStep1() {
     showError("Step 1 (identify market)", e);
     state.run = null;
     saveRunPointer();
+    setNav("article");   // nothing to show on the Market & Reports screen without a run
   }
   render();
 }
@@ -674,23 +677,6 @@ function currentSponsorIndexInParagraphs() {
 function _runBusy() {
   return !!state.run && typeof state.run.stage === "string" && state.run.stage.endsWith("_pending");
 }
-
-// Step 1 -> Step 2 (Reports). Step 1 only confirms the market; which report the facts come from is chosen in the Reports
-// step's two tabs (CMI reports / Competitor reports), each with its own Fetch button and its own fact sheet.
-document.getElementById("step1-confirm-btn").addEventListener("click", () => {
-  if (_runBusy() || !state.run) return;
-  ensureReportState(state.run);
-  state.run.stage = hasAnyReportSheet() ? "reports_ready" : "reports";
-  setNav("reports");
-  render();
-});
-
-document.getElementById("reports-back-btn").addEventListener("click", () => {
-  if (_runBusy() || !state.run) return;
-  state.run.stage = "orient_done";
-  setNav("step1");
-  render();
-});
 
 // The CMI report link box's input and its last check message, without a re-render (typing must not lose focus).
 function clearCmiUrlInput() {
@@ -803,7 +789,7 @@ document.getElementById("reports-competitor-url-clear").addEventListener("click"
   saveCompetitorChoice();
 });
 
-// ---------------------------------------------------------------- Reports step (Step 2)
+// ---------------------------------------------------------------- Reports step (Step 1 · Market & Reports)
 // state.run.sheets = { cmi: sheet|null, competitor: sheet|null } holds BOTH tabs' fact sheets, so switching tabs never loses
 // either. A sheet is { report: {name, url, ...}, factSheet, reportMode, warnings: [], confirmed }. state.run.reportTab is the tab
 // on screen (and the one "Continue to Evidence" confirms); state.run.activeKind is the tab whose sheet the server holds as the
@@ -872,7 +858,7 @@ async function runReportsFetch(kind) {
     storeReportSheet(kind, await apiPost("/reports/fetch", reportsFetchBody(kind)));
     run.stage = "reports_ready";
   } catch (e) {
-    showError(`Step 2 (fetch the ${kind === "cmi" ? "CMI" : "competitor"} report)`, e);
+    showError(`Step 1 (fetch the ${kind === "cmi" ? "CMI" : "competitor"} report)`, e);
     run.stage = hasAnyReportSheet() ? "reports_ready" : "reports";
   }
   run.fetching = null;
@@ -902,7 +888,7 @@ document.getElementById("reports-find-btn").addEventListener("click", async () =
     run.foundPick = "";
     run.foundSearched = true;
   } catch (e) {
-    showError("Step 2 (find competitor reports)", e);
+    showError("Step 1 (find competitor reports)", e);
   }
   run.finding = false;
   saveCompetitorChoice();
@@ -923,7 +909,7 @@ document.getElementById("reports-confirm-btn").addEventListener("click", async (
   await runEvidence(kind);
 });
 
-// The evidence search itself (Step 3), driven by the confirmed fact sheet. POST /step2 (alias /evidence) reads the sheet off the run.
+// The evidence search itself (Step 2), driven by the confirmed fact sheet. POST /step2 (alias /evidence) reads the sheet off the run.
 async function runEvidence(kind) {
   const run = state.run;
   run.stage = "search_pending";
@@ -946,7 +932,7 @@ async function runEvidence(kind) {
     run.sectionHits = data.sections || {};
     run.sectionCounts = {};
   } catch (e) {
-    showError("Step 3 (fetch market evidence)", e);
+    showError("Step 2 (fetch market evidence)", e);
     run.stage = "reports_ready";
     setNav("reports");
   }
@@ -954,7 +940,7 @@ async function runEvidence(kind) {
   render();
 }
 
-// Step 3 (Evidence) -> Step 4 (Pick the Facts): select usable facts from the gathered evidence.
+// Step 2 (Evidence) -> Step 3 (Pick the Facts): select usable facts from the gathered evidence.
 document.getElementById("step2-confirm-btn").addEventListener("click", async () => {
   if (_runBusy()) return;
   state.run.stage = "select_pending";
@@ -974,14 +960,14 @@ document.getElementById("step2-confirm-btn").addEventListener("click", async () 
     if (data.demand) state.run.demand = data.demand;   // market-first: answerability is now marked
     if (data.long_tail_keywords) state.run.longtails = data.long_tail_keywords;   // market-first: they arrive with the picked facts, not at the evidence search
   } catch (e) {
-    showError("Step 4 (pick the facts)", e);
+    showError("Step 3 (pick the facts)", e);
     state.run.stage = "search_done";
   }
   saveRunPointer();
   render();
 });
 
-// Step 4 -> Step 5: write the article.
+// Step 3 -> Step 4: write the article.
 document.getElementById("step3-confirm-btn").addEventListener("click", async () => {
   if (_runBusy()) return;
   state.run.stage = "write_pending";
@@ -994,7 +980,7 @@ document.getElementById("step3-confirm-btn").addEventListener("click", async () 
     state.run.sections = data.sections;
     state.run.clients = data.clients || state.run.clients;
   } catch (e) {
-    showError("Step 5 (write)", e);
+    showError("Step 4 (write)", e);
     state.run.stage = "select_done";
   }
   saveRunPointer();
@@ -1015,7 +1001,7 @@ document.getElementById("step4-regenerate-btn").addEventListener("click", async 
     state.run.sections = data.sections;
     state.run.clients = data.clients || state.run.clients;
   } catch (e) {
-    showError("Step 5 (regenerate draft)", e);
+    showError("Step 4 (regenerate draft)", e);
     state.run.stage = "write_done";
   }
   saveRunPointer();
@@ -1071,16 +1057,15 @@ document.getElementById("final-regenerate-btn").addEventListener("click", async 
 });
 
 // ---------------------------------------------------------------- step nav
-// Nav keys / panels: step1 = Step 1 Choose the Market, reports = Step 2 Reports, evidence = Step 3 Evidence,
-// facts = Step 4 Pick the Facts, write = Step 5 Write the Article, final. (The old DOM ids step2-* / step3-* / step4-* belong
-// to the evidence / facts / write panels.)
-const NAV_ORDER = ["article", "step1", "reports", "evidence", "facts", "write", "final"];
+// Nav keys / panels: reports = Step 1 Market & Reports (orient + the report tabs, merged), evidence = Step 2 Evidence,
+// facts = Step 3 Pick the Facts, write = Step 4 Write the Article, final. (The old DOM ids step2-* / step3-* / step4-*
+// belong to the evidence / facts / write panels, and the old "step1" nav key is gone with the old confirm screen.)
+const NAV_ORDER = ["article", "reports", "evidence", "facts", "write", "final"];
 
 function stepDoneFlags() {
   const stage = state.run ? state.run.stage : null;
   const atLeast = (stages) => stages.includes(stage) || !!state.result;
   return {
-    step1: atLeast(["reports", "reports_pending", "reports_ready", "search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done"]),
     reports: atLeast(["search_pending", "search_done", "select_pending", "select_done", "write_pending", "write_done"]),
     evidence: atLeast(["search_done", "select_pending", "select_done", "write_pending", "write_done"]),
     facts: atLeast(["select_done", "write_pending", "write_done"]),
@@ -1126,9 +1111,9 @@ function renderStepNav() {
   // pending stage for THAT step, not just "some run exists".
   const specs = {
     article: { always: true },
-    step1: { unlocked: started, done: done.step1, pending: stage === "pending" },
-    // Reports opens as soon as Step 1 is confirmed (stage orient_done); Evidence once a fact sheet is confirmed
-    reports: { unlocked: done.step1 || stage === "orient_done", done: done.reports, pending: stage === "reports_pending" },
+    // Market & Reports opens as soon as a run exists (the start button runs /step1 while the
+    // spinner on that very screen is up); Evidence once a fact sheet is confirmed
+    reports: { unlocked: started, done: done.reports, pending: stage === "pending" },
     evidence: { unlocked: done.reports || hasConfirmedSheet, done: done.evidence, pending: stage === "search_pending" },
     facts: { unlocked: done.evidence, done: done.facts, pending: stage === "select_pending" },
     write: { unlocked: done.facts, done: done.write, pending: stage === "write_pending" },
@@ -1194,13 +1179,13 @@ function renderRunControls() {
 
   if (runActive) {
     const stageLabel = {
-      pending: "Step 1 · Choose the Market", orient_done: "Step 1 · Choose the Market",
-      reports: "Step 2 · Reports", reports_pending: "Step 2 · Reports", reports_ready: "Step 2 · Reports",
-      search_pending: "Step 3 · Evidence", search_done: "Step 3 · Evidence",
-      select_pending: "Step 4 · Pick the Facts", select_done: "Step 4 · Pick the Facts",
-      write_pending: "Step 5 · Write the Article", write_done: "Step 5 · Write the Article",
+      pending: "Step 1 · Market & Reports", orient_done: "Step 1 · Market & Reports",
+      reports: "Step 1 · Market & Reports", reports_pending: "Step 1 · Market & Reports", reports_ready: "Step 1 · Market & Reports",
+      search_pending: "Step 2 · Evidence", search_done: "Step 2 · Evidence",
+      select_pending: "Step 3 · Pick the Facts", select_done: "Step 3 · Pick the Facts",
+      write_pending: "Step 4 · Write the Article", write_done: "Step 4 · Write the Article",
       finalize_pending: "Final · Check & Download",
-    }[state.run.stage] || "Step 1 · Choose the Market";
+    }[state.run.stage] || "Step 1 · Market & Reports";
     document.getElementById("run-active-text").textContent = `Run in progress — see ${stageLabel}`;
   }
 }
@@ -1340,65 +1325,30 @@ async function checkReportUrl(entry, cmi = false) {
   }
 }
 
-// ---------------------------------------------------------------- render: step1 panel
-function renderStep1Panel() {
-  const spinner = document.getElementById("step1-spinner");
-  const content = document.getElementById("step1-content");
-  const confirmBlock = document.getElementById("step1-confirm-block");
-  const doneBlock = document.getElementById("step1-done-block");
-
-  if (!state.run) { spinner.hidden = true; content.hidden = true; return; }
-  const pending = state.run.stage === "pending";
-  spinner.hidden = !pending;
-  content.hidden = pending;
-  if (pending) return;
-
-  const orient = state.run.orient || {};
-  document.getElementById("step1-topic").textContent = orient.topic_summary || "";
-  document.getElementById("step1-bridge").textContent = orient.bridge_angle || "";
-
-  const claims = orient.claims_to_back || [];
-  document.getElementById("step1-claims").innerHTML = claims.length
-    ? claims.map((c) => `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.claim)}`
-        + (c.why ? ` <span class="option-caption">${escapeHtml(c.why)}</span>` : "") + `</li>`).join("")
-    : `<li class="empty-note">No unsourced claims were found in the article, so nothing needs outside backing.</li>`;
-
-  const isOrientDone = state.run.stage === "orient_done";
-  confirmBlock.hidden = !isOrientDone;
-  doneBlock.hidden = isOrientDone;
-
-  if (isOrientDone) {
-    const cands = (state.run.candidates || []).slice(0, 10);
-    document.getElementById("step1-matched-candidates").innerHTML = cands.length
-      ? cands.map((c) => `<li><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.keyword)}</a></li>`).join("")
-      : `<li class="empty-note">No CMI report fits this article closely enough to suggest. You can still use a competitor report in the next step.</li>`;
-    (state.run.warnings || []).forEach((w) => {
-      const note = document.createElement("li");
-      note.className = "empty-note";
-      note.textContent = w;
-      document.getElementById("step1-matched-candidates").prepend(note);
-    });
-  } else {
-    const rep = state.run.report;
-    const link = document.getElementById("step1-confirmed-link");
-    link.textContent = rep ? rep.name : "Chosen in Step 2 · Reports";
-    if (rep && rep.url) link.href = rep.url; else link.removeAttribute("href");
-
-    const sources = (state.run.factSheet && state.run.factSheet.sources) || [];
-    document.getElementById("step1-sources-block").hidden = !sources.length;
-    document.getElementById("step1-sources").innerHTML = sources.map((s) => {
-      const kind = s.kind === "cmi" ? "CMI report" : "Competitor report (figures adjusted)";
-      const name = s.url ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.name)}</a>` : escapeHtml(s.name);
-      return `<li>${name} <span class="option-caption">${kind}</span></li>`;
-    }).join("");
-
-    const all = document.getElementById("step1-all-candidates");
-    all.innerHTML = (state.run.candidates || []).slice(0, 10)
-      .map((c) => `<li><a href="${c.url}" target="_blank" rel="noopener">${escapeHtml(c.keyword)}</a></li>`).join("");
-  }
+// ---------------------------------------------------------------- render: the Market & Reports summary card
+// The orient + tier summary at the top of the merged Step 1 · Market & Reports screen: what the
+// article is about, how it bridges to a market, and the market the agent identified (the same
+// helper the backend uses — external_reports.own_market, sent with /step1 as own_market and
+// falling back here to the first suggested market, which the tiering puts first).
+function ownMarketName() {
+  const run = state.run;
+  if (!run) return "";
+  if (run.ownMarket) return run.ownMarket;
+  const t1 = ((run.orient || {}).suggested_markets || {}).tier1 || [];
+  return t1[0] || "";
 }
 
-// ---------------------------------------------------------------- render: Reports step (Step 2): tabs, the report choice, the fact sheets
+function renderMarketSummary() {
+  const orient = (state.run && state.run.orient) || {};
+  document.getElementById("step1-topic").textContent = orient.topic_summary || "";
+  document.getElementById("step1-bridge").textContent = orient.bridge_angle || "";
+  const market = ownMarketName();
+  document.getElementById("step1-market").innerHTML = market
+    ? `<strong>${escapeHtml(market)}</strong>`
+    : `<span class="field-hint">No market name was identified — pick from the lists below.</span>`;
+}
+
+// ---------------------------------------------------------------- render: Step 1 · Market & Reports: tabs, the report choice, the fact sheets
 // The tab shell (shadcn-style Tabs, plain DOM): a tablist of role=tab buttons and one role=tabpanel per tab. Each panel holds
 // a screen container for its tab (#reports-cmi-screen / #reports-competitor-screen), a Fetch button area and its own fact
 // sheet container (#reports-cmi-factsheet / #reports-competitor-factsheet, filled by renderFactSheet).
@@ -1531,8 +1481,15 @@ function renderFoundReports() {
 
 function renderReportsPanel() {
   const run = state.run;
+  // While /step1 (orient + market tiering) is in flight the run has no token yet: the merged
+  // screen shows only its spinner, and the summary card + report tabs appear with the answer.
+  const starting = !!run && run.stage === "pending";
+  document.getElementById("reports-start-spinner").hidden = !starting;
+  const body = document.getElementById("reports-body");
+  body.hidden = starting || !run || !run.token;
   if (!run || !run.token) return;
   ensureReportState(run);
+  renderMarketSummary();
   renderReportsTabs();
   renderReportsPickers();
   for (const kind of REPORT_KINDS) {
@@ -1551,7 +1508,7 @@ function renderReportsPanel() {
   updateReportsControls();
 }
 
-// ---------------------------------------------------------------- render: evidence panel (Step 3: the web search from the confirmed facts)
+// ---------------------------------------------------------------- render: evidence panel (Step 2: the web search from the confirmed facts)
 function formatDuration(totalSeconds) {
   const s = Math.round(Number(totalSeconds) || 0);
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
@@ -1590,35 +1547,51 @@ function factSheetViewHtml(fs, kind) {
   const competitor = kind === "competitor";
   const cols = competitor ? 4 : 3;
   const base = fsSourceHtml(fs, null);
-  const rows = [];
-  const head = (title) => rows.push(`<tr class="fs-section"><th colspan="${cols}">${escapeHtml(title)}</th></tr>`);
-  const row = (label, used, original, source, cls = "") => rows.push(
-    `<tr class="${cls}"><th scope="row">${label}</th>${competitor ? `<td class="fs-orig">${original || "&mdash;"}</td>` : ""}` +
-    `<td class="fs-used">${used}</td><td class="fs-source">${source}</td></tr>`);
+  // One table per section: the section title band first (the darkest surface), then the
+  // column-header row a step lighter, then the body rows (subtle zebra). Each table sits in its
+  // own .fs-block so the bands follow the rounded corners and the tables never stick together.
+  const COLS_HEAD = `<tr class="fs-cols"><th>Fact</th>${competitor ? "<th>Original (competitor)</th>" : ""}`
+    + `<th>${competitor ? "Adjusted (used in the article)" : "Value"}</th><th>Source</th></tr>`;
+  const blocks = [];
+  let rows = [];
+  let zebra = 0;
+  const block = (title) => {
+    if (!rows.length) return;
+    blocks.push(`<div class="fs-block"><table class="fs-table${competitor ? " fs-table-competitor" : ""}">`
+      + `<thead><tr class="fs-band"><th colspan="${cols}">${escapeHtml(title)}</th></tr>${COLS_HEAD}</thead>`
+      + `<tbody>${rows.join("")}</tbody></table></div>`);
+    rows = [];
+    zebra = 0;
+  };
+  const row = (label, used, original, source, cls = "") => {
+    zebra++;
+    return `<tr class="fs-row${zebra % 2 === 0 ? " fs-row-alt" : ""}${cls ? ` ${cls}` : ""}"><th scope="row">${label}</th>`
+      + `${competitor ? `<td class="fs-orig">${original || "&mdash;"}</td>` : ""}`
+      + `<td class="fs-used">${used}</td><td class="fs-source">${source}</td></tr>`;
+  };
   const gapRow = (label) => row(escapeHtml(label), FS_GAP, "", "", "fs-gap-row");
   const badge = (e) => (e && e.edited_by_editor ? ' <span class="fs-badge">edited by editor</span>' : "");
   const agent = (text) => (text ? `<div class="fs-agent">Agent read: ${escapeHtml(text)}</div>` : "");
   const quote = (q) => (q ? `<div class="fs-quote">&ldquo;${escapeHtml(q)}&rdquo;</div>` : "");
   const dated = (e) => (e && e.historical ? ' <span class="fs-note">(dated)</span>' : "");
 
-  head("Headline figures");
   for (const [key, label, whenLabel] of FS_HEADLINES) {
     const e = fs[key];
-    if (!e || !e.value) { gapRow(label); continue; }
+    if (!e || !e.value) { rows.push(gapRow(label)); continue; }
     const when = e.when ? ` <span class="option-caption">(${whenLabel} ${escapeHtml(e.when)})</span>` : "";
     const agentValue = e.agent_value ? `${e.agent_value}${e.agent_when ? ` (${e.agent_when})` : ""}` : "";
-    row(label, `<strong>${escapeHtml(e.value)}</strong>${when}${badge(e)}${e.stale ? ' <span class="fs-note">(older figure)</span>' : ""}${agent(agentValue)}`,
-      e.original_value ? `${escapeHtml(e.original_value)}${when}` : "", fsSourceHtml(fs, e));
+    rows.push(row(label, `<strong>${escapeHtml(e.value)}</strong>${when}${badge(e)}${e.stale ? ' <span class="fs-note">(older figure)</span>' : ""}${agent(agentValue)}`,
+      e.original_value ? `${escapeHtml(e.original_value)}${when}` : "", fsSourceHtml(fs, e)));
   }
   if (fs.figure_source) {
     const f = fs.figure_source;
-    row("Figures filled from an outside page", `<strong>${escapeHtml((f.figures || []).join(", "))}</strong>`, "",
-      `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">${escapeHtml(f.name)}</a>`);
+    rows.push(row("Figures filled from an outside page", `<strong>${escapeHtml((f.figures || []).join(", "))}</strong>`, "",
+      `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">${escapeHtml(f.name)}</a>`));
   }
+  block("Headline figures");
 
-  head("Segmentation");
   const segs = fs.segments || [];
-  if (!segs.length) gapRow("Segmentation");
+  if (!segs.length) rows.push(gapRow("Segmentation"));
   for (const seg of segs) {
     const was = seg.agent_original ? `<div class="fs-agent">Agent read this split as: ${escapeHtml(seg.agent_original.type)} (${escapeHtml((seg.agent_original.items || []).join(", "))})</div>` : "";
     rows.push(`<tr class="fs-subsection"><th colspan="${cols}">${escapeHtml(seg.type)}${badge(seg)}${was}</th></tr>`);
@@ -1626,41 +1599,41 @@ function factSheetViewHtml(fs, kind) {
     for (const name of seg.items || []) {
       const f = figs[name];
       const lead = !!seg.dominant && seg.dominant.name === name;
-      row(escapeHtml(name) + (lead ? ' <span class="fs-badge fs-badge-lead">leading category</span>' : ""),
+      rows.push(row(escapeHtml(name) + (lead ? ' <span class="fs-badge fs-badge-lead">leading category</span>' : ""),
         (f ? `<strong>${escapeHtml(f.figure)}</strong>` : '<span class="fs-note">no figure stated</span>') + badge(f) + agent(f && f.agent_figure)
           + (lead ? `<div class="fs-agent">${escapeHtml(FS_LEAD_BASIS[seg.dominant.basis] || "")}</div>${quote(seg.dominant.quote)}` : ""),
-        f && f.original_figure ? escapeHtml(f.original_figure) : "", base);
+        f && f.original_figure ? escapeHtml(f.original_figure) : "", base));
     }
-    if (!seg.dominant) gapRow(`Leading category (${seg.type})`);
+    if (!seg.dominant) rows.push(gapRow(`Leading category (${seg.type})`));
   }
+  block("Segmentation");
 
-  head("Regions");
   for (const [k, label] of [["leader", "Leading region"], ["fastest", "Fastest-growing region"]]) {
     const r = (fs.regions || {})[k];
-    if (!r) { gapRow(label); continue; }
+    if (!r) { rows.push(gapRow(label)); continue; }
     const was = r.agent_value ? `${r.agent_value.name}${r.agent_value.basis ? ` (${r.agent_value.basis})` : ""}` : "";
-    row(label, `<strong>${escapeHtml(r.name)}</strong>${r.basis ? ` <span class="option-caption">(${escapeHtml(r.basis)})</span>` : ""}${dated(r)}${badge(r)}${agent(was)}${quote(r.quote)}`, "", base);
+    rows.push(row(label, `<strong>${escapeHtml(r.name)}</strong>${r.basis ? ` <span class="option-caption">(${escapeHtml(r.basis)})</span>` : ""}${dated(r)}${badge(r)}${agent(was)}${quote(r.quote)}`, "", base));
   }
+  block("Regions");
 
   for (const [key, title] of FS_STATEMENTS) {
-    head(title);
     const items = fs[key] || [];
-    if (!items.length) { gapRow(title); continue; }
-    items.forEach((e, i) => row(String(i + 1),
+    if (!items.length) { rows.push(gapRow(title)); block(title); continue; }
+    items.forEach((e, i) => rows.push(row(String(i + 1),
       `${escapeHtml(e.text)}${key === "segment_drivers" && e.name ? ` <span class="option-caption">(${escapeHtml(e.name)}, ${escapeHtml(e.split)})</span>` : ""}${dated(e)}${badge(e)}${agent(e.agent_text)}${quote(e.quote)}`,
-      e.original_text ? escapeHtml(e.original_text) : "", base));
+      e.original_text ? escapeHtml(e.original_text) : "", base)));
+    block(title);
   }
 
-  head("Key players");
   if ((fs.players || []).length) {
-    row("Players", `<strong>${escapeHtml(fs.players.join(", "))}</strong>${fs.agent_players ? agent(fs.agent_players.join(", ")) : ""}`, "", base);
+    rows.push(row("Players", `<strong>${escapeHtml(fs.players.join(", "))}</strong>${fs.agent_players ? agent(fs.agent_players.join(", ")) : ""}`, "", base));
   } else {
-    gapRow("Key players");
+    rows.push(gapRow("Key players"));
   }
+  block("Key players");
 
   const removed = (fs.editor_removed || []).map((r) => `<li>${escapeHtml(r.text)} <span class="option-caption">(${escapeHtml(r.kind)})</span></li>`).join("");
-  return `<table class="fs-table${competitor ? " fs-table-competitor" : ""}"><thead><tr><th>Fact</th>${competitor ? "<th>Original (competitor)</th>" : ""}`
-    + `<th>${competitor ? "Adjusted (used in the article)" : "Value"}</th><th>Source</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+  return `<div class="fs-tables">${blocks.join("")}</div>`
     + (competitor ? `<p class="field-hint fs-variance-note">Competitor figures are moved by 3-5%; the article uses the adjusted value. The competitor's own value is shown beside each. Values you edit yourself are used as entered, never adjusted.</p>` : "")
     + (removed ? `<div class="fs-removed"><strong>Removed by the editor</strong><ul class="plain-list">${removed}</ul></div>` : "");
 }
@@ -1785,7 +1758,7 @@ async function fsSave(container) {
     st.editing = false;
     st.draft = null;
   } catch (e) {
-    showError("Step 2 (save the fact sheet edits)", e);
+    showError("Step 1 (save the fact sheet edits)", e);
   }
   st.saving = false;
   fsRender(container);
@@ -2628,7 +2601,6 @@ function render() {
   document.getElementById("sop-nav-btn").classList.toggle("active", sopOpen);
   showPanel(sopOpen ? "sopcheck" : state.article ? state.nav : "empty");
   if (state.article) { renderArticlePanel(); renderSponsorCandidates(); }
-  renderStep1Panel();
   renderReportsPanel();
   renderEvidencePanel();
   renderStep3Panel();
