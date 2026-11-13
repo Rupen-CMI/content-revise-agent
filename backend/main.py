@@ -1439,6 +1439,10 @@ def find_reports(req: FindReportsRequest) -> dict:
     return {"markets": markets, "reports": candidates}
 
 
+# A pasted report link must be a web link with a dotted host (the frontend runs the same check before Fetch).
+_WEB_LINK_RE = re.compile(r"^https?://[^\s/]+\.[^\s/]+", re.I)
+
+
 def _resolve_report_pick(run: RunState, req: ReportsFetchRequest) -> tuple[list[reports.CatalogEntry], list[str], list[str], list[str]]:
     """What one tab's fetch should read: (catalog reports, competitor links, markets, CMI pages outside the catalog).
     kind "cmi" uses only the report ids / CMI link (R1/R2/R3: the first id wins, the link is a CMI pick of its own — a
@@ -1454,8 +1458,8 @@ def _resolve_report_pick(run: RunState, req: ReportsFetchRequest) -> tuple[list[
                 raise HTTPException(400, f"Report {rid} is not one of the matched reports for this run.")
             picked.append(entry)
         cmi_url = (req.cmi_report_url or "").strip()
-        if cmi_url and not config.is_cmi_url(cmi_url):
-            raise HTTPException(400, "The CMI report link must be a page on coherentmarketinsights.com.")
+        if cmi_url and not (_WEB_LINK_RE.match(cmi_url) and config.is_cmi_url(cmi_url)):
+            raise HTTPException(400, "The CMI report link must be a page on coherentmarketinsights.com (starting with http:// or https://).")
         if cmi_url:
             entry = reports.match_report_url(cmi_url)
             if picked:
@@ -1471,6 +1475,8 @@ def _resolve_report_pick(run: RunState, req: ReportsFetchRequest) -> tuple[list[
         return picked, [], [], cmi_pages
     urls = [u.strip() for u in req.report_urls if u and u.strip()]
     for u in urls:
+        if not _WEB_LINK_RE.match(u):
+            raise HTTPException(400, f"The competitor link {u} is not a web link. It should start with http:// or https://.")
         if config.is_cmi_url(u):
             raise HTTPException(400, f"The link {u} is a CMI report link. Paste it in the CMI report link box, not among the competitor links.")
     # One report only: the editor chose either a found report or one link of their own.

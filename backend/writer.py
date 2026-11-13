@@ -689,35 +689,81 @@ def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, spons
     return keep_emptied_sections(sections, logger)
 
 
+# A figure's identity is its value together with the unit that gives it one ("$635 million", "48.5%",
+# "1,500 kW"): the number plus, when present, a currency mark before it and a scale, percent or power unit
+# after it. A bare small integer ("42 locations", "30 states", "48 amps", "Level 2") is a count, a rating
+# or a label that unrelated facts share — like a year, never a figure whose identity a sentence must carry
+# — so only a number that carries such a unit counts, and a bare one only from four digits up ("55,000"),
+# the word that follows it standing in for its unit. Found live: the repeat-figure strip deleted whole
+# evidence-bearing sentences because their $25 million, 42 locations, 30 stations, 32-48 amps and Level 2s
+# had already been printed from other facts' unrelated numbers (€25 billion, 30 states, 10-80%, "Level 2
+# charger").
+_FIGURE_RE = re.compile(
+    r"(?:(?P<cur>[$€£₹]|\b(?:USD|EUR|GBP|INR|CAD|AUD)\b)\s*)?"
+    r"(?P<num>\d[\d,]*(?:\.\d+)?)"
+    r"(?:\s*[-–—]?\s*(?P<unit>%|percent|thousand|million|billion|trillion|bn|mn|"
+    r"(?:kilo|mega|giga)watts?(?:-?hours?)?|kwh|mwh|gwh|kw|mw|gw)(?![A-Za-z]))?",
+    re.IGNORECASE,
+)
+
+
+def _figure_keys(text: str) -> set[tuple[str, str]]:
+    """(value, unit) for every figure `text` states, normalized like checks._fact_numbers ('1,500' ->
+    '1500'): a number is identified only together with its unit, so "$25 million" and "€25 billion" are
+    different figures. A full date's day is dropped first and a year is never a figure; a bare small
+    integer is a count and returns nothing (see _FIGURE_RE), a bare four-digit-plus number takes the word
+    that follows it as its unit."""
+    text = re.sub(r"\b\d{1,2}, 20\d{2}\b", " ", text or "")
+    out: set[tuple[str, str]] = set()
+    for m in _FIGURE_RE.finditer(text):
+        value = m.group("num").replace(",", "").rstrip(".")
+        if re.fullmatch(r"(?:19|20)\d\d", value):
+            continue
+        unit = (m.group("unit") or "").lower().replace("-", "").rstrip("s")
+        if not unit and not m.group("cur"):
+            if len(value.replace(".", "")) < 4:
+                continue    # a bare small integer is a count, a rating or a label, never a figure
+            word = re.match(r"\s*[-–—]?\s*([A-Za-z]+)", text[m.end():])
+            unit = (word.group(1) if word else "").lower()
+        out.add((value, " ".join(x for x in [(m.group("cur") or "").lower(), unit] if x)))
+    return out
+
+
 def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
     """The write prompt says a figure is stated in one section only and later sections refer back in words;
     four replay rounds still returned conclusions that reprint a non-CMI figure unnamed — which is exactly
     what the attribution check flags (§3.2). Those sentences are removed in code, like strip_meta_sentences:
-    a sentence that repeats a figure already printed in an earlier sentence and does not name its source
+    a sentence that repeats a FIGURE already printed in an earlier sentence and does not name its source
     goes; a sentence that carries the source's name stays, and so does one whose source an earlier sentence
     of the same line named (the unit of naming is one line of a paragraph; the memory resets at every
-    line, so a new line that repeats the figure names the source again). Years never count; a figure's
-    repeat only covers when the sentence (or an earlier sentence of its line) names the figure's own source."""
+    line, so a new line that repeats the figure names the source again). A figure's identity is its value
+    with its unit (_figure_keys), so only the same figure FROM THE SAME FACT/SOURCE repeats — never two
+    unrelated facts' counts that share bare digits. Years never count; a figure's repeat only covers when
+    the sentence (or an earlier sentence of its line) names the figure's own source. And like
+    strip_repeat_evidence, the strip never takes a section's evidence wholesale: when the removals would
+    leave the section without its every evidence citation, they stay for the attribution check to report
+    (found live: the strip left a U.S. section at 68 words by deleting its own evidence sentences)."""
     if inp is None:
         return sections
     import checks
-    owned: dict[str, str] = {}      # figure -> its outside source, from the fact sheet and evidence items
+    owned: dict[tuple[str, str], str] = {}      # figure (value, unit) -> its outside source
     for i in inp.items.values():
         if i["kind"] not in ("size", "forecast", "cagr", "evidence") or i.get("source") in ("", "CMI report"):
             continue
         src = i.get("source") or ""
         # Ownership uses digits only: a spelled small number ("two") is prose, not an identifying figure.
-        for n in checks._fact_numbers(i["text"]) | checks._fact_numbers(i.get("detail", "")):
-            if not re.fullmatch(r"(?:19|20)\d\d", n):
-                owned.setdefault(n, src)
+        for n in _figure_keys(i["text"]) | _figure_keys(i.get("detail", "")):
+            owned.setdefault(n, src)
     if not owned:
         return sections
-    printed: set[str] = set()       # figures printed anywhere in the market block so far
+    items = [{"id": i["id"], "fact": i["text"]} for i in inp.items.values() if i["kind"] == "evidence"]
+    printed: set[tuple[str, str]] = set()       # figures printed anywhere in the market block so far
     for s in sections:
         if not s.get("sop") or s["sop"][0] not in planning.ORDER:
             continue    # the opening and the transition state no market figures (write prompt rule)
         label = s["sop"][0]
         paragraphs: list[str] = []
+        gone_all: list[str] = []
         for p in s["paragraphs"]:
             lines: list[str] = []
             for line in p.split("\n"):
@@ -726,7 +772,7 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
                 good, gone, gone_ix = [], [], set()
                 for si, sent in enumerate(kept):
                     low = sent.lower()
-                    strong = [n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)]
+                    strong = _figure_keys(sent)
                     repeats = sorted(n for n in strong if n in printed)
                     if repeats:
                         srcs = {owned[n] for n in repeats}
@@ -742,16 +788,23 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
                     gone += [x for x in good if x not in kept_after]
                     good = [x for x in good if x in kept_after]
                 if gone:
-                    logged = "; ".join(f"{n} ({owned[n]} printed earlier)" for n in
-                                       sorted({n for sent in gone for n in checks._fact_numbers(sent)
-                                               if n in owned and not re.fullmatch(r"(?:19|20)\d\d", n)}))
-                    logger.info(f"[write] removed {len(gone)} repeat-figure sentence(s) from {label} — {logged}: "
-                                + " | ".join(x[:110] for x in gone))
+                    gone_all += gone
                 if good:
                     lines.append(" ".join(good))
             if lines:
                 paragraphs.append("\n".join(lines))
-        s["paragraphs"] = paragraphs
+        if gone_all and not content_rules.evidence_cited_ids("\n".join(paragraphs), items, inp.market_name):
+            logger.warning(f"[write] the {label} section keeps {len(gone_all)} sentence(s) that repeat figures printed "
+                           "earlier: removing them would take the section's every evidence citation, so they stay "
+                           "for the attribution check to report")
+            printed |= {n for sent in gone_all for n in _figure_keys(sent) if n in owned}   # they stay, so they are printed
+            continue
+        if gone_all:
+            logged = "; ".join(f"{n[0]} ({owned[n]} printed earlier)" for n in
+                               sorted({n for sent in gone_all for n in _figure_keys(sent) if n in owned}))
+            logger.info(f"[write] removed {len(gone_all)} repeat-figure sentence(s) from {label} — {logged}: "
+                        + " | ".join(x[:110] for x in gone_all))
+            s["paragraphs"] = paragraphs
     return keep_emptied_sections(sections, logger)
 
 
@@ -760,30 +813,44 @@ def strip_repeat_evidence(sections: list[dict], inp: planning.PlanInputs, logger
     """A piece of news evidence is cited in one section and in one trend only (the write prompt says so; a prompt rule alone
     did not hold). A sentence that cites one already cited earlier in another section, or in another trend block, goes, with
     the sentences that refer to it, exactly like the other strips; the first citation stays. Found with
-    content_rules.evidence_reuse, the same function the check uses."""
+    content_rules.evidence_reuse, the same function the check uses. A section whose removals would take its every evidence
+    citation keeps them instead: the strip never strips a section's evidence wholesale — a misdetection, or a true repeat
+    the writer left no other backing for, then costs a reported check, not the section's text (found live: two phantom
+    "first citations" built from the market's own name gutted the U.S., sub-segment and key-players sections)."""
     if inp is None:
         return sections
     items = [{"id": i["id"], "fact": i["text"]} for i in inp.items.values() if i["kind"] == "evidence"]
-    rows = [r for r in content_rules.evidence_reuse(sections, items) if not _holds_link(r["sentence"])]
+    rows = [r for r in content_rules.evidence_reuse(sections, items, market_name=inp.market_name)
+            if not _holds_link(r["sentence"])]
     if not rows:
         return sections
     flagged = {r["at"] for r in rows}
     for si, s in enumerate(sections):
-        paragraphs = []
+        here = {at for at in flagged if at[0] == si}
+        if not here:
+            continue
+        stripped, removed = [], []
         for pi, p in enumerate(s["paragraphs"]):
             lines = []
             for li, line in enumerate(p.split("\n")):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                gone = {ci for ci in range(len(kept)) if (si, pi, li, ci) in flagged}
+                gone = {ci for ci in range(len(kept)) if (si, pi, li, ci) in here}
                 good = _drop_orphans(kept, gone)
-                if len(good) != len(kept):
-                    logger.info(f"[write] removed {len(kept) - len(good)} sentence(s) that cite news evidence already cited elsewhere from "
-                                f"{s['sop'][0] if s.get('sop') else 'the opening'}: " + " | ".join(x[:110] for x in kept if x not in good))
+                removed += [x for x in kept if x not in good]
                 if good:
                     lines.append(" ".join(good))
             if lines:
-                paragraphs.append("\n".join(lines))
-        s["paragraphs"] = paragraphs
+                stripped.append("\n".join(lines))
+        label = s['sop'][0] if s.get("sop") else "the opening"
+        if removed and not content_rules.evidence_cited_ids("\n".join(stripped), items, inp.market_name):
+            logger.warning(f"[write] the {label} section keeps {len(removed)} sentence(s) that cite news evidence already "
+                           "cited elsewhere: removing them would take the section's every evidence citation, so they stay "
+                           "for the evidence-reuse check to report")
+            continue
+        if removed:
+            logger.info(f"[write] removed {len(removed)} sentence(s) that cite news evidence already cited elsewhere from "
+                        f"{label}: " + " | ".join(x[:110] for x in removed))
+            s["paragraphs"] = stripped
     return keep_emptied_sections(sections, logger)
 
 

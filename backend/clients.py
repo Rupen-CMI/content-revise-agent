@@ -322,12 +322,67 @@ def plain_sections(sections: list[dict]) -> list[dict]:
     return [{**s, "paragraphs": [plain(p) for p in s["paragraphs"]]} for s in sections]
 
 
+# A client link token the writer got the shape of wrong: no link id ("[[CLIENT_LINK:private label skincare]]", found live,
+# printed raw in the draft), no words ("[[CLIENT_LINK:L1]]") or a bar for the colon. Anything that is not a whole token.
+_MALFORMED_TOKEN_RE = re.compile(r"\[\[CLIENT_LINK[:|]\s*(?!L\d+\|)([^\]]*?)\s*\]\]")
+
+
+def _repair_malformed_tokens(text: str, table: dict, logger: logging.Logger) -> str:
+    """Each malformed client link token becomes the whole token of the link it names (by id, or by its registered words, or
+    the run's only link when it names neither); one that names no link is reduced to its words."""
+    def fix(m: re.Match) -> str:
+        inner = m.group(1).strip()
+        lid = inner if inner in table else next(
+            (k for k, l in table.items() if l["anchor"] and _squash(l["anchor"]) == _squash(inner)), None)
+        if lid is None and len(table) == 1:
+            lid = next(iter(table))
+        if lid is None:
+            logger.info(f"[write] a malformed client link token {m.group(0)!r} names no link: left as plain words")
+            return inner
+        logger.info(f"[write] a malformed client link token {m.group(0)!r} was rewritten as link {lid}")
+        return f"[[CLIENT_LINK:{lid}|{table[lid]['anchor']}]]"
+    return _MALFORMED_TOKEN_RE.sub(fix, text)
+
+
+# A report link token the writer gave a bar suffix ("[[CMI_LINK:Language Services Market|converting text from one
+# language to another]]", found live: the suffix was a client link's registered words, so the client's link never
+# appeared and its check failed; or the report's own name twice over). The report link carries the report's name only.
+_CMI_BAR_TOKEN_RE = re.compile(r"\[\[CMI_LINK:([^|\]]+?)\s*\|([^\]]*)\]\]")
+
+
+def _repair_cmi_tokens(text: str, table: dict, taken: set[str], logger: logging.Logger) -> str:
+    """A CMI report link written with a bar suffix is cut back to the plain [[CMI_LINK:<report name>]]. When the
+    suffix is the registered words of a client link that no token carries yet, that client's token takes the
+    words' place right after the report link — the writer wrote the linked words there, and the report link
+    keeps its own shape and position (the market's first mention). A link already tokenized elsewhere only
+    loses the suffix."""
+    def fix(m: re.Match) -> str:
+        plain = f"[[CMI_LINK:{m.group(1).strip()}]]"
+        lid = next((k for k, l in table.items()
+                    if l["anchor"] and _squash(l["anchor"]) == _squash(m.group(2)) and k not in taken), None)
+        if lid is None:
+            logger.info(f"[write] the report link {plain!r} was written with a bar suffix: the suffix is cut")
+            return plain
+        taken.add(lid)
+        logger.info(f"[write] the report link {plain!r} carried the words of client link {lid}: the client's token "
+                    "is set right after it")
+        return f"{plain} [[CLIENT_LINK:{lid}|{table[lid]['anchor']}]]"
+    return _CMI_BAR_TOKEN_RE.sub(fix, text)
+
+
 def normalize_tokens(sections: list[dict], clients: list[Client], logger: logging.Logger) -> list[dict]:
     """Make every client link in the draft one correct token, in the opening. The linked words are the registered ones, never the
     writer's rewording; a token for an unknown link, or a second token for a link, is reduced to plain words; a link whose words
     stand in the opening without a token is turned into its token. A link the writer left out stays missing (the check reports it)."""
     table = {l["id"]: l for c in clients for l in c.links}
     seen: set[str] = set()
+    for s in sections:
+        s["paragraphs"] = [_repair_malformed_tokens(p, table, logger) for p in s["paragraphs"]]
+    # a report link's bar suffix that is a client link's registered words becomes that client's token only when no
+    # token for it stands anywhere yet (the fix pass below reduces a second one to plain words)
+    taken = {m.group(1) for s in sections for p in s["paragraphs"] for m in TOKEN_RE.finditer(p)}
+    for s in sections:
+        s["paragraphs"] = [_repair_cmi_tokens(p, table, taken, logger) for p in s["paragraphs"]]
     for s in sections:
         for pi, p in enumerate(s["paragraphs"]):
             def fix(m: re.Match) -> str:
@@ -383,6 +438,32 @@ def link_problems(raw_sections: list[dict], clients: list[Client]) -> list[str]:
                 out.append(f'the linked words of {c.host} were changed to "{tokens[0].group(2)}"')
             if not any(m.group(1) == l["id"] for m in TOKEN_RE.finditer(intro_text)):
                 out.append(f'the link "{l["anchor"]}" of {c.host} is not in the opening')
+    return out
+
+
+def naming_hosts(text: str, clients: list[Client]) -> list[str]:
+    """The hosts of the clients `text` names, matched the way naming_problems matches a client's name in the post:
+    its domain's first label and the name its page gave it, whole words, case-insensitive (and the domain itself)."""
+    out: list[str] = []
+    for c in clients:
+        names = [n for n in dict.fromkeys([c.host.split(".")[0], (c.brief or {}).get("name") or ""]) if n]
+        if c.host.lower() in text.lower() or any(
+                re.search(r"(?<![\w])" + re.escape(n) + r"(?![\w])", text, re.IGNORECASE) for n in names):
+            out.append(c.host)
+    return out
+
+
+def scrub_players(players: list[str], clients: list[Client], logger: logging.Logger) -> list[str]:
+    """The key players a post may name: `players` without any entry that names a client. The client is never named
+    in the post (its backlink is its only mention), so a key player that is a client — or carries a client's name —
+    is dropped before the list reaches any prompt. Logs every dropped player; the order of the rest is kept."""
+    out: list[str] = []
+    for name in players:
+        host = next(iter(naming_hosts(name, clients)), None)
+        if host:
+            logger.info(f"[client] key player {name!r} dropped: it names the client ({host})")
+            continue
+        out.append(name)
     return out
 
 

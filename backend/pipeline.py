@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import time
@@ -2605,13 +2606,30 @@ _GENERIC_NAME_WORDS = frozenset({
 
 _ENTITY_RE = re.compile(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b")
 
+# Capitalised runs made only of these words are regions, not anyone's name: a region recurs in any regional
+# discussion of the market, so matching one alone false-cites the evidence (found live: "North America" from a
+# U.S. evidence fact matched the size section's own regional sentence, the phantom became that fact's "first
+# citation", and the repeat-evidence stripper then removed the U.S. section's real citations as repeats of it).
+_REGION_RUN_WORDS = frozenset({
+    "north", "south", "east", "west", "latin", "central", "middle", "far", "near",
+    "america", "americas", "asia", "europe", "africa", "pacific", "atlantic", "arctic",
+})
+
 
 def _fact_entities(fact: str) -> list[tuple[list[str], str]]:
     """Named things in a fact: (specific words, whole phrase) for each capitalised run that names someone in
-    particular. Generic words (Group, Global), month names and sentence-opening filler are not "specific"."""
+    particular. Generic words (Group, Global), month names and sentence-opening filler are not "specific".
+    Two runs never are, whatever their words: a run whose every word is a region ("North America"), and a
+    lone word the fact itself also uses in lowercase — "Pacific Gas and Electric ... offering an electric
+    vehicle charger" leaves the run "Electric", a company-name tail and an ordinary word of the sentence,
+    which matched the market's own name and false-cited the fact in the size section (found live)."""
     out = []
     for run in _ENTITY_RE.findall(fact):
         words = [w.strip(".'-") for w in run.split()]
+        if all(w.lower() in _REGION_RUN_WORDS for w in words):
+            continue
+        if len(words) == 1 and re.search(rf"(?<![A-Za-z]){re.escape(words[0].lower())}(?![A-Za-z])", fact):
+            continue    # the word also sits in the fact as an ordinary lowercase word: not a name on its own
         specific = [
             w.lower() for w in words
             if len(w) >= 3 and w.lower() not in _GENERIC_NAME_WORDS and w.lower() not in _MONTH_WORDS
@@ -3215,9 +3233,19 @@ def _drop_repeated_tags(sections: list[dict], logger: logging.Logger) -> list[di
 
 def _paragraph_text(entry) -> str:
     """A "paragraphs" entry is a string, or an object {"paragraph": "..."} when the prompt asks the writer to name what
-    each paragraph is about (the sub-segment analyses: segment, sub-segment, paragraph)."""
+    each paragraph is about (the sub-segment analyses: segment, sub-segment, paragraph). The writer sometimes hands
+    those objects back as JSON text inside the list instead of as objects; printed as-is that leaks serialized JSON
+    into the draft (name_outside_sources then even credits it ", per <source>"), so JSON text decodes here and its
+    paragraph text is taken the same way. Prose that merely opens with a brace is kept unchanged."""
     if isinstance(entry, dict):
-        return str(entry.get("paragraph") or entry.get("text") or "")
+        return _paragraph_text(entry.get("paragraph") or entry.get("text") or "")
+    if isinstance(entry, list):     # both sub-segment objects wrapped in one JSON string: one paragraph each
+        return "\n".join(x for x in (_paragraph_text(i) for i in entry) if x.strip())
+    if isinstance(entry, str) and entry.lstrip()[:1] in ("{", "["):
+        try:
+            return _paragraph_text(json.loads(entry))
+        except ValueError:
+            return entry    # not JSON after all: keep the text as the writer wrote it
     return str(entry)
 
 
@@ -3874,7 +3902,8 @@ def _revise_pass(
             {
                 "heading": str(s.get("heading") or ""),
                 "sop": [str(t) for t in s.get("sop") or [] if str(t) in _VALID_SOP_TAGS],
-                "paragraphs": [_plain(str(p)) for p in s.get("paragraphs") or [] if str(p).strip()],
+                "paragraphs": [_plain(q) for p in s.get("paragraphs") or [] if _paragraph_text(p).strip()
+                               for q in _split_fused_paragraphs(_paragraph_text(p))],
             }
             for s in revised.get("sections") or []
         ]

@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 import httpx
 
+import market_names
 from pipeline import _SECONDARY_KEYWORD_SUFFIXES, _market_core
 from pipeline_log import section
 
@@ -106,10 +107,19 @@ def _fetch(url: str, logger: logging.Logger, breaker: _Breaker | None = None) ->
         return []
 
 
-def _names_market(phrase: str, core_words: list[str]) -> bool:
-    """A phrase counts only when it holds every word of the market's core (a stem match, so plurals pass)."""
+def _names_market(phrase: str, market_name: str) -> bool:
+    """A phrase counts only when it holds every word of SOME equivalent form of the market's core (a stem match, so
+    plurals pass): the full core, or a bracketed abbreviation in the words' place (market_names.market_name_forms)."""
     tokens = re.findall(r"[a-z0-9]+", phrase.lower())
-    return bool(core_words) and all(any(t.startswith(w[:5]) or w.startswith(t[:5]) for t in tokens if len(t) > 2) for w in core_words)
+    for i, form in enumerate(market_names.market_name_forms(market_name)):
+        core_words = _core_words(form)
+        # an abbreviated form's own abbreviation may be a one- or two-letter word; the original's short words keep
+        # the old rule (only words of three letters and more can match them)
+        short_ok = i > 0
+        if core_words and all(any(t.startswith(w[:5]) or w.startswith(t[:5]) for t in tokens if len(t) > 2 or (short_ok and len(w) <= 2))
+                              for w in core_words):
+            return True
+    return False
 
 
 def collect_suggestions(market_name: str, logger: logging.Logger, limit: int = 40) -> list[Suggestion]:
@@ -117,7 +127,6 @@ def collect_suggestions(market_name: str, logger: logging.Logger, limit: int = 4
     seed (letter-by-letter seeds count half), so a phrase both engines list near the top for several seeds ranks first."""
     section(logger, "KEYWORD RESEARCH (real searches)")
     core = _market_core(market_name)
-    core_words = _core_words(market_name)
     cached = _cache_read(core)
     if cached is not None:
         logger.info(f"[keywords] {len(cached)} phrase(s) for this market from the keyword cache (no requests sent)")
@@ -139,7 +148,7 @@ def collect_suggestions(market_name: str, logger: logging.Logger, limit: int = 4
             ok += bool(phrases)
             for rank, raw in enumerate(phrases):
                 phrase = " ".join(raw.lower().split())
-                if phrase == seed or not _names_market(phrase, core_words):
+                if phrase == seed or not _names_market(phrase, market_name):
                     continue
                 s = found.setdefault(phrase, Suggestion(phrase))
                 s.score += weight / (rank + 1)
@@ -253,7 +262,7 @@ def serp_terms(market_name: str, logger: logging.Logger) -> dict[str, float]:
     scores: dict[str, float] = {}
     for rank, h in enumerate(hits[:20]):
         title = (h.title or "").lower()
-        if not _names_market(title, _core_words(market_name)):
+        if not _names_market(title, market_name):
             continue
         for term in _SERP_TERMS:
             if re.search(r"\b" + re.escape(term) + r"\b", title):

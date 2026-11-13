@@ -453,6 +453,16 @@ check("figures: a quote naming another category is still refused",
       set(ev_segment(facts.validate_fact_sheet(raw, EV_PAGE, "EV Charger Market", LOG, TODAY), "By Charging Type")["figures"])
       == {"On-board Chargers"})
 
+# the report's own sentence names a category by its initials or with a short ending dropped (live: CHO 52%, face creams 43.1%)
+check("name in quote: a run of words as initials", facts._name_in_quote(
+    "Chinese Hamster Ovary Cells", "CHO cells dominate with 52% market share due to their proven efficiency"))
+check("name in quote: a short ending dropped by the report", facts._name_in_quote(
+    "Face Creams & Moisturizers", "Based on Product Type, the Face Cream & Moisturize segment is expected to capture 43.1 % share"))
+check("name in quote: another category's initials do not match", not facts._name_in_quote(
+    "Human Embryonic Kidney Cells", "CHO cells dominate with 52% market share"))
+check("name in quote: initials spelling a common word name nothing", not facts._name_in_quote(
+    "Television Home Entertainment", "the share of the market is 30%"))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

@@ -13,9 +13,11 @@ import math
 import re
 from dataclasses import dataclass, field
 
+import clients as clients_mod
 import demand
 import facts
 import llm
+import market_names
 import prompts
 import sections as ev_sections
 from pipeline import _SECONDARY_KEYWORD_SUFFIXES, _market_core
@@ -201,6 +203,18 @@ class PlanInputs:
     subsegments: list[dict] = field(default_factory=list)     # [{"split", "name"}]: the two sub-segments, fixed before the news search
 
 
+def _names_client(e: dict, client_list: list, log: logging.Logger) -> bool:
+    """An evidence item whose fact names a client is left out of the plan (logged), whatever its section: the client is
+    never named in the post — its backlink is its only mention — so the writer is never handed its name (found live: a
+    client's own blog post was selected as sub-segment evidence)."""
+    host = next(iter(clients_mod.naming_hosts(e.get("fact", ""), client_list)), None) if isinstance(e.get("fact"), str) else None
+    if not host:
+        return False
+    log.info(f"[plan] evidence {e.get('id', '?')} left out: it names the client ({host}), and the client is named "
+             "nowhere in the post but its link")
+    return True
+
+
 def build_inputs(
     market_name: str, fs: dict, evidence_items: list[dict], demand_result: dict, publisher_result: dict, sponsor_words: int,
     clients: list | tuple = (), logger: logging.Logger | None = None, subsegments: list[dict] | tuple = (),
@@ -218,6 +232,12 @@ def build_inputs(
     picks = [dict(s) for s in subsegments]
     sectioned = sectioned or any(t in ("segmentation", "key_players") or t.startswith("subsegment:")
                                  for e in evidence_items for t in e.get("tags") or [])
+    log = logger or logging.getLogger(__name__)
+    if clients:
+        # the client is never named in the post (its backlink is its only mention): the key-player list and the
+        # evidence lose every entry that names a client before any prompt is built from them
+        fs["players"] = clients_mod.scrub_players(list(fs.get("players") or []), list(clients), log)
+        evidence_items = [e for e in evidence_items if not _names_client(e, list(clients), log)]
     for f in facts.flatten_fact_sheet(fs):
         sections = set(_FACT_SECTIONS.get(f["kind"], set()))
         items[f["id"]] = {**f, "tags": [], "detail": "", "sections": sections}
@@ -322,14 +342,15 @@ def title_problems(title: str, market_name: str, basis: list[str], known_ids) ->
     t = (title or "").strip()
     if not t:
         return ["the title is empty"], soft
-    pos = t.lower().find(market_name.lower())
-    if pos < 0:
+    forms = market_names.market_name_forms(market_name)
+    positions = [p for p in (t.lower().find(f.lower()) for f in forms) if p >= 0]
+    if not positions:
         hard.append("it does not contain the full primary keyword")
-    elif pos > _TITLE_PRIMARY_START_MAX:
-        hard.append(f"the primary keyword starts at character {pos}, after the first {_TITLE_PRIMARY_START_MAX}")
+    elif min(positions) > _TITLE_PRIMARY_START_MAX:
+        hard.append(f"the primary keyword starts at character {min(positions)}, after the first {_TITLE_PRIMARY_START_MAX}")
     if re.search(r"\d", t):
         hard.append("it contains a figure (a title states the point in words; figures live in the body with their source)")
-    if re.search(rf"\b(?:and|&)\s+(?:the\s+)?{re.escape(market_name)}", t, re.IGNORECASE):
+    if any(re.search(rf"\b(?:and|&)\s+(?:the\s+)?{re.escape(f)}", t, re.IGNORECASE) for f in forms):
         hard.append("it joins another subject to the market with 'and'")
     if _LABEL_TAIL_RE.search(t):
         hard.append("it ends in a free-standing label after a colon or dash")
@@ -531,11 +552,12 @@ def heading_problem(heading: str, sop: str, market_name: str, question_texts=())
         return "it holds a figure"
     if not _TOPIC_RES[sop].search(heading):
         return "it does not name its SOP topic"
-    core_tokens = facts._core_tokens(market_name)
-    if core_tokens:
-        heading_stems = {facts._stem(w) for w in re.findall(r"[a-z0-9]+", heading.lower())}
-        if not any(t in heading_stems for t in core_tokens):
-            return "it does not name the market"
+    heading_stems = {facts._stem(w) for w in re.findall(r"[a-z0-9]+", heading.lower())}
+    # the heading names the market when it names any equivalent form of its name (the full words, or a bracketed
+    # abbreviation in the words' place — see market_names.market_name_forms)
+    tokens = [t for f in market_names.market_name_forms(market_name) for t in facts._core_tokens(f)]
+    if tokens and not any(t in heading_stems for t in tokens):
+        return "it does not name the market"
     return None
 
 

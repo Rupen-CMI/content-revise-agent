@@ -714,6 +714,7 @@ function saveCmiChoice() {
 document.getElementById("reports-cmi-url").addEventListener("input", (e) => {
   if (!state.run) return;
   state.run.cmiUrl = e.target.value;
+  showCmiRowError(e.target.value);
   if (e.target.value.trim()) {
     state.run.pickedCmi = null;
     document.querySelectorAll("#reports-cmi-list .market-option").forEach((el) => {
@@ -815,7 +816,7 @@ function hasAnyReportSheet() {
 function reportsFetchBody(kind) {
   const run = state.run;
   if (kind === "cmi") {
-    return { run_token: run.token, kind, report_ids: run.pickedCmi ? [run.pickedCmi.news_id] : [], cmi_report_url: (run.cmiUrl || "").trim() };
+    return { run_token: run.token, kind, report_ids: run.pickedCmi ? [run.pickedCmi.news_id] : [], cmi_report_url: cmiLink() };
   }
   // exactly one report: the pasted link (no market), or the one report chosen among those found for the picked market
   const link = competitorLink();
@@ -828,7 +829,7 @@ function reportsFetchBody(kind) {
 function canFetchReport(kind) {
   const run = state.run;
   if (!run) return false;
-  if (kind === "cmi") return !!(run.pickedCmi || (run.cmiUrl || "").trim());
+  if (kind === "cmi") return !!(run.pickedCmi || cmiLink());
   return !!competitorLink() || (run.foundReports || []).some((r) => r.url === run.foundPick);
 }
 
@@ -875,6 +876,7 @@ async function saveFactSheetEdits(kind, edits) {
 
 for (const kind of REPORT_KINDS) {
   document.getElementById(`reports-${kind}-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
+  document.getElementById(`reports-${kind}-link-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
 }
 
 document.getElementById("reports-find-btn").addEventListener("click", async () => {
@@ -1191,20 +1193,42 @@ function renderRunControls() {
 }
 
 // ---------------------------------------------------------------- step 1 helpers (report pick + own links)
-// The competitor link the editor pasted, trimmed ('' when none): a pasted CMI link belongs in the CMI tab, so it is left out here.
-function competitorLink() {
-  const link = String((state.run && state.run.compLink) || "").trim();
-  return isCmiLink(link) ? "" : link;
+// The hard check on the two own-link boxes ('' when the link may be used): both take only web links; the CMI box takes only
+// pages on CMI's own site, the competitor box only pages on other sites (a CMI report's figures would be adjusted as a
+// competitor's). A link that fails cannot be fetched; the backend refuses it too.
+function reportLinkError(url, kind) {
+  const link = String(url || "").trim();
+  if (!link) return "";
+  if (!/^https?:\/\/[^\s/]+\.[^\s/]+/i.test(link)) return "That does not look like a web link. It should start with http:// or https://.";
+  if (kind === "cmi" && !isCmiLink(link)) return "Only coherentmarketinsights.com report links go here. Paste a competitor link in the Competitor tab.";
+  if (kind === "competitor" && isCmiLink(link)) return "This is a CMI report link. Paste it in the CMI tab, not here.";
+  return "";
 }
 
-// Competitor rows refuse a CMI link inline: its figures would be treated as a competitor's and adjusted.
-function showCompetitorRowError(entry, url) {
-  const el = entry.querySelector(".url-check-result");
-  if (!isCmiLink(url)) { el.hidden = true; el.textContent = ""; el.className = "url-check-result"; return; }
-  el.hidden = false;
-  el.className = "url-check-result fail";
-  el.textContent = "This is a CMI report link; paste it in the CMI reports tab.";
+// The CMI link the editor pasted, trimmed ('' when none or when it fails the hard check).
+function cmiLink() {
+  const link = String((state.run && state.run.cmiUrl) || "").trim();
+  return reportLinkError(link, "cmi") ? "" : link;
 }
+
+// The competitor link the editor pasted, trimmed ('' when none or when it fails the hard check).
+function competitorLink() {
+  const link = String((state.run && state.run.compLink) || "").trim();
+  return reportLinkError(link, "competitor") ? "" : link;
+}
+
+// Shows a box's hard-check error inline under it (and hides an old one once the link passes).
+function showLinkRowError(entry, url, kind) {
+  const el = entry.querySelector(".url-check-result");
+  const err = reportLinkError(url, kind);
+  if (!err) { if (el.classList.contains("hard")) { el.hidden = true; el.textContent = ""; el.className = "url-check-result"; } return; }
+  el.hidden = false;
+  el.className = "url-check-result fail hard";
+  el.textContent = err;
+}
+
+function showCompetitorRowError(entry, url) { showLinkRowError(entry, url, "competitor"); }
+function showCmiRowError(url) { showLinkRowError(document.getElementById("reports-cmi-url-block"), url, "cmi"); }
 
 // What each tier means, shown with its group so the editor sees why a market is offered.
 const TIER_INFO = {
@@ -1264,20 +1288,30 @@ function updateReportsControls() {
   document.getElementById("step1-agent-clear").hidden = !hasMarket;
   document.getElementById("reports-find-btn").disabled = busy || !hasMarket;
   document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
+  // the hint beside "Fetch selected report" speaks of the list only; a bad pasted link is reported in its own row
   const hints = {
-    cmi: run.pickedCmi ? `Report chosen: ${run.pickedCmi.keyword}` : (run.cmiUrl || "").trim() ? "The pasted CMI report link will be read." : "Pick a CMI report or paste its link.",
-    competitor: competitorLink() ? "The pasted report link will be read."
-      : canFetchReport("competitor") ? "The chosen report will be read."
-      : hasMarket ? "Find reports for this market, then choose one." : "Pick a market, or paste one report link.",
+    cmi: (run.cmiUrl || "").trim() ? "A link is pasted below: Fetch link reads it instead."
+      : run.pickedCmi ? `Report chosen: ${run.pickedCmi.keyword}` : "Pick a CMI report, or paste its link below.",
+    competitor: (run.compLink || "").trim() ? "A link is pasted below: Fetch link reads it instead."
+      : canFetchReport("competitor") ? "The chosen report will be read." : "Choose one of the reports found.",
   };
   document.getElementById("reports-competitor-url-clear").hidden = !(run.compLink || "").trim();
+  // Each source has its own fetch button next to it: "Fetch selected report" under the list (enabled while the link box is
+  // empty) and "Fetch link" in the link row (enabled when the box holds a usable link). Both call runReportsFetch(kind).
+  const listPick = {
+    cmi: !!run.pickedCmi && !(run.cmiUrl || "").trim(),
+    competitor: !competitorLink() && (run.foundReports || []).some((r) => r.url === run.foundPick),
+  };
+  const linkOk = { cmi: !!cmiLink(), competitor: !!competitorLink() };
   for (const kind of REPORT_KINDS) {
     const sheet = run.sheets[kind];
     const btn = document.getElementById(`reports-${kind}-fetch-btn`);
-    btn.disabled = busy || !canFetchReport(kind);
-    btn.querySelector("span").textContent = sheet ? "Fetch report again" : "Fetch report";
+    btn.disabled = busy || !listPick[kind];
+    btn.querySelector("span").textContent = sheet ? "Fetch selected report again" : "Fetch selected report";
+    document.getElementById(`reports-${kind}-link-fetch-btn`).disabled = busy || !linkOk[kind];
     document.getElementById(`reports-${kind}-fetch-hint`).textContent = hints[kind];
   }
+  document.getElementById("reports-competitor-list-fetch").hidden = !(run.foundReports || []).length;
   const sheet = run.sheets[run.reportTab];
   document.getElementById("reports-confirm-btn").disabled = busy || !sheet;
   document.getElementById("reports-confirm-hint").textContent = sheet
@@ -1306,7 +1340,13 @@ async function checkReportUrl(entry, cmi = false) {
   if (!state.run) return;
   const resultEl = entry.querySelector(".url-check-result");
   const url = String(entry.querySelector("input").value || "").trim();
+  const hardError = reportLinkError(url, cmi ? "cmi" : "competitor");
   resultEl.hidden = false;
+  if (hardError) {
+    resultEl.className = "url-check-result fail hard";
+    resultEl.textContent = hardError;
+    return;
+  }
   if (!url) {
     resultEl.className = "url-check-result";
     resultEl.textContent = "Paste a link first, then check it.";
@@ -1394,6 +1434,7 @@ function renderReportsPickers() {
   if (!Array.isArray(run.pickedMarkets)) run.pickedMarkets = [];
   const cmiInput = document.getElementById("reports-cmi-url");
   if (cmiInput.value !== (run.cmiUrl || "")) cmiInput.value = run.cmiUrl || "";
+  showCmiRowError(run.cmiUrl || "");
 
   // Agent-suggested markets: radio buttons, ONE market at most, none pre-selected. Picking one means "find competitor reports for it".
   renderTierGroups(document.getElementById("step1-suggested"), suggestedGroups(), (name) => {

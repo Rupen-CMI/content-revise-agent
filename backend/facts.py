@@ -420,17 +420,37 @@ def _name_variants(name: str) -> list[list[str]]:
     if inner:
         out.append(_flex_tokens(re.sub(r"\([^)]*\)", " ", name)))
         out.append(_flex_tokens(" ".join(inner)))
+    # a run of three or more words written as its initials ("CHO cells"); initials that spell a common word name nothing
+    out += [v[:i] + [ini] + v[j:] for v in list(out) for i in range(len(v)) for j in range(i + 3, len(v) + 1)
+            if (ini := "".join(w[0] for w in v[i:j])) not in _INITIALS_NOT_NAMES]
     return [v for v in out if v]
+
+
+_INITIALS_NOT_NAMES = {"and", "the", "for", "are", "was", "has", "had", "its", "all", "any", "can", "per", "via", "not", "but",
+                       "our", "who", "how", "new", "one", "two", "use", "set", "end", "top", "low", "high", "from", "with",
+                       "that", "this", "into", "over", "also", "more", "most", "will", "than", "each"}
+
+
+def _same_word(a: str, b: str) -> bool:
+    """One word of a category name and one of a quote are the same word, allowing a short ending the report's own spelling
+    drops or adds ('moisturize'/'moisturizer'): the shorter is at least five letters and starts the longer, which is at
+    most two letters longer."""
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 5 and long_.startswith(short) and len(long_) - len(short) <= 2
 
 
 def _name_in_quote(name: str, quote: str) -> bool:
     """Whether a quote names a category, beyond the literal spelling: case and singular/plural differences
-    ('Vehicles'/'vehicle', 'Chargers'/'charger'), the bracketed part optional, the abbreviation in brackets alone, and
-    a hyphenated name spelled with spaces or joined ('on-board' = 'on board' = 'onboard')."""
+    ('Vehicles'/'vehicle', 'Chargers'/'charger'), a word's short ending ('Moisturizers'/'Moisturize'), the bracketed part
+    optional, the abbreviation in brackets alone, a run of the name's words as its initials ('Chinese Hamster Ovary Cells'
+    = 'CHO cells') and a hyphenated name spelled with spaces or joined ('on-board' = 'on board' = 'onboard')."""
     toks = _flex_tokens(quote)
     solid = "".join(toks)
     for variant in _name_variants(name):
-        if any(toks[i:i + len(variant)] == variant for i in range(len(toks) - len(variant) + 1)):
+        if any(all(_same_word(a, b) for a, b in zip(variant, toks[i:i + len(variant)]))
+               for i in range(len(toks) - len(variant) + 1)):
             return True
         joined = "".join(variant)
         if len(variant) > 1 and len(joined) >= 6 and joined in solid:

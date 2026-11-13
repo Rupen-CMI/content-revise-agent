@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+import market_names
 import sentsplit
 import subheads
 import freshness
@@ -557,6 +558,10 @@ _FACT_GENERIC_CAPS = frozenset({
     # a different, unrelated company, "South Indian Bank").
     "indian", "irish", "nordic", "european", "american", "asian", "chinese", "japanese", "korean",
     "british", "german", "french", "canadian", "australian", "african", "india", "ireland", "asia",
+    # Ordinary sentence-opening adjectives, the same shape (found live: "Public charging networks" from a
+    # U.S. evidence fact false-matched a market-trends paragraph written from a CMI report driver, whose
+    # repeat then stripped the section's real citations).
+    "public",
 })
 
 
@@ -993,10 +998,12 @@ def run_checks(
     ))
 
     if primary_keyword:
+        forms = market_names.market_name_forms(primary_keyword)
+        ok = any(f.lower() in title.lower() for f in forms)
         results.append(CheckResult(
             "Title contains the full primary keyword (soft)",
-            primary_keyword.lower() in title.lower(),
-            "" if primary_keyword.lower() in title.lower() else f"{primary_keyword!r} not in the title",
+            ok,
+            "" if ok else f"{primary_keyword!r} not in the title",
         ))
 
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
@@ -1068,7 +1075,8 @@ def run_checks(
         # stays a loose sanity check, not a target: it only flags outright stuffing (several uses
         # crammed into one paragraph), which the per-paragraph "do NOT stack" rule already forbids.
         needed = 1 + sum(1 for sec in sections if sec.get('sop'))
-        primary_count = full.lower().count(primary_keyword.lower())
+        primary_count = sum(full.lower().count(f.lower())
+                            for f in market_names.market_name_forms(primary_keyword))
         primary_pct = primary_count / total * 100
         results.append(CheckResult(
             "Primary keyword present, not stuffed (soft)",
@@ -2003,7 +2011,7 @@ def run_checks_v2(
         not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
 
     news_items = [{"id": i["id"], "fact": i["text"]} for i in getattr(inp, "items", {}).values() if i.get("kind") == "evidence"]
-    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items) if news_items else []
+    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items, market_name) if news_items else []
     results.append(CheckResult(
         "Each piece of news evidence is cited in one section and in one trend only",
         not reuse, "; ".join(reuse[:3]) + (f" (+{len(reuse) - 3} more)" if len(reuse) > 3 else "") if reuse else ""))

@@ -364,9 +364,10 @@ button.menu-toggle {
 
 .report-url-row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
 }
+.report-url-row .btn { flex-shrink: 0; white-space: nowrap; }
 
 .report-url-input { font-size: 13.5px; }
 
@@ -1432,12 +1433,18 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .market-option .option-caption { margin-top: 4px; }
 
 .market-clear-btn { margin-top: 8px; }
-#reports-competitor-url-block .report-url-row { margin-top: 8px; }
+.report-url-row { margin-top: 2px; }
 /* the competitor tab: the one report found, or the one pasted link */
 .found-market { margin-right: 8px; font-weight: 600; color: var(--text); }
 .fs-variance-note { margin: 10px 0 0; }
-/* the CMI report link box and its note sit inside the CMI tab, under its list, with the list's own side padding */
-#reports-cmi-url-block { padding: 14px 20px 6px; border-top: 1px solid var(--border); }
+/* the link block of BOTH tabs (kv-label heading, [box][Check][Fetch link] row, notes): same padding and divider */
+.report-url-entry { padding: 14px 20px 6px; border-top: 1px solid var(--border); }
+.report-url-foot { margin-top: 2px; gap: 12px; }
+.report-url-foot .field-hint { margin: 0; }
+/* the "found" list shares the list's side padding, like the suggestion list above it */
+.reports-found-block { padding: 6px 20px 0; }
+/* a fetch button sits directly under the list it fetches, with the list's side padding */
+.reports-fetch-row { padding: 0 20px 16px; }
 #reports-cmi-note { padding: 0 20px 18px; margin: 0; }
 
 /* ---------- A trend's own heading inside the Trends section ---------- */
@@ -1522,7 +1529,8 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
   flex: 1 1 50%;
   padding: 0 12px;
 }
-.reports-fetch-row { align-items: center; margin-top: 14px; }
+.reports-fetch-row { align-items: center; }
+.reports-fetch-row[hidden] { display: none; }
 
 /* ---------- Fact sheet panel (shared by both Market & Reports tabs and the Evidence step) ---------- */
 .factsheet-panel { margin-top: 16px; }
