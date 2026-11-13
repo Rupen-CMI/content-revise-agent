@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+import market_names
 import sentsplit
 import subheads
 import freshness
@@ -997,10 +998,12 @@ def run_checks(
     ))
 
     if primary_keyword:
+        forms = market_names.market_name_forms(primary_keyword)
+        ok = any(f.lower() in title.lower() for f in forms)
         results.append(CheckResult(
             "Title contains the full primary keyword (soft)",
-            primary_keyword.lower() in title.lower(),
-            "" if primary_keyword.lower() in title.lower() else f"{primary_keyword!r} not in the title",
+            ok,
+            "" if ok else f"{primary_keyword!r} not in the title",
         ))
 
     total = _words(full.replace(SPONSOR_TOKEN, sponsor_text)) if sponsor_text else _words(full)
@@ -1072,7 +1075,8 @@ def run_checks(
         # stays a loose sanity check, not a target: it only flags outright stuffing (several uses
         # crammed into one paragraph), which the per-paragraph "do NOT stack" rule already forbids.
         needed = 1 + sum(1 for sec in sections if sec.get('sop'))
-        primary_count = full.lower().count(primary_keyword.lower())
+        primary_count = sum(full.lower().count(f.lower())
+                            for f in market_names.market_name_forms(primary_keyword))
         primary_pct = primary_count / total * 100
         results.append(CheckResult(
             "Primary keyword present, not stuffed (soft)",

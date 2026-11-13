@@ -441,6 +441,32 @@ def link_problems(raw_sections: list[dict], clients: list[Client]) -> list[str]:
     return out
 
 
+def naming_hosts(text: str, clients: list[Client]) -> list[str]:
+    """The hosts of the clients `text` names, matched the way naming_problems matches a client's name in the post:
+    its domain's first label and the name its page gave it, whole words, case-insensitive (and the domain itself)."""
+    out: list[str] = []
+    for c in clients:
+        names = [n for n in dict.fromkeys([c.host.split(".")[0], (c.brief or {}).get("name") or ""]) if n]
+        if c.host.lower() in text.lower() or any(
+                re.search(r"(?<![\w])" + re.escape(n) + r"(?![\w])", text, re.IGNORECASE) for n in names):
+            out.append(c.host)
+    return out
+
+
+def scrub_players(players: list[str], clients: list[Client], logger: logging.Logger) -> list[str]:
+    """The key players a post may name: `players` without any entry that names a client. The client is never named
+    in the post (its backlink is its only mention), so a key player that is a client — or carries a client's name —
+    is dropped before the list reaches any prompt. Logs every dropped player; the order of the rest is kept."""
+    out: list[str] = []
+    for name in players:
+        host = next(iter(naming_hosts(name, clients)), None)
+        if host:
+            logger.info(f"[client] key player {name!r} dropped: it names the client ({host})")
+            continue
+        out.append(name)
+    return out
+
+
 def naming_problems(raw_sections: list[dict], clients: list[Client]) -> list[str]:
     """The link is the client's one mention: its name (as its page gave it, and its domain's first word) is written nowhere in the post.
     The linked words themselves are left out of the reading, so a link whose words ARE the client's name is not a fault."""
