@@ -115,16 +115,48 @@ def repeated_point_problems(sections: list[dict], threshold: float = 0.55, min_s
 _EVIDENCE_MIN_SHARED_WORDS = 3
 
 
-def evidence_reuse(sections: list[dict], items: list[dict]) -> list[dict]:
+def _sentence_citations(
+    sentence: str, items: list[dict], facts_of: dict[str, frozenset[str]], own: frozenset[str],
+) -> list[str]:
+    """The evidence ids one sentence cites: an id the sentence's matcher finds (pipeline._evidence_used_ids)
+    whose fact the sentence also shares _EVIDENCE_MIN_SHARED_WORDS content words with, the market's own name
+    excluded from both sides. The market's name is in every section's lead and says nothing about which
+    evidence a sentence restates: counted as content, it satisfied the overlap test for any fact that
+    mentions the market's products, and a section that only named the market became the fact's "first
+    citation" (found live), whose later true citations the repeat-evidence stripper then removed."""
+    import pipeline
+    stems = _content_stems(sentence) - own
+    return [eid for eid in sorted(pipeline._evidence_used_ids(sentence, items))
+            if len(stems & facts_of[eid]) >= _EVIDENCE_MIN_SHARED_WORDS]
+
+
+def _fact_stems(items: list[dict], market_name: str = "") -> tuple[dict[str, frozenset[str]], frozenset[str]]:
+    """Each fact's content stems and the market's own stems: the two sides of evidence_reuse's overlap test."""
+    own = _content_stems(market_name)
+    return {it["id"]: _content_stems(it["fact"]) - own for it in items}, own
+
+
+def evidence_cited_ids(text: str, items: list[dict], market_name: str = "") -> set[str]:
+    """Every evidence id `text` cites, by the same standard as evidence_reuse. The repeat-evidence strip uses it
+    to tell a section that would lose its every citation from one that keeps some."""
+    facts_of, own = _fact_stems(items, market_name)
+    out: set[str] = set()
+    for line in (text or "").split("\n"):
+        for sentence in (x for x in sentsplit.SPLIT_RE.split(line) if x.strip()):
+            out |= set(_sentence_citations(sentence, items, facts_of, own))
+    return out
+
+
+def evidence_reuse(sections: list[dict], items: list[dict], market_name: str = "") -> list[dict]:
     """The sentences that cite a piece of news evidence already cited earlier in ANOTHER market section, or (in the trends
     section) in another trend block. `items` are the news evidence ({id, fact}); a sentence cites one when
-    pipeline._evidence_used_ids finds it there and the sentence shares at least _EVIDENCE_MIN_SHARED_WORDS content words with
-    the fact (a sentence that only names the same company is a different point). The trends' lead-in belongs to the section
+    pipeline._evidence_used_ids finds it there and the sentence shares at least _EVIDENCE_MIN_SHARED_WORDS content words
+    with the fact beyond the market's own name (a sentence that only names the same company is a different point; a
+    sentence that only names the market is no citation at all). The trends' lead-in belongs to the section
     but to no trend block. `sections` carry the trend sub-headings (subheads) so the blocks can be told apart. Each row is
     {id, first, where, at: (section, paragraph, line, sentence), sentence}; the first citation is never a row."""
-    import pipeline
     import subheads
-    facts_of = {it["id"]: _content_stems(it["fact"]) for it in items}
+    facts_of, own = _fact_stems(items, market_name)
     cited: dict[str, tuple[str, int | None]] = {}
     rows: list[dict] = []
     for si, s in enumerate(sections):
@@ -137,10 +169,7 @@ def evidence_reuse(sections: list[dict], items: list[dict]) -> list[dict]:
                 continue
             for li, line in enumerate(paragraph.split("\n")):
                 for ci, sentence in enumerate(x for x in sentsplit.SPLIT_RE.split(line) if x.strip()):
-                    stems = _content_stems(sentence)
-                    for eid in sorted(pipeline._evidence_used_ids(sentence, items)):
-                        if len(stems & facts_of[eid]) < _EVIDENCE_MIN_SHARED_WORDS:
-                            continue
+                    for eid in _sentence_citations(sentence, items, facts_of, own):
                         first_sop, first_block = cited.setdefault(eid, (sop, block))
                         if first_sop == sop == "trends":
                             if block is None:
@@ -158,8 +187,9 @@ def evidence_reuse(sections: list[dict], items: list[dict]) -> list[dict]:
     return rows
 
 
-def evidence_reuse_problems(sections: list[dict], items: list[dict]) -> list[str]:
-    return [f"{r['id']} is cited in {r['first']} and again in {r['where']}: {r['sentence'][:80]!r}" for r in evidence_reuse(sections, items)]
+def evidence_reuse_problems(sections: list[dict], items: list[dict], market_name: str = "") -> list[str]:
+    return [f"{r['id']} is cited in {r['first']} and again in {r['where']}: {r['sentence'][:80]!r}"
+            for r in evidence_reuse(sections, items, market_name)]
 
 
 # ------------------------------------------------------------------------------------------- the text reads whole
