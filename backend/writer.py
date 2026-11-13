@@ -760,30 +760,44 @@ def strip_repeat_evidence(sections: list[dict], inp: planning.PlanInputs, logger
     """A piece of news evidence is cited in one section and in one trend only (the write prompt says so; a prompt rule alone
     did not hold). A sentence that cites one already cited earlier in another section, or in another trend block, goes, with
     the sentences that refer to it, exactly like the other strips; the first citation stays. Found with
-    content_rules.evidence_reuse, the same function the check uses."""
+    content_rules.evidence_reuse, the same function the check uses. A section whose removals would take its every evidence
+    citation keeps them instead: the strip never strips a section's evidence wholesale — a misdetection, or a true repeat
+    the writer left no other backing for, then costs a reported check, not the section's text (found live: two phantom
+    "first citations" built from the market's own name gutted the U.S., sub-segment and key-players sections)."""
     if inp is None:
         return sections
     items = [{"id": i["id"], "fact": i["text"]} for i in inp.items.values() if i["kind"] == "evidence"]
-    rows = [r for r in content_rules.evidence_reuse(sections, items) if not _holds_link(r["sentence"])]
+    rows = [r for r in content_rules.evidence_reuse(sections, items, market_name=inp.market_name)
+            if not _holds_link(r["sentence"])]
     if not rows:
         return sections
     flagged = {r["at"] for r in rows}
     for si, s in enumerate(sections):
-        paragraphs = []
+        here = {at for at in flagged if at[0] == si}
+        if not here:
+            continue
+        stripped, removed = [], []
         for pi, p in enumerate(s["paragraphs"]):
             lines = []
             for li, line in enumerate(p.split("\n")):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                gone = {ci for ci in range(len(kept)) if (si, pi, li, ci) in flagged}
+                gone = {ci for ci in range(len(kept)) if (si, pi, li, ci) in here}
                 good = _drop_orphans(kept, gone)
-                if len(good) != len(kept):
-                    logger.info(f"[write] removed {len(kept) - len(good)} sentence(s) that cite news evidence already cited elsewhere from "
-                                f"{s['sop'][0] if s.get('sop') else 'the opening'}: " + " | ".join(x[:110] for x in kept if x not in good))
+                removed += [x for x in kept if x not in good]
                 if good:
                     lines.append(" ".join(good))
             if lines:
-                paragraphs.append("\n".join(lines))
-        s["paragraphs"] = paragraphs
+                stripped.append("\n".join(lines))
+        label = s['sop'][0] if s.get("sop") else "the opening"
+        if removed and not content_rules.evidence_cited_ids("\n".join(stripped), items, inp.market_name):
+            logger.warning(f"[write] the {label} section keeps {len(removed)} sentence(s) that cite news evidence already "
+                           "cited elsewhere: removing them would take the section's every evidence citation, so they stay "
+                           "for the evidence-reuse check to report")
+            continue
+        if removed:
+            logger.info(f"[write] removed {len(removed)} sentence(s) that cite news evidence already cited elsewhere from "
+                        f"{label}: " + " | ".join(x[:110] for x in removed))
+            s["paragraphs"] = stripped
     return keep_emptied_sections(sections, logger)
 
 

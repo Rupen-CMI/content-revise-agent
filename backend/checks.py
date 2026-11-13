@@ -557,6 +557,10 @@ _FACT_GENERIC_CAPS = frozenset({
     # a different, unrelated company, "South Indian Bank").
     "indian", "irish", "nordic", "european", "american", "asian", "chinese", "japanese", "korean",
     "british", "german", "french", "canadian", "australian", "african", "india", "ireland", "asia",
+    # Ordinary sentence-opening adjectives, the same shape (found live: "Public charging networks" from a
+    # U.S. evidence fact false-matched a market-trends paragraph written from a CMI report driver, whose
+    # repeat then stripped the section's real citations).
+    "public",
 })
 
 
@@ -2003,7 +2007,7 @@ def run_checks_v2(
         not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
 
     news_items = [{"id": i["id"], "fact": i["text"]} for i in getattr(inp, "items", {}).values() if i.get("kind") == "evidence"]
-    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items) if news_items else []
+    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items, market_name) if news_items else []
     results.append(CheckResult(
         "Each piece of news evidence is cited in one section and in one trend only",
         not reuse, "; ".join(reuse[:3]) + (f" (+{len(reuse) - 3} more)" if len(reuse) > 3 else "") if reuse else ""))
