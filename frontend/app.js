@@ -875,6 +875,7 @@ async function saveFactSheetEdits(kind, edits) {
 
 for (const kind of REPORT_KINDS) {
   document.getElementById(`reports-${kind}-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
+  document.getElementById(`reports-${kind}-link-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
 }
 
 document.getElementById("reports-find-btn").addEventListener("click", async () => {
@@ -1271,13 +1272,22 @@ function updateReportsControls() {
       : hasMarket ? "Find reports for this market, then choose one." : "Pick a market, or paste one report link.",
   };
   document.getElementById("reports-competitor-url-clear").hidden = !(run.compLink || "").trim();
+  // Each source has its own fetch button next to it: "Fetch selected report" under the list (enabled while the link box is
+  // empty) and "Fetch link" in the link row (enabled when the box holds a usable link). Both call runReportsFetch(kind).
+  const listPick = {
+    cmi: !!run.pickedCmi && !(run.cmiUrl || "").trim(),
+    competitor: !competitorLink() && (run.foundReports || []).some((r) => r.url === run.foundPick),
+  };
+  const linkOk = { cmi: !!(run.cmiUrl || "").trim(), competitor: !!competitorLink() };
   for (const kind of REPORT_KINDS) {
     const sheet = run.sheets[kind];
     const btn = document.getElementById(`reports-${kind}-fetch-btn`);
-    btn.disabled = busy || !canFetchReport(kind);
-    btn.querySelector("span").textContent = sheet ? "Fetch report again" : "Fetch report";
+    btn.disabled = busy || !listPick[kind];
+    btn.querySelector("span").textContent = sheet ? "Fetch selected report again" : "Fetch selected report";
+    document.getElementById(`reports-${kind}-link-fetch-btn`).disabled = busy || !linkOk[kind];
     document.getElementById(`reports-${kind}-fetch-hint`).textContent = hints[kind];
   }
+  document.getElementById("reports-competitor-list-fetch").hidden = !(run.foundReports || []).length;
   const sheet = run.sheets[run.reportTab];
   document.getElementById("reports-confirm-btn").disabled = busy || !sheet;
   document.getElementById("reports-confirm-hint").textContent = sheet
