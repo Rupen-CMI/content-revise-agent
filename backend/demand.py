@@ -15,6 +15,7 @@ import checks
 import facts
 import intent
 import llm
+import market_names
 import polarity
 import prompts
 from pipeline import _faq_tokens, _is_definition_question, _market_core
@@ -54,11 +55,21 @@ def _content_words(text: str, market_name: str) -> set[str]:
     return _faq_tokens(text, market_name)
 
 
+def _names_market(qwords: set[str], market_name: str) -> bool:
+    """The question holds enough of SOME equivalent form of the market's name (at least half of the form's core
+    tokens, rounded up) to read as a question about the market: the full name, the name without a bracketed
+    abbreviation, or the abbreviation in the words' place (see market_names.market_name_forms)."""
+    for form in market_names.market_name_forms(market_name):
+        tokens = facts._core_tokens(form)
+        if tokens and sum(1 for t in tokens if t in qwords) >= max(1, (len(tokens) + 1) // 2):
+            return True
+    return False
+
+
 def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[dict]:
     """MSQs that survive: a known kind of need, a real market-shaped question that names the market, not a definition,
     4-16 words, and not the same need as an earlier question reworded. Ordered by kind, ids Q1..Qn."""
-    core = _market_core(market_name)
-    core_tokens = facts._core_tokens(market_name)
+    forms = market_names.market_name_forms(market_name)
     kept: list[dict] = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
@@ -81,10 +92,10 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
             logger.info(f"[demand] dropped question (length {len(words)}): {q!r}")
             continue
         qwords = {facts._stem(w) for w in re.findall(r"[a-z0-9]+", q.lower())}
-        if core_tokens and sum(1 for t in core_tokens if t in qwords) < max(1, (len(core_tokens) + 1) // 2):
+        if not _names_market(qwords, market_name):
             logger.info(f"[demand] dropped question (does not name the market): {q!r}")
             continue
-        if not intent._is_market_question(q, core):
+        if not any(intent._is_market_question(q, _market_core(f)) for f in forms):
             logger.info(f"[demand] dropped question (not about the market as a whole): {q!r}")
             continue
         if _is_definition_question(q):
