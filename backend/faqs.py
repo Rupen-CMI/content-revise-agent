@@ -17,6 +17,7 @@ from datetime import date
 import clients
 import facts
 import llm
+import outside_sources
 import planning
 import prompts
 import sentsplit
@@ -164,6 +165,8 @@ def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, lo
     """The plan's faq questions, verbatim, in plan order. A question that is unanswerable, or whose sources cannot fill
     its answer, is dropped; every kept answer has its unsupported sentences stripped."""
     by_id = {q["id"]: q for q in inp.questions}
+    allowed = outside_sources.allowed_names(inp)
+    srcs = outside_sources.source_names(inp, allowed)
     out = []
     for qid in plan.get("faq") or []:
         q = by_id.get(qid)
@@ -181,6 +184,11 @@ def normalize_faq(raw, plan: dict, inp: planning.PlanInputs, draft_text: str, lo
         if not answer:
             logger.info(f"[faq] {qid} came back with no answer and was dropped: {q['question']!r}")
             continue
+        # the post names no outside source, the FAQ included: an attribution clause is cut and a sentence that cannot be cut goes. This
+        # runs before the unsupported-name strip, which would drop the whole sentence over the firm's name.
+        answer, cut = outside_sources.clean_text(_plain(answer), allowed, srcs)
+        if cut:
+            logger.info(f"[faq] {qid}: removed an outside source from the answer: {' | '.join(x[:110] for x in cut)}")
         answer = strip_unsupported(q, sources_for_question(q, inp), _plain(answer), draft_text, logger)
         import writer   # lazy: writer imports pipeline-adjacent modules, so a module-level import here would cycle
         fixed = writer.fix_pointing_determiners([{"sop": [], "paragraphs": [answer]}], logging.getLogger("faq"))

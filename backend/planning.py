@@ -305,12 +305,13 @@ def _fmt_items(inp: PlanInputs, evidence: bool) -> str:
             suits = ", ".join(sorted(i["sections"] & set(ORDER))) or "any"
             if i.get("subsegment"):
                 suits += f" (about the sub-segment {i['subsegment']})"
-            line = f"- {i['id']} [suits: {suits}] {i['text']} (source: {i['source']})"
+            month = _event_month(i)
+            line = f"- {i['id']} [suits: {suits}] {i['text']} ({'news from ' + month if month else 'undated news'})"
             if i["detail"]:
                 line += f"\n    detail: {i['detail'][:200]}"
         else:
             note = "; historical: give its year, never present it as current" if i["historical"] else ""
-            line = f"- {i['id']}: {i['text']} [{i['source']}{note}]"
+            line = f"- {i['id']}: {i['text']} [{'CMI report' if i['source'] == 'CMI report' else 'plain statement'}{note}]"
         rows.append(line)
     return "\n".join(rows) or "(none)"
 
@@ -349,7 +350,7 @@ def title_problems(title: str, market_name: str, basis: list[str], known_ids) ->
     elif min(positions) > _TITLE_PRIMARY_START_MAX:
         hard.append(f"the primary keyword starts at character {min(positions)}, after the first {_TITLE_PRIMARY_START_MAX}")
     if re.search(r"\d", t):
-        hard.append("it contains a figure (a title states the point in words; figures live in the body with their source)")
+        hard.append("it contains a figure (a title states the point in words; figures live in the body)")
     if any(re.search(rf"\b(?:and|&)\s+(?:the\s+)?{re.escape(f)}", t, re.IGNORECASE) for f in forms):
         hard.append("it joins another subject to the market with 'and'")
     if _LABEL_TAIL_RE.search(t):

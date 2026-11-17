@@ -20,6 +20,7 @@ import config
 import content_rules
 import llm
 import clients
+import outside_sources
 import sentsplit
 import subheads
 import planning
@@ -89,21 +90,18 @@ def _shape_text(key: str, linked: bool) -> str:
 
 
 def _fact_text(item: dict) -> str:
+    """One fact line for the prompt. No source is shown for naming, because CMI is the only source the post names: a news item
+    carries only its month (the writer needs the date; its actor stays in the wording) and every other non-CMI fact is stated plainly."""
     note = " [historical: state its year, never as current]" if item.get("historical") else ""
     if item["kind"] in REQUIRED_KINDS:
         note += " [REQUIRED: state this figure in the section]"
     if item["kind"] == "evidence":
-        line = f"- [{item['id']}] {item['text']} (source: {item['source']}){note}"
+        month = planning._event_month(item)
+        line = f"- [{item['id']}] {item['text']} ({'news from ' + month if month else 'undated news'}; no publication is named){note}"
         if item.get("detail"):
             line += f"\n    detail: {_trim_detail(item['detail'])}"
         return line
-    if item["source"] not in ("CMI report", ""):
-        return (f"- [{item['id']}] {item['text']} (source: {item['source']}, NOT CMI: the paragraph carrying this "
-                f"figure names {item['source']} once, in its first sentence that uses a figure of this source, and "
-                f"its following sentences give further figures of this source without repeating the name — a new "
-                f"paragraph that uses a figure of this source names it again; never with "
-                f"\u201cthe same source\u201d or \u201cthat source\u201d; never credit the figure to CMI){note}")
-    if item["source"] == "":
+    if item["source"] != "CMI report":
         return f"- [{item['id']}] {item['text']} (stated plainly as the market's own fact: no source is named, and never CMI){note}"
     return f"- [{item['id']}] {item['text']} (CMI report){note}"
 
@@ -731,21 +729,15 @@ def _figure_keys(text: str) -> set[tuple[str, str]]:
 
 def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
     """The write prompt says a figure is stated in one section only and later sections refer back in words;
-    four replay rounds still returned conclusions that reprint a non-CMI figure unnamed — which is exactly
-    what the attribution check flags (§3.2). Those sentences are removed in code, like strip_meta_sentences:
-    a sentence that repeats a FIGURE already printed in an earlier sentence and does not name its source
-    goes; a sentence that carries the source's name stays, and so does one whose source an earlier sentence
-    of the same line named (the unit of naming is one line of a paragraph; the memory resets at every
-    line, so a new line that repeats the figure names the source again). A figure's identity is its value
-    with its unit (_figure_keys), so only the same figure FROM THE SAME FACT/SOURCE repeats — never two
-    unrelated facts' counts that share bare digits. Years never count; a figure's repeat only covers when
-    the sentence (or an earlier sentence of its line) names the figure's own source. And like
-    strip_repeat_evidence, the strip never takes a section's evidence wholesale: when the removals would
-    leave the section without its every evidence citation, they stay for the attribution check to report
-    (found live: the strip left a U.S. section at 68 words by deleting its own evidence sentences)."""
+    four replay rounds still returned conclusions that reprint a non-CMI figure. Those sentences are removed in code, like
+    strip_meta_sentences: a sentence that repeats a FIGURE already printed in an earlier sentence goes (no source is named in the
+    post, so a repeat can never be excused by a name). A figure's identity is its value with its unit (_figure_keys), so only the
+    same figure FROM THE SAME FACT/SOURCE repeats, never two unrelated facts' counts that share bare digits. Years never count.
+    And like strip_repeat_evidence, the strip never takes a section's evidence wholesale: when the removals would leave the section
+    without its every evidence citation, they stay for the checks to report (found live: the strip left a U.S. section at 68 words
+    by deleting its own evidence sentences)."""
     if inp is None:
         return sections
-    import checks
     owned: dict[tuple[str, str], str] = {}      # figure (value, unit) -> its outside source
     for i in inp.items.values():
         if i["kind"] not in ("size", "forecast", "cagr", "evidence") or i.get("source") in ("", "CMI report"):
@@ -768,20 +760,14 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
             lines: list[str] = []
             for line in p.split("\n"):
                 kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                named_line: set[str] = set()    # outside sources named in earlier sentences of this line
                 good, gone, gone_ix = [], [], set()
                 for si, sent in enumerate(kept):
-                    low = sent.lower()
                     strong = _figure_keys(sent)
-                    repeats = sorted(n for n in strong if n in printed)
-                    if repeats:
-                        srcs = {owned[n] for n in repeats}
-                        if not all(checks._names_source(low, src) or src in named_line for src in srcs):
-                            gone.append(sent)
-                            gone_ix.add(si)
-                            continue
+                    if any(n in printed for n in strong):
+                        gone.append(sent)
+                        gone_ix.add(si)
+                        continue
                     good.append(sent)
-                    named_line |= {src for src in set(owned.values()) if checks._names_source(low, src)}
                     printed.update(n for n in strong if n in owned)
                 if gone_ix:       # a sentence that refers to a removed one goes with it
                     kept_after = _drop_orphans(kept, gone_ix)
@@ -796,7 +782,7 @@ def strip_repeat_figures(sections: list[dict], inp: planning.PlanInputs, logger:
         if gone_all and not content_rules.evidence_cited_ids("\n".join(paragraphs), items, inp.market_name):
             logger.warning(f"[write] the {label} section keeps {len(gone_all)} sentence(s) that repeat figures printed "
                            "earlier: removing them would take the section's every evidence citation, so they stay "
-                           "for the attribution check to report")
+                           "for the checks to report")
             printed |= {n for sent in gone_all for n in _figure_keys(sent) if n in owned}   # they stay, so they are printed
             continue
         if gone_all:
@@ -892,84 +878,65 @@ def evidence_citations(sections: list[dict], inp: planning.PlanInputs) -> list[d
     return out
 
 
-def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
-    """A sentence that carries a figure from an outside source must name that source itself (never CMI). The writer
-    sometimes names the source in one sentence and gives its second figure in the next: the unit of naming is one
-    line of a paragraph, so where exactly one outside source owns the sentence's figures and neither the sentence
-    nor an earlier sentence of the same line named it, the source's name is appended before the closing punctuation.
-    Nothing else is rewritten; an ambiguous sentence is left for the check to report."""
+def strip_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
+    """The post names no outside source (CMI is the only one; the write prompt says so, and a prompt rule alone is not reliable, the
+    way it was not for the other strips). An attribution clause that can be cut out cleanly ("According to X, ", ", per X",
+    ", X reported", "(X, 2026)", "a survey by X") is cut and the sentence stays; a sentence that names a source in a way that cannot
+    be cut (a subject-verb citation, a research firm's name written into the sentence) goes, with the sentences that refer to it,
+    exactly like the other strips. A company that is the actor of its own development stays named (outside_sources.allowed_names).
+    A sentence that carries a link is cleaned where it can be and never removed. Like strip_repeat_evidence, the strip never takes a
+    section's evidence wholesale: when the removals would leave a market section without its every evidence citation, the sentences
+    stay for the check to report."""
     if inp is None:
         return sections
-    import checks
-    outside = []
-    own_figs: list[set[str]] = []      # figures of facts that name no outside source (the report's, or a plain statement)
-    wording_by_source: dict[str, tuple[str, str]] = {}   # full source -> (fact text, fact detail)
-    for i in inp.items.values():
-        if i.get("source") in ("", "CMI report", None):
-            own = {n for n in checks._fact_numbers(i["text"]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
-            if own:
-                own_figs.append(own)
-    for i in inp.items.values():
-        if i["kind"] in ("size", "forecast", "cagr", "evidence") and i.get("source") not in ("", "CMI report", None):
-            # Ownership uses digits only: a spelled small number ("two") is prose, not an identifying figure.
-            figs = {n for n in checks._fact_numbers(i["text"]) | checks._fact_numbers(i.get("detail", ""))
-                    if not re.fullmatch(r"(?:19|20)\d\d", n)}
-            if figs:
-                outside.append((re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", i["source"]).strip(), i["source"], figs))
-                prev = wording_by_source.setdefault(i["source"], ("", ""))
-                wording_by_source[i["source"]] = (f"{prev[0]} {i['text']}", f"{prev[1]} {i.get('detail', '') or ''}")
-    if not outside:
-        return sections
-    end_re = re.compile(r"([.!?][\"')\]]*)$")
+    allowed = outside_sources.allowed_names(inp)
+    srcs = outside_sources.source_names(inp, allowed)
+    items = [{"id": i["id"], "fact": i["text"]} for i in inp.items.values() if i["kind"] == "evidence"]
     for s in sections:
-        if not s.get("sop") or s["sop"][0] not in planning.ORDER:
-            continue
-        label, fixed = s["sop"][0], 0
-        paragraphs = []
-        for p in s["paragraphs"]:
-            lines = []
-            for line in p.split("\n"):
-                named: set[str] = set()     # outside sources named in earlier sentences of this line
-                out = []
-                for sent in [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]:
-                    nums = {n for n in checks._fact_numbers(sent) if not re.fullmatch(r"(?:19|20)\d\d", n)}
-                    # A token shared by two outside facts gives the weaker one a half-claim on the sentence
-                    # ("9" owned by {9, 150} and {9, 40} alike): the fact with the MOST figures in common
-                    # with the sentence is the real owner, the rest are coincidence.
-                    best = max((len(nums & figs) for _, _, figs in outside if nums & figs), default=0)
-                    # A number the report itself states (varied or not) can also turn up in a news item; when the report's own fact
-                    # shares at least as many figures with the sentence, the sentence is the report's and no news source is credited.
-                    if best and max((len(nums & figs) for figs in own_figs), default=0) >= best:
-                        best = 0
-                    owners = {(name, full) for name, full, figs in outside
-                              if nums & figs and len(nums & figs) == best}
-                    # A second tie-break, only when candidates from more than one distinct source still
-                    # stand: the fact whose own wording the sentence keeps — the same content-word overlap
-                    # checks.v2_evidence_attribution_problems applies — owns the sentence; a wording tie
-                    # keeps the old behaviour (an ambiguous sentence is left for the check to report).
-                    if len({full for _, full in owners}) > 1:
-                        best_wording = max((checks._wording_overlap(sent, *wording_by_source[full])
-                                            for _, full in owners), default=0)
-                        owners = {(name, full) for name, full in owners
-                                  if checks._wording_overlap(sent, *wording_by_source[full]) == best_wording}
-                    low = sent.lower()
-                    if owners and not any(checks._names_source(low, full) for _, full in owners) and len({n for n, _ in owners}) == 1:
-                        name, full = next(iter(owners))
-                        if not any(o_full in named for _, o_full in owners):
-                            m = end_re.search(sent.rstrip())
-                            sent = (sent.rstrip()[:m.start()] + f", per {name}" + sent.rstrip()[m.start():]) if m else sent.rstrip() + f", per {name}"
-                            named.add(full)
-                            fixed += 1
-                    named |= {o_full for _, o_full, _figs in outside if checks._names_source(low, o_full)}
-                    out.append(sent)
-                if out:
-                    lines.append(" ".join(out))
-            if lines:
-                paragraphs.append("\n".join(lines))
-        if fixed:
-            logger.info(f"[write] named the source in {fixed} sentence(s) of {label} that carried its figure without it")
+        label = s["sop"][0] if s.get("sop") else "the opening"
+        cut: list[str] = []
+        gone_all: list[str] = []
+
+        def build(drop: bool) -> list[str]:
+            paragraphs: list[str] = []
+            for p in s["paragraphs"]:
+                if subheads.is_subhead(p):
+                    paragraphs.append(p)    # a trend's sub-heading is structure, not prose to clean
+                    continue
+                lines: list[str] = []
+                for line in p.split("\n"):
+                    kept = [x for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
+                    cleaned, gone = [], set()
+                    for i, sent in enumerate(kept):
+                        text, dropped, names = outside_sources.clean_sentence(sent, allowed, srcs, keep=_holds_link(sent))
+                        if names and not dropped and text != sent:
+                            cut.append(f"{names[0]} (in: {sent[:90]})")
+                        if dropped and drop:
+                            gone.add(i)
+                        cleaned.append(text)
+                    good = _drop_orphans(cleaned, gone)
+                    gone_all.extend(x for x in cleaned if x not in good)
+                    if good:
+                        lines.append(" ".join(good))
+                if lines:
+                    paragraphs.append("\n".join(lines))
+            return paragraphs
+
+        paragraphs = build(True)
+        market = bool(s.get("sop")) and s["sop"][0] in planning.ORDER
+        if gone_all and market and not content_rules.evidence_cited_ids("\n".join(paragraphs), items, inp.market_name):
+            logger.warning(f"[write] the {label} section keeps {len(gone_all)} sentence(s) that name an outside source: removing them "
+                           "would take the section's every evidence citation, so they stay for the check to report")
+            cut.clear()
+            gone_all.clear()
+            paragraphs = build(False)
+        if cut:
+            logger.info(f"[write] cut the outside source from {len(cut)} sentence(s) of {label}: " + " | ".join(cut))
+        if gone_all:
+            logger.info(f"[write] removed {len(gone_all)} sentence(s) naming an outside source from {label}: "
+                        + " | ".join(x[:110] for x in gone_all))
         s["paragraphs"] = paragraphs
-    return sections
+    return keep_emptied_sections(sections, logger)
 
 
 # ------------------------------------------------------------------------------------------------- assembly
@@ -1009,6 +976,7 @@ def run_write_v2(
     prompt = build_write_prompt(plan, inp, sponsor, report)
     written = llm.chat_json(prompts.WRITE_SYSTEM, prompt, temperature=0.3, call_name="write", logger=logger, max_tokens=7000)
     sections = strip_meta_sentences(assemble_sections(written, plan, logger), logger)
+    sections = strip_outside_sources(sections, inp, logger)
     client_list = list(getattr(inp, "clients", None) or []) if config.CLIENT_REWRITE else []
     if client_list:
         # the writer restated the client paragraph: every link is one correct token in the opening (the URLs stay in code)
@@ -1022,7 +990,6 @@ def run_write_v2(
     sections = strip_repeat_figures(sections, inp, logger)
     sections = strip_repeat_evidence(sections, inp, logger)
     sections = strip_reader_filler(sections, logger)
-    sections = name_outside_sources(sections, inp, logger)
     sections = enforce_trend_shape(sections, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")

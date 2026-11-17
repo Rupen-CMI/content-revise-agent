@@ -814,7 +814,7 @@ expanding the section past its budget.
   - This section is about the publisher's subject only. It contains no statement about any market's size, growth rate, segments, \
 regions or list of vendors, and no market figure. If the original article makes such statements, leave them out: the market
 block, written afterwards, covers the market from CMI's report. This does not apply to the claims in the claims list: a claim \
-about how firms or practitioners work or adopt tools is the article's own point, so it is stated as its status requires, with its source.
+about how firms or practitioners work or adopt tools is the article's own point, so it is stated as its status requires, without naming any outside source.
   - The section may end with one short, natural sentence that points toward the wider market this subject belongs to; the market \
 analysis picks up from it. Do not conclude, do not summarize the post, do not address the reader with a closing thought.
 
@@ -822,21 +822,20 @@ CLAIMS AND ARTICLE EVIDENCE (this is how every statement in the original that ne
   The evidence block lists ARTICLE EVIDENCE items (ids C1, C2, ...; each shows its stance and source) and a CLAIMS FROM THE \
 ORIGINAL ARTICLE list; each claim is marked BACKED or NO OUTSIDE BACKING FOUND. Handle EVERY listed claim this way, in the \
 section where its point belongs:
-  1. BACKED, stance supports: write the claim, now with its source in the sentence ("According to <the source's name>, ..."), \
-using the item's DETAIL specifics.
-  2. BACKED, stance qualifies: write the corrected or conditioned version that the source supports, naming the source; the \
+  1. BACKED, stance supports: write the claim as an established fact, using the item's DETAIL specifics; the post names no \
+outside source, so no publication, firm or site is named for it ("according to ...", "per ..." are never written).
+  2. BACKED, stance qualifies: write the corrected or conditioned version that the source supports, without naming the source; the \
 reader still gets the original point, now with its condition.
   3. BACKED, stance contradicts: write what the source establishes instead; do not repeat the original claim.
   4. NO OUTSIDE BACKING FOUND: if it is a general statement that is widely understood and carries no verdict, write it in hedged, \
-attributed wording ("is often described as", "many beginners find"). If it is a superlative or a verdict about a named product or \
+hedged wording ("is often described as", "many beginners find"). If it is a superlative or a verdict about a named product or \
 company ("biggest strength", "weakness", "best for", "the simplest"), drop it entirely. Never state it as established fact.
   5. Never drop a whole main point because its claims are unverified. A comparison of named products stays in the article as a \
-section built from what ARTICLE EVIDENCE says about each product (facts and differences taken from named sources, not verdicts). \
+section built from what ARTICLE EVIDENCE says about each product (facts and differences the evidence states, not verdicts). \
 If there is no evidence for one product, say only what the article's neutral description supports, or leave that product out; the \
 section is still written from the evidence that exists and the article's general advice.
   6. Use at least {article_min} DIFFERENT ARTICLE EVIDENCE items in total, placed where their points belong in the section. A \
-claim about a named product may only state what the evidence states. Use only the source names the items print; never invent a \
-source.
+claim about a named product may only state what the evidence states. Never name an evidence item's source.
   Use each item's DETAIL, not only its headline, and weave the items into your sentences instead of one item per sentence. \
 Report every item you use in the top-level "evidence_citations" array: the item's id (C1, C2, ...) and the EXACT paragraph text, \
 copied character for character from one of your own "paragraphs" strings. If one paragraph uses several items, list it once per \
@@ -871,7 +870,7 @@ that follows carries the post's only analyst opinions.
 OUTPUT CHECKLIST (verify before you answer): "sections" holds exactly 2 objects: (1) the intro with "heading": "" and 3 \
 paragraphs; (2) the one publisher section, with a heading and exactly 2 paragraphs covering the 2-3 points you chose. Every \
 "sop" is []. No section is a conclusion. Every claim in the claims list marked BACKED ({backed_claims}) is stated in the \
-publisher section, with its source named in the same sentence: go through those claim ids one by one before you answer, and do \
+publisher section, with no source named: go through those claim ids one by one before you answer, and do \
 not skip one to save words (a claim is shortened, never left out). "evidence_citations" lists the ARTICLE EVIDENCE items you used.
 
 Return JSON in exactly this shape (2 section objects; every "sop" is an empty list; paragraph text is plain prose):
@@ -1620,7 +1619,7 @@ HOW TO PLAN
 2. Question headings. Pick exactly 2 or 3 questions to be section headings. Choose the ones whose answers your facts make strongest and most specific, each for a different section (the one its entry says it can head). A question heading is answered directly in the first sentences of its section. When a question about the market's size or growth is among them and your facts answer it, that question is the first heading chosen: it heads the section that opens the article with the market's figures.
 3. Other headings. A section that is not headed by a question gets a short topic phrase (about three to eight words) naming what the section covers, phrased for this market: how big the market is and how fast it is growing (the first section); what trend is changing it (the second); how the market divides and why the leading category of each split leads, one segment split at a time (the third); one sub-segment within a split, looked at closely (the fourth); the leading region, or the United States (the fifth); the companies that lead the market (the sixth); and what it all means and the outlook (the last). The heading names the market in its full form or its short form as well. It names the topic, never the findings: it is not a sentence, not a question, not a label naming the stage of the report it sits in, and it holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
 4. Facts. Four parts: what to assign, what never repeats, what is required, and what is specific to a section.
-   4a. Assigning. Give each section its strongest facts, about three to five, using only the ids listed above. A trends section carries up to nine: name three distinct trends and give each its own entry in "trend_groups", two or three facts each: a report driver or opportunity where one fits, plus at least one dated, named piece of news evidence where the evidence list has one. A news item serves the one trend it illustrates best, and the three trends differ from one another. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. A section with no good fact gets none and stays short: do not stretch a fact to fill it. Report facts are CMI's; news evidence is credited to its source by the writer. A fact marked as historical is presented with its year, never as current.
+   4a. Assigning. Give each section its strongest facts, about three to five, using only the ids listed above. A trends section carries up to nine: name three distinct trends and give each its own entry in "trend_groups", two or three facts each: a report driver or opportunity where one fits, plus at least one dated, named piece of news evidence where the evidence list has one. A news item serves the one trend it illustrates best, and the three trends differ from one another. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. A section with no good fact gets none and stays short: do not stretch a fact to fill it. Report facts are CMI's; news evidence is stated as the development it reports, with its acting company named and no outlet named. A fact marked as historical is presented with its year, never as current.
    4b. No repeats. A fact appears in one section only, so a figure is stated once. This is about each piece of evidence, not about each source: one source article or one report can supply several separate facts, and each of those facts is assigned to exactly one section; the same fact is never assigned to two sections, and two facts that make the same point count as one (assign only the stronger).
    4c. Required. The report's main figures are not optional: the market size, forecast and growth rate and the leading and fastest-growing regions go to report_context, every segment split goes to segmentation, and so does the leading category of a split with its stated share, except for the two sub-segments, whose figures go to subsegment. Code adds any of these you leave out, so plan each section's point around them.
    4d. Per section.
@@ -1658,7 +1657,7 @@ Return JSON in exactly this shape (all seven sections, in the order above):
  ]}}"""
 
 # ---------------------------------------------------------------- market-first chain: WRITE
-WRITE_SYSTEM = """You are a senior market-research analyst at Coherent Market Insights (CMI), writing a market analysis article about one market for CMI's own publication. You write in the formal register of a consulting or market-research report: precise, analytical and evidence-led, in the third person, with every claim anchored in a fact, a date or a named source. The readers are professionals (strategy, investment, procurement and product teams) researching this market; they expect sector terminology used correctly and analysis that goes beyond restating facts. You use only the facts the plan hands you, and you never invent a figure, a company detail or a source. Respond with JSON only."""
+WRITE_SYSTEM = """You are a senior market-research analyst at Coherent Market Insights (CMI), writing a market analysis article about one market for CMI's own publication. You write in the formal register of a consulting or market-research report: precise, analytical and evidence-led, in the third person, with every claim anchored in a fact, a date or a named actor. The readers are professionals (strategy, investment, procurement and product teams) researching this market; they expect sector terminology used correctly and analysis that goes beyond restating facts. You use only the facts the plan hands you, and you never invent a figure, a company detail or a source. Respond with JSON only."""
 
 # The write prompt is assembled from three parts so the model reads the rules once, in one place, before the data: PART A is the shared rule library (prompt_rules.py), PART B is the post block by block, PART C is the checklist and the output format.
 _WRITE_HEAD = """TITLE (final, already decided; you do not write or change it): {title}
@@ -1754,7 +1753,7 @@ RULES: ANSWER SHAPE
 
 RULES: FACTS AND SOURCES
 1. Use only the facts listed for that question. Never write a figure, year, company detail or claim that none of them supports, and never explain what you were not given.
-2. A fact from the CMI report is stated as a plain statement about the market, and a fact marked historical carries its year and is never presented as current. Never write "according to Coherent Market Insights", "according to CMI", "the report" or the research firm's name in an answer.
+2. A fact from the CMI report is stated as a plain statement about the market, and a fact marked historical carries its year and is never presented as current. Never write "according to Coherent Market Insights", "according to CMI", "the report" or the research firm's name in an answer, and never name any other source (a publication, a research firm, a data provider): state each fact plainly as the market's own fact.
 3. Put each fact in your own words: never reuse a run of eight or more words from a fact, and correct any spelling slip a fact carries.
 
 RULES: NO REPEATS

@@ -35,17 +35,16 @@ _RULES: dict[str, tuple[str, str, str]] = {
         "source of facts. Never talk about the writing process: no mention of \"the facts\", \"the plan\", \"the report not saying\", "
         "\"what is not available\" or what you could not find. Leave out what you cannot support, quietly.")),
     "credit": ("FACTS AND SOURCES", "Crediting a source", (
-        "A fact marked (CMI report) may be stated plainly. CMI's own research is written as \"CMI\" or \"CMI's report\", and an outside "
-        "source by its own name: \"the report\" never stands for an outside source. A fact marked \"no source is named\" is stated plainly as "
-        "the market's own fact: no report, firm or research is named for it, and it is never credited to CMI. A fact whose source is not CMI (news evidence, or a "
-        "figure marked NOT CMI) is never credited to CMI. The paragraph is the unit of naming (a bullet counts as its own paragraph): the "
-        "first sentence of a paragraph that uses one of that source's figures names the source, together with the month when the fact has "
-        "one; a later sentence in the same paragraph that uses a further figure of that same source does not repeat the name; a new "
-        "paragraph that uses a figure of an outside source names the source again. \"The same source\", \"That source\" and \"It\" "
-        "pointing back at a source are never written. A source's name goes in a short clause beside the fact, never in a frame that makes "
-        "a report or a website the subject of a sentence about the market, and there are no chains of \"according to\". A source's name is "
-        "written only beside a fact that lists that source: a name is never carried over from another fact, and a fact that names no "
-        "source is never given one.")),
+        "CMI is the only source the post ever names: a fact marked (CMI report) may be stated plainly, and CMI's own research is written as "
+        "\"CMI\" or \"CMI's report\". No other source is named anywhere in the post: no publication, news site, research firm, analyst house, "
+        "data provider or consultancy, and no report, survey, study, ranking or forecast is credited to one. Never write \"according to ...\", "
+        "\"per ...\", \"as reported by ...\", \"... reported\", \"data from ...\" or \"a ... survey\" with an outside name in it. A fact marked "
+        "\"no source is named\" is stated plainly as the market's own fact and is never credited to CMI. A news item (a fact marked \"news from"
+        " <month>\") is stated as the development it reports, in your own words: name the company or body that acts in it (\"Netcore Unbxd "
+        "launched an AI agent in May 2026\"), give its month when the fact has one, and never name the outlet that reported it and never "
+        "credit it to CMI. A statistic that a listed fact hands to a third party is stated plainly too, without the third party's name. "
+        "A name is written only as the actor of a development a listed fact describes: a name is never carried over from another fact, and "
+        "a fact is never given an actor it does not list.")),
     "figures": ("FACTS AND SOURCES", "Writing a figure", (
         "A figure is stated with its unit, its base year and what it measures; a sentence that gives a number says what the number "
         "measures. At most one fact goes in a sentence, and each fact goes in the sentence that makes the section's point. A fact marked "
