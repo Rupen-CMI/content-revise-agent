@@ -1067,6 +1067,7 @@ def refill_empty_sections(sections: list[dict], plan: dict, inp: planning.PlanIn
             logger.warning(f"[write] the targeted call for the {sop} section failed ({exc}); it is built from the fact sheet")
     if any(s["paragraphs"] for s in empty):
         sections = strip_meta_sentences(sections, logger)
+        sections = strip_outside_sources(sections, inp, logger)
         sections = strip_untraced_figures(sections, inp, sponsor_text, logger)
         sections = strip_repeat_figures(sections, inp, logger)
         sections = strip_repeat_evidence(sections, inp, logger)
