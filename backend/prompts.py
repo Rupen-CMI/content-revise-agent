@@ -1699,7 +1699,7 @@ THE MARKET SECTIONS (in this order; each heading is given and is final)
 _WRITE_TAIL = """
 PART C: CHECKLIST AND OUTPUT
 OUTPUT CHECKLIST
-All seven market sections are present in the given order with their given headings; a section whose block says to write only the editor line holds that single line under its heading and nothing else. The opening names the market within the first 100 words, carries the report link once where the opening asks for one, and has the placeholder once. Every figure is in a listed fact. No section states a fact that is not listed. Every assigned keyword is in its section, and every section's listed long-tail phrase is used in that section. No fact is stated in two places. Every sentence is complete and follows the LANGUAGE rules.
+All seven market sections are present in the given order with their given headings, each with real text under its heading. The opening names the market within the first 100 words, carries the report link once where the opening asks for one, and has the placeholder once. Every figure is in a listed fact. No section states a fact that is not listed. Every assigned keyword is in its section, and every section's listed long-tail phrase is used in that section. No fact is stated in two places. Every sentence is complete and follows the LANGUAGE rules.
 
 Return JSON in exactly this shape:
 {{"intro": {{"paragraphs": {intro_shape}}},
@@ -1710,6 +1710,18 @@ Return JSON in exactly this shape:
 The "sections" list holds one object per market section, in the given order. Each section's "paragraphs" follow the SHAPE given for it."""
 
 WRITE_USER = _WRITE_HEAD + prompt_rules.render() + _WRITE_POST + _WRITE_TAIL
+
+# One small call that writes a single market section the main write left empty (or whose text the backstops removed). It reuses the
+# section's own block from the write prompt (heading, purpose, facts, keywords, SHAPE), so the voice and the figure rules are the
+# main prompt's, and it is the only refill: a section still empty after it is built in code from the fact sheet.
+REFILL_USER = """Write ONLY the "{sop}" section of a market analysis article titled "{title}" about the {market_name}. Today's date is {today}. The article's other sections are headed: {other_headings}.
+
+Write in the formal register of a market-research report: third person, precise, analytical, in complete sentences. Use only the facts listed in the section block below, and state a figure only where a listed fact states it, exactly as the fact gives it; never invent a figure, a company detail or a source. Where the facts are few, reason from what they show (what it means for buyers and providers in this market) without adding a fact. Write the market by its full name, "{market_name}", at least once. Never write about the writing itself, the facts, the sources, the plan or what is missing: no sentence says that data, figures or details are unavailable, unlisted or not found. Name no research firm and write no placeholder, note to an editor or bracketed text. Where a fact names an outside source, name that source in the first sentence that uses its figure.
+
+{block}
+{extra}
+Return JSON in exactly this shape, the "paragraphs" following the SHAPE above:
+{{"paragraphs": ["<paragraph>"]}}"""
 
 # Four passages from the content team's reference article (Assessment Services Market), shown only when
 # config.WRITE_STYLE_ANCHORS is on. They carry register, sentence length and the evidence-then-implication pattern, not content.

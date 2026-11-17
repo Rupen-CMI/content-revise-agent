@@ -513,9 +513,9 @@ check("assembly: the opening is untagged, the transition is tagged, market secti
       sections[0]["sop"] == [] and sections[1]["sop"] == ["transition"] and sections[2]["sop"] == ["report_context"])
 check("assembly: headings are set to the plan's exact headings", all(s["heading"] == next(p["heading"] for p in plan["sections"] if p["sop"] == s["sop"][0])
                                                                     for s in sections[2:]))
-check("assembly: a section the model left out keeps its heading with an editor note, and a duplicate tag is ignored",
+check("assembly: a section the model left out keeps its heading with no placeholder, and a duplicate tag is ignored",
       [s["sop"][0] for s in sections[2:]] == list(planning.ORDER)
-      and next(s for s in sections if s["sop"] == ["key_players"])["paragraphs"][0].startswith("[EDITOR")
+      and next(s for s in sections if s["sop"] == ["key_players"])["paragraphs"] == []
       and next(s for s in sections if s["sop"] == ["key_players"])["heading"] == next(p["heading"] for p in plan["sections"] if p["sop"] == "key_players"))
 
 # ------------------------------------------------------------------ the sub-segment JSON leak (serialized objects never print)
@@ -924,40 +924,38 @@ check("U.S. thin: no editor-note placeholder and a word budget", "[EDITOR" not i
 check("U.S. thin: the report facts are listed for the writer (the U.S. statement, then the driver)",
       thin_block.index("A review of widget exports") < thin_block.index("Digital marketing adoption drives demand"), thin_block)
 check("U.S. thin: the writer is never asked to say that U.S. data is missing", "never say that U.S. data is missing" in thin_block)
-check("U.S. none: the heading stays with the one editor line and there is no word-count shape",
-      "[EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]" in none_block
-      and "about" not in none_block.splitlines()[0] and "100 to 200 words" not in none_block, none_block)
-check("U.S. none: the shape is the editor line alone", "SHAPE: The single line [EDITOR" in none_block and "and nothing else" in none_block)
+check("U.S. none: a qualitative U.S. analysis with a word budget and no editor line",
+      "[EDITOR" not in none_block and "about" in none_block.splitlines()[0] and "100 to 200 words" in none_block, none_block)
+check("U.S. none: the shape asks for a qualitative U.S. analysis with no figure", "qualitative U.S. analysis" in none_block)
 
 # "no data / could not find" sentences are stripped from the normal sections, the editor line itself is kept
 meta_secs = [{"heading": "h", "sop": ["country_us"], "paragraphs": [
     "No specific U.S. data is available for this market. Providers in the United States adopt cloud tools for reporting.",
     "We could not find verified U.S. figures. Hospitals buy these systems to cut manual work.",
     "U.S. statistics were not available at the time of writing. Buyers favour vendors with a local presence.",
-    "[EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]"]}]
+    "Suppliers in the United States compete on service."]}]
 meta_out = writer.strip_meta_sentences(meta_secs, LOG)[0]["paragraphs"]
 check("meta: 'no specific U.S. data', 'could not find' and 'figures were not available' sentences are stripped",
       meta_out[0] == "Providers in the United States adopt cloud tools for reporting." and "Hospitals buy" in meta_out[1]
       and meta_out[2] == "Buyers favour vendors with a local presence.", str(meta_out))
-check("meta: the editor note line survives the stripper", meta_out[3].startswith("[EDITOR: no verified U.S. data"), str(meta_out))
+check("meta: an ordinary sentence survives the stripper", meta_out[3] == "Suppliers in the United States compete on service.", str(meta_out))
 check("meta: ordinary sentences with 'no', 'not' and 'data' are kept",
       all(writer._META_RE.search(x) is None for x in (
           "Data from hospitals is not shared across regions in the same format.",
           "There is no single standard for widget exports in the United States.",
           "Providers could not meet demand last year without new capacity.")))
 
-# a planned market section whose paragraphs were all stripped keeps its heading with an editor note
+# a planned market section whose paragraphs were all stripped keeps its heading and no paragraph (refill_empty_sections writes it)
 gone = [{"heading": "U.S. Analysis", "sop": ["country_us"], "paragraphs": ["No specific U.S. data is available for this market."]},
         {"heading": "Segments", "sop": ["segmentation"], "paragraphs": ["The facts say nothing."]},
         {"heading": "", "sop": [], "paragraphs": ["The facts say nothing."]}]
 kept = writer.strip_meta_sentences(gone, LOG)
-check("emptied: a market section stripped to nothing keeps its heading with an editor note; an emptied opening is dropped",
+check("emptied: a market section stripped to nothing keeps its heading with no paragraph; an emptied opening is dropped",
       [(x["heading"], x["sop"]) for x in kept] == [("U.S. Analysis", ["country_us"]), ("Segments", ["segmentation"])]
-      and kept[0]["paragraphs"] == [writer.editor_note("country_us")] and kept[1]["paragraphs"][0].startswith("[EDITOR: the segmentation section"),
-      str(kept))
+      and kept[0]["paragraphs"] == [] and kept[1]["paragraphs"] == [], str(kept))
 untraced = writer.strip_untraced_figures(
     [{"heading": "Seg", "sop": ["segmentation"], "paragraphs": ["The market reached 99999 units."]}], inp, "", LOG)
-check("emptied: the same holds when the figure stripper removes every sentence", untraced[0]["paragraphs"][0].startswith("[EDITOR"), str(untraced))
+check("emptied: the same holds when the figure stripper removes every sentence", untraced[0]["paragraphs"] == [], str(untraced))
 
 # ------------------------------------------------------------------ segmentation and sub-segments explain why, not only what
 seg_shape, sub_shape = writer._SHAPES["segmentation"], writer._SHAPES["subsegment"]

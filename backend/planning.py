@@ -45,7 +45,6 @@ _SECTION_WEIGHTS = {"report_context": 130, "trends": 450, "segmentation": 110, "
 _FACTS_FOR_FULL_BUDGET = {"report_context": 5, "trends": 7, "segmentation": 5, "subsegment": 4, "country_us": 4, "key_players": 4}
 _MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
 _SECTION_BOUNDS = {"country_us": (110, 165)}  # the U.S. SOP is 100-200 words; the writer overshoots a budget a little
-_EDITOR_NOTE_WORDS = 25           # a section that is only the editor's note (no U.S. fact and no report fact to write from)
 _THIN_MATERIAL_SHARE = 0.6        # below this much of the full weights the sections run short of their SOP shapes
 
 # Which sections a report fact may sit in; headline figures live in report_context only so each is stated once.
@@ -67,10 +66,12 @@ _SECTION_SOP = {"trends": "trends", "subsegment": "subsegment", "segmentation": 
                 "key_players": "key_players"}
 
 # The U.S. section rests on at least this many U.S. facts (report statements and evidence tagged "us"). With fewer, it is written
-# from the report's own facts of these kinds instead (its U.S. statements first), and when even those do not exist it is flagged
-# for the editor. A fact of these kinds may then sit in the U.S. section AND in the section that normally holds it.
+# from the report's own facts of these kinds instead (its U.S. statements first, the headline figures and the company list last),
+# and when even those do not exist it is written as a qualitative U.S. analysis from the market itself: an article never carries an
+# empty section or an editor placeholder. A fact of these kinds may then sit in the U.S. section AND in the section that normally
+# holds it. The regions are left out of the pool: they name other regions and countries, which the U.S. section must never do.
 _US_MIN_FACTS = 2
-_US_REPORT_KINDS = ("us", "drivers", "opportunities", "segments")
+_US_REPORT_KINDS = ("us", "drivers", "opportunities", "segments", "segment_drivers", "size", "forecast", "cagr", "players")
 
 
 def _is_us_fact(item: dict) -> bool:
@@ -150,8 +151,6 @@ def compute_budgets(sponsor_words: int, lengths: dict[str, str] | None = None, f
         notes.append(f"the intro cannot fit the {INTRO_CAP:.0%} cap at {round(total)} words ({intro_total} words)")
     words = {s: market * eff[s] / sum(eff.values()) for s in ORDER}
     bound = _SECTION_BOUNDS.get("country_us")
-    if lengths.get("country_us") == "us_missing":
-        bound = (_EDITOR_NOTE_WORDS, _EDITOR_NOTE_WORDS)      # the section is one editor note line, not prose
     clamp_note = None
     if bound and words["country_us"] < bound[0]:
         words["country_us"] = bound[0]
@@ -827,7 +826,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             repair(f"country_us: fewer than {_US_MIN_FACTS} U.S. facts exist, so the section is written from the report's own facts "
                    f"({', '.join(extra)}) framed for the U.S.")
         elif not us_section["facts"]:
-            repair("country_us: no U.S. fact and no report fact exists; the section is flagged for the editor")
+            us_section["us_source"] = "report"
+            repair("country_us: no U.S. fact and no report fact exists; the section is a qualitative U.S. analysis reasoned from the market itself")
 
     # ---- question headings: 2-3, each an answerable question that can head its section
     used_q: set[str] = set()
@@ -1004,14 +1004,9 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             s["length"] = "normal"
         if s["sop"] == "country_us":
             # The section is about the United States and nothing else. With enough U.S. facts it rests on them; with fewer it
-            # is written from the report's own facts, framed for the U.S.; with no fact at all it is flagged for the editor
-            # instead of being filled with another region's picture.
-            if s.get("us_source") == "report":
-                s["length"] = "us_from_report"
-            elif us_fact_ids(s["facts"], inp.items):
-                s["length"] = "normal"
-            else:
-                s["length"] = "us_missing"
+            # is written from the report's own facts, framed for the U.S. (with none, as a qualitative analysis of the market),
+            # never filled with another region's picture and never left to an editor.
+            s["length"] = "us_from_report" if s.get("us_source") == "report" or not us_fact_ids(s["facts"], inp.items) else "normal"
     budgets = compute_budgets(
         inp.sponsor_words, {s["sop"]: s["length"] for s in sections},
         {s["sop"]: len([f for f in s["facts"] if f != "fs.players"]) + (1 if "fs.players" in s["facts"] else 0) for s in sections})

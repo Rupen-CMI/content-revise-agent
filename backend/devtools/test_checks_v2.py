@@ -165,8 +165,8 @@ check("us evidence: with two U.S. facts the check passes", by_name(enough, "thin
 none_inp = test_planning.us_inputs(0, with_report_facts=False)
 none_plan = planning.validate_plan(enough_raw, none_inp, test_planning.LOG)
 none = run_v2(TITLE, good_draft(), plan=none_plan, inp=none_inp)
-check("us evidence: with no U.S. fact and no report fact it warns that the section is an editor note",
-      not by_name(none, "thin U.S. evidence").passed and "editor note" in by_name(none, "thin U.S. evidence").detail,
+check("us evidence: with no U.S. fact and no report fact it still warns, and never calls the section an editor note",
+      not by_name(none, "thin U.S. evidence").passed and "editor note" not in by_name(none, "thin U.S. evidence").detail,
       by_name(none, "thin U.S. evidence").detail)
 
 # ------------------------------------------------------------------ one piece of news evidence is cited once
