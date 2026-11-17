@@ -73,7 +73,7 @@ def market_of_queries(text: str) -> str | None:
     return None
 
 
-def fake_bing_search(news_queries, web_queries, logger):
+def fake_bing_search(news_queries, web_queries, logger, **kw):
     which = market_of_queries(" ".join([*news_queries, *web_queries]).lower())
     if which is not None and getattr(fake_bing_search, "fail_for", None) == which:
         raise ConnectionError("patches: the search engine is down (simulated)")

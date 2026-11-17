@@ -685,11 +685,14 @@ def filter_figure_hits(
 
 def run_figure_gap_search(market_name: str, exclude_hosts, logger: logging.Logger) -> list[search.SearchHit]:
     """Step 2 stage, run only when the fact sheet has a headline gap: find pages that may state the market's size,
-    forecast and growth rate, and read them. Uses the text-search engines only: Bing's web feed answers these
-    queries with unrelated pages (messaging apps, dictionaries), as measured, so it is not used here."""
+    forecast and growth rate, and read them. Searches Google News, which indexes research firms' report pages (Bing's web feed
+    answers these queries with unrelated pages — messaging apps, dictionaries — so it is not used); the links of the pages that
+    pass the filter are decoded afterwards. DDGS is the last fallback, tried only when Google News gave nothing usable."""
     section(logger, "FIGURE GAP SEARCH")
-    raw = search.run_text_searches(figure_gap_queries(market_name), logger)
-    kept = filter_figure_hits(raw, market_name, exclude_hosts, logger)
+    queries = figure_gap_queries(market_name)
+    kept = feeds.resolve_hits(filter_figure_hits(feeds.web_search(queries, logger, resolve=False), market_name, exclude_hosts, logger), logger)
+    if not kept:
+        kept = filter_figure_hits(search.run_text_searches(queries, logger), market_name, exclude_hosts, logger)
     for h in kept:
         h.scope = "figure"
     feeds.attach_excerpts(kept, market_name, logger, focus=_FIGURE_FOCUS)

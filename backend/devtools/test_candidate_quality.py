@@ -166,7 +166,7 @@ HITS = [
 STATE = {"bing": [], "text": []}
 
 
-def fake_bing_search(news_queries, web_queries, logger):
+def fake_bing_search(news_queries, web_queries, logger, **kw):
     STATE["bing"].append([*news_queries, *web_queries])
     return list(HITS)
 
@@ -186,7 +186,7 @@ finally:
 
 urls = [c["url"] for c in candidates]
 hosts = [c["host"] for c in candidates]
-check("e2e: both patched search engines were queried", bool(STATE["bing"]) and bool(STATE["text"]))
+check("e2e: the primary search was queried, DDGS (last fallback) was not needed", bool(STATE["bing"]) and not STATE["text"])
 check("e2e: research-firm candidates come first, then the rest, original order inside each group",
       hosts == ["mordorintelligence.com", "grandviewresearch.com", "marketsandmarkets.com",
                 "dailypress.example", "fintechweekly.example"], str(hosts))

@@ -171,9 +171,10 @@ class _Bing:
         self.sections_with_hits: set[str] = set()  # sections (or "" for a query with none) that have a raw hit already (run)
         self.queries = 0                           # queries sent, retries included (search)
 
-    def _get(self, query: str, web: bool = False) -> list[search.SearchHit] | None:
-        url = "https://www.bing.com/search" if web else "https://www.bing.com/news/search"
-        kind = "bing_web" if web else "bing_news"
+    def _get(self, query: str) -> list[search.SearchHit] | None:
+        # News only: Bing's web feed answers automated requests with pages matching just the first query word (see Google News below).
+        url = "https://www.bing.com/news/search"
+        kind = "bing_news"
         # Dev-only disk cache (config.SEARCH_CACHE): a hit short-circuits BEFORE the politeness gate
         # and the retry/breaker machinery — a repeated dev run makes no live Bing call for a query
         # it already made within the TTL. Only successes are stored (below), so a cached entry can
@@ -197,10 +198,10 @@ class _Bing:
                 time.sleep(_BING_RETRY_WAIT_S * (attempt + 1))
         return None
 
-    def search(self, query: str, web: bool = False) -> list[search.SearchHit]:
+    def search(self, query: str) -> list[search.SearchHit]:
         if self.disabled:
             return []
-        hits = self._get(query, web)
+        hits = self._get(query)
         self.queries += 1
         if hits is None:
             self._failed_in_a_row += 1
@@ -214,7 +215,7 @@ class _Bing:
         for h in hits:
             if not h.query:
                 h.query = query
-        self._logger.info(f"[bing{' web' if web else ''}] {query!r} -> {len(hits)} result(s)")
+        self._logger.info(f"[bing] {query!r} -> {len(hits)} result(s)")
         return hits
 
     def run(
@@ -255,35 +256,237 @@ class _Bing:
         return out
 
 
-class ClaimWebSearch:
-    """Bing WEB search (RSS) for claim backing: explainer, reference and vendor-documentation pages that a news
-    index never carries. One instance per run; shares the Bing gate and circuit breaker logic with the news
-    client. Bing's web RSS sometimes answers a query with unrelated pages, so callers must relevance-filter
-    (search.filter_claim_hits does) rather than trust what comes back."""
+# ------------------------------------------------------------------------------------------ Google News
+# Bing's WEB search feed now answers automated requests with pages that match only the query's first word, so it is
+# not used any more. Google News RSS is free, answers keyword queries properly, and indexes rival research firms'
+# report pages as well as news, which is what the web-style queries (competitor reports, figure gap, claim backing)
+# need. Its <link> is a news.google.com redirect that must be decoded to the real address; that costs two requests,
+# so a hit first carries a provisional URL on its real host (the <source url> names it) and is decoded only after the
+# cheap title/host filters (resolve_hits).
 
-    def __init__(self, logger: logging.Logger):
-        self._client = httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
-        self._bing = _Bing(self._client, logger)
+_GNEWS_RSS_URL = "https://news.google.com/rss/search"
+# The /rss/articles/ page carries the same signature and timestamp as /articles/, which Google redirects to its "sorry" captcha page.
+_GNEWS_ARTICLE_URL = "https://news.google.com/rss/articles/{gid}?hl=en-US&gl=US&ceid=US:en"
+_GNEWS_BATCH_URL = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+_GNEWS_PARAMS = {"hl": "en-US", "gl": "US", "ceid": "US:en"}
+_GNEWS_QUERY_DELAY_S = 1.5       # base gap between Google News queries (+ up to _BING_JITTER_S)
+_GNEWS_RETRY_WAIT_S = 5.0
+_GNEWS_RETRIES = 1
+_GNEWS_TRIP_AFTER = 3            # consecutive failed queries before Google News is abandoned for this run
+_GNEWS_DECODE_GAP_S = 0.6        # minimum gap between two redirect-decoding requests
+_GNEWS_DECODE_WORKERS = 3
+_GNEWS_MARK = "#gnews-"          # a provisional URL is "https://<host>/#gnews-<article id>"
+_GNEWS_SIG_RE = re.compile(r'data-n-a-sg="([^"]+)"')
+_GNEWS_TS_RE = re.compile(r'data-n-a-ts="([^"]+)"')
+
+_GNEWS_LOCK = threading.Lock()
+_gnews_last_end = 0.0
+_GNEWS_DECODE_GATE = _HostGate(_GNEWS_DECODE_GAP_S)
+_GNEWS_DECODED: dict[str, str] = {}   # article id -> real URL, for the life of the process ("" = could not be decoded)
+
+
+@contextmanager
+def _gnews_turn():
+    """One Google News search at a time with a minimum gap between any two (the claim, question and market stages run in threads)."""
+    global _gnews_last_end
+    with _GNEWS_LOCK:
+        wait_s = _gnews_last_end + _GNEWS_QUERY_DELAY_S + random.uniform(0, _BING_JITTER_S) - time.monotonic()
+        if _gnews_last_end and wait_s > 0:
+            time.sleep(wait_s)
+        try:
+            yield
+        finally:
+            _gnews_last_end = time.monotonic()
+
+
+def _strip_publisher(title: str, source: str) -> str:
+    """Google News titles end with " - Publisher Name"; the publisher is not part of the headline."""
+    title = title.strip()
+    if source:
+        suffix = f" - {source.strip()}"
+        if title.lower().endswith(suffix.lower()):
+            return title[:-len(suffix)].rstrip()
+    return title
+
+
+def _gnews_hit(e) -> search.SearchHit | None:
+    link = (e.get("link") or "").strip()
+    if "/articles/" not in link:
+        return None
+    gid = link.split("/articles/")[1].split("?")[0]
+    src = e.get("source") or {}
+    src_name = _plain(src.get("title", "")) if hasattr(src, "get") else ""
+    src_host = urlparse(src.get("href", "") if hasattr(src, "get") else "").netloc.lower()
+    title = _strip_publisher(_plain(e.get("title", "")), src_name)
+    if not gid or not src_host or not title:
+        return None
+    snippet = _plain(e.get("summary", ""))
+    # Google's description is the headline and publisher again, which says nothing a snippet should.
+    snippet = "" if snippet.lower().startswith(title.lower()[:40]) else snippet[:500]
+    date = _entry_date(e)
+    return search.SearchHit(
+        title=title, snippet=snippet, url=f"https://{src_host}/{_GNEWS_MARK}{gid}",
+        source=src_name, date=date, is_news=date is not None,
+    )
+
+
+def _gnews_id(url: str) -> str:
+    return url.split(_GNEWS_MARK, 1)[1] if _GNEWS_MARK in url else ""
+
+
+def _parse_batchexecute(text: str) -> str:
+    """The real article URL in a batchexecute answer, or '' when the answer has none."""
+    try:
+        return str(json.loads(json.loads(text.split("\n\n")[1])[0][2])[1])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return ""
+
+
+def _decode_gnews(client: httpx.Client, gid: str) -> str:
+    """The real URL behind a Google News article id: the article page hands out a signature and timestamp, which the
+    batchexecute endpoint exchanges for the address. '' when it cannot be decoded. Never raises."""
+    if gid in _GNEWS_DECODED:
+        return _GNEWS_DECODED[gid]
+    url = ""
+    try:
+        with _GNEWS_DECODE_GATE.slot("news.google.com"):
+            page = client.get(_GNEWS_ARTICLE_URL.format(gid=gid))
+        sig, ts = _GNEWS_SIG_RE.search(page.text), _GNEWS_TS_RE.search(page.text)
+        if page.status_code == 200 and sig and ts:
+            inner = (
+                '["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],'
+                f'"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{gid}",{ts.group(1)},"{sig.group(1)}"]'
+            )
+            req = [[["Fbv4je", inner, None, "generic"]]]
+            with _GNEWS_DECODE_GATE.slot("news.google.com"):
+                r = client.post(
+                    _GNEWS_BATCH_URL, data={"f.req": json.dumps(req)},
+                    headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                )
+            if r.status_code == 200:
+                url = _parse_batchexecute(r.text)
+    except Exception:
+        url = ""
+    if url:
+        _GNEWS_DECODED[gid] = url   # a failure is not remembered: it may be a passing block
+    return url
+
+
+def resolve_hits(hits: list[search.SearchHit], logger: logging.Logger = _null_logger) -> list[search.SearchHit]:
+    """Replace the provisional URL of every Google News hit with the real one (a few in parallel, politely). A hit that cannot
+    be decoded is dropped; so is one whose real page is a second copy of another hit's. Hits from other sources pass through.
+    Call it on the hits that survived the cheap title/host filters, not on a whole raw batch."""
+    pending = [h for h in hits if _GNEWS_MARK in h.url]
+    if pending:
+        with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client, \
+                ThreadPoolExecutor(_GNEWS_DECODE_WORKERS) as ex:
+            real = list(ex.map(lambda h: _decode_gnews(client, _gnews_id(h.url)), pending))
+        for h, url in zip(pending, real):
+            h.url = url
+        logger.info(f"[gnews] decoded {sum(1 for u in real if u)} of {len(pending)} link(s)")
+    out, seen = [], set()
+    for h in hits:
+        if h.url and h.url not in seen and _GNEWS_MARK not in h.url:
+            seen.add(h.url)
+            out.append(h)
+    return out
+
+
+class _GoogleNews:
+    """Sequential Google News RSS client with retry/backoff and a circuit breaker; hits carry provisional URLs (resolve_hits)."""
+
+    def __init__(self, client: httpx.Client, logger: logging.Logger):
+        self._client, self._logger = client, logger
+        self._failed_in_a_row = 0
+        self.disabled = False
+
+    def _get(self, query: str) -> list[search.SearchHit] | None:
+        cached = search.cache_lookup("gnews", query)
+        if cached is not None:
+            self._logger.info(f"[cache] gnews {query!r}: {len(cached)} cached result(s)")
+            return cached
+        for attempt in range(_GNEWS_RETRIES + 1):
+            try:
+                with _gnews_turn():
+                    r = self._client.get(_GNEWS_RSS_URL, params={"q": query, **_GNEWS_PARAMS})
+                if r.status_code == 200:
+                    hits = [h for e in _parse_feed(r.content).entries if (h := _gnews_hit(e))]
+                    search.cache_store("gnews", query, hits)
+                    return hits
+                self._logger.warning(f"[gnews] {query!r}: HTTP {r.status_code} (attempt {attempt + 1})")
+            except httpx.HTTPError as e:
+                self._logger.warning(f"[gnews] {query!r}: {type(e).__name__} (attempt {attempt + 1})")
+            if attempt < _GNEWS_RETRIES:
+                time.sleep(_GNEWS_RETRY_WAIT_S * (attempt + 1))
+        return None
 
     def search(self, query: str) -> list[search.SearchHit]:
-        return self._bing.search(query, web=True)
+        if self.disabled:
+            return []
+        hits = self._get(query)
+        if hits is None:
+            self._failed_in_a_row += 1
+            if self._failed_in_a_row >= _GNEWS_TRIP_AFTER:
+                self.disabled = True
+                self._logger.warning(f"[gnews] {self._failed_in_a_row} failed queries in a row — abandoning Google News for this run")
+            return []
+        self._failed_in_a_row = 0
+        for h in hits:
+            h.query = query
+        self._logger.info(f"[gnews] {query!r} -> {len(hits)} result(s)")
+        return hits
+
+
+class ClaimWebSearch:
+    """Web-style search for claim backing: explainer, reference and vendor-documentation pages that a news index rarely
+    carries. One instance per run, on Google News (free; Bing's web feed no longer answers). It indexes news and
+    publishers' pages, not the whole web, so callers must relevance-filter (search.filter_claim_hits does). Each search
+    returns hits with their real URLs (decoded after dropping what the title and host cannot use)."""
+
+    def __init__(self, logger: logging.Logger):
+        self._logger = logger
+        self._client = httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
+        self._gnews = _GoogleNews(self._client, logger)
+
+    def search(self, query: str, resolve: bool = True, max_resolved: int = 8) -> list[search.SearchHit]:
+        hits = self._gnews.search(query)
+        return resolve_hits(hits[:max_resolved], self._logger) if resolve else hits
+
+    @property
+    def disabled(self) -> bool:
+        return self._gnews.disabled
 
     def close(self) -> None:
         self._client.close()
 
 
+def web_search(
+    queries: list[str], logger: logging.Logger = _null_logger, resolve: bool = True, max_resolved: int = 8,
+) -> list[search.SearchHit]:
+    """Web-style queries on Google News, one polite client. With resolve=False the hits keep provisional URLs on their real
+    hosts (enough for host and title filters); call resolve_hits on the survivors. Returns raw, unfiltered hits."""
+    out: list[search.SearchHit] = []
+    with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
+        gnews = _GoogleNews(client, logger)
+        for q in queries:
+            out += gnews.search(q)
+    return resolve_hits(out[:max_resolved * max(1, len(queries))], logger) if resolve else out
+
+
 def bing_search(
     news_queries: list[str], web_queries: list[str], logger: logging.Logger = _null_logger,
-    sections_for: dict[str, list[str]] | None = None,
+    sections_for: dict[str, list[str]] | None = None, resolve: bool = True,
 ) -> list[search.SearchHit]:
-    """Bing News queries then Bing web queries on one polite client (same gate and breaker as the market search). Used by
-    the U.S. data search, which wants news AND statistics pages, and by the section top-up (sections_for tags each hit
-    with the sections of the query that found it). Returns raw, unfiltered hits."""
-    with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
-        bing = _Bing(client, logger)
-        out = bing.run(news_queries, sections_for)
-        for q in web_queries:
-            out += bing.search(q, web=True)
+    """Bing News queries, then the web-style queries on Google News (see web_search; Bing's web feed is no longer used). Used
+    by the U.S. data search, which wants news AND statistics pages, and by the section top-up (sections_for tags each hit
+    with the sections of the query that found it). Returns raw, unfiltered hits; resolve=False leaves Google News hits with
+    provisional URLs (resolve_hits)."""
+    out: list[search.SearchHit] = []
+    if news_queries:
+        with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
+            out = _Bing(client, logger).run(news_queries, sections_for)
+    if web_queries:
+        out += web_search(web_queries, logger, resolve=resolve)
     return out
 
 
@@ -422,11 +625,38 @@ def gather(
             bing_hits += bing.run(keyword_queries[_BING_EARLY_QUERIES:] + site_qs, query_sections, general,
                                   on_batch=(lambda batch: on_hits(earlier + batch)) if on_hits else None)
         logger.info(f"[timing] Bing queries: {bing.queries} in {time.monotonic() - bing_started:.1f}s")
+        bing_hits += _us_gnews_hits(keyword_queries, query_sections, logger)
         rss_hits = rss_future.result()
         for h in rss_hits:
             h.add_sections(general)
     logger.info(f"[gather] Bing {len(bing_hits)} + RSS {len(rss_hits)} raw hit(s){' (Bing was abandoned)' if bing.disabled else ''}")
     return bing_hits + rss_hits
+
+
+_US_GNEWS_RESOLVE = 8   # U.S.-query hits whose links are decoded; the rest of the batch is dropped
+
+
+def _us_gnews_hits(queries: list[str], query_sections: dict[str, list[str]] | None, logger: logging.Logger) -> list[search.SearchHit]:
+    """The U.S. section's queries on Google News as well: Bing News answers them with a hit or none (a niche market has little
+    U.S.-labelled news there), Google News with dozens. Hits that name the U.S. in their headline come first, then the first
+    _US_GNEWS_RESOLVE of them get real links. Best-effort: a failure here must not lose the Bing and feed hits."""
+    us_qs = [q for q in queries if "us" in ((query_sections or {}).get(q.lower()) or [])]
+    if not us_qs:
+        return []
+    try:
+        with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
+            gnews = _GoogleNews(client, logger)
+            hits: list[search.SearchHit] = []
+            for q in us_qs:
+                for h in gnews.search(q):
+                    h.add_sections(query_sections[q.lower()])
+                    hits.append(h)
+        names_us = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican\b")
+        hits.sort(key=lambda h: not names_us.search(f"{h.title} {h.snippet}"))   # stable: the engine's order within each group
+        return resolve_hits(hits[:_US_GNEWS_RESOLVE], logger)
+    except Exception:
+        logger.warning("[gnews] the U.S. queries failed", exc_info=True)
+        return []
 
 
 # ----------------------------------------------------------------------------------------- full text

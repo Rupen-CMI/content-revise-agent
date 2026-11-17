@@ -223,10 +223,11 @@ _TEXT_BACKENDS = "startpage,mojeek,yahoo,duckduckgo"
 # a wide randomized politeness gap between queries (comfortably under the ~30 req/min figure
 # commonly cited as DDG's unofficial throttling threshold — DDG publishes no official number),
 # and retries with backoff on timeouts instead of instant zero-results.
-_QUERY_TIMEOUT_S = 20
+_QUERY_TIMEOUT_S = 6   # short on purpose: a blocked network must cost seconds, not minutes (see ddgs_disable)
 _QUERY_DELAY_S = 4.0  # base gap between queries (+ up to 2.5s jitter)
 _INTRA_QUERY_DELAY_S = 2.0  # base gap between the news and text calls of one query (+ jitter)
-_QUERY_RETRIES = 2
+_QUERY_RETRIES = 0     # no retries: the first timeout or challenge turns DDGS off instead (see ddgs_disable)
+DDGS_PAUSE_S = 30 * 60  # how long DDGS stays off, process-wide, once a call has hit a challenge, an empty answer or a timeout
 # At most this many zero-result QUOTED queries a run are retried without their quotes (and only while their section, or for
 # the DDGS lanes the whole lane, has no hit yet): every retry is one more request on a throttled engine.
 UNQUOTED_RETRIES = 3
@@ -388,6 +389,27 @@ def _text(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[Se
     return hits
 
 
+# DDGS is only a last fallback, and on a blocked network every failing query used to cost ~75 s (three attempts of ~20 s) while
+# the run waited. The first failure of any kind (challenge page, "No results found", timeout) now switches DDGS off for the rest
+# of the run and for DDGS_PAUSE_S after it, process-wide, so the next runs do not pay for it again either.
+_ddgs_disabled_until = 0.0
+_DDGS_FLAG_LOCK = threading.Lock()
+
+
+def ddgs_available() -> bool:
+    return time.monotonic() >= _ddgs_disabled_until
+
+
+def ddgs_disable(logger: logging.Logger, why: str) -> None:
+    """Stop using DDGS for DDGS_PAUSE_S; logged once per pause, however many calls fail together."""
+    global _ddgs_disabled_until
+    with _DDGS_FLAG_LOCK:
+        was_on = ddgs_available()
+        _ddgs_disabled_until = time.monotonic() + DDGS_PAUSE_S
+    if was_on:
+        logger.warning(f"[search] DDGS is blocked or empty here ({why}); not using it again for {DDGS_PAUSE_S // 60} minutes")
+
+
 def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list[SearchHit]:
     """One search call (news OR text) with timeout retries. Never raises: the two calls for a
     query must fail independently — previously a text-search "No results found." escaped from the
@@ -411,16 +433,14 @@ def _attempt(fn, d: DDGS, query: str, kind: str, logger: logging.Logger) -> list
                 logger.warning(f"[search] {kind} {query!r} timed out (attempt {attempt + 1}); retrying in {wait:.0f}s")
                 time.sleep(wait)
             else:
-                logger.warning(f"[search] {kind} {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
+                ddgs_disable(logger, f"{kind} {query!r} timed out")
                 return []
         except DDGSException as e:
-            if "no results" in str(e).lower():  # an empty answer, not a fault
-                logger.info(f"[search] {kind} {query!r} -> no results")
-            else:
-                logger.warning(f"[search] {kind} {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
+            # "No results found" is what a blocked engine says too, so it counts as a failure here.
+            ddgs_disable(logger, f"{kind} {query!r}: {type(e).__name__}: {str(e)[:120]}")
             return []
         except Exception as e:  # one failed provider/query must not sink the run; search is best-effort
-            logger.warning(f"[search] {kind} {query!r} failed ({type(e).__name__}: {e}) — continuing with 0 results", exc_info=True)
+            ddgs_disable(logger, f"{kind} {query!r}: {type(e).__name__}: {str(e)[:120]}")
             return []
     return []
 
@@ -452,9 +472,11 @@ def _lane(kind: str, fn, queries: list[str], logger: logging.Logger) -> list[Sea
     retries = UNQUOTED_RETRIES
     with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
         for q in queries:
+            if not ddgs_available():
+                break
             with _ddgs_gate(kind):
                 batch = _attempt(fn, d, q, kind, logger)
-            if not batch and not out and retries > 0 and '"' in q and "site:" not in q:
+            if not batch and not out and retries > 0 and ddgs_available() and '"' in q and "site:" not in q:
                 # A quoted phrase plus extra words is the most over-constrained shape there is
                 # (15 of 24 Bing queries in one run found nothing): retry once unquoted, where a
                 # multi-word term is an implicit AND rather than a hard requirement. filter_hits
@@ -473,6 +495,8 @@ def _lane(kind: str, fn, queries: list[str], logger: logging.Logger) -> list[Sea
 def run_searches(queries: list[str], logger: logging.Logger = _null_logger) -> list[SearchHit]:
     """DDGS news and text searches for every query. The two kinds run concurrently, each one query at a time with a
     politeness gap, so the wall time is that of the slower kind, not the sum of both."""
+    if not ddgs_available():
+        return []
     with ThreadPoolExecutor(2) as ex:
         news_f = ex.submit(_lane, "news", _news, queries, logger)
         text_f = ex.submit(_lane, "text", lambda d, q: _text(d, q, logger), queries, logger)
@@ -486,8 +510,12 @@ def run_text_searches(queries: list[str], logger: logging.Logger = _null_logger)
     encyclopedias and reference pages — kinds of pages that never appear in a news index. Same per-request text gate as
     the market fallback's text lane."""
     hits: list[SearchHit] = []
+    if not ddgs_available():
+        return hits
     with DDGS(timeout=_QUERY_TIMEOUT_S) as d:
         for q in queries:
+            if not ddgs_available():
+                break
             with _ddgs_gate("text"):
                 batch = _attempt(lambda d, q: _text(d, q, logger), d, q, "text", logger)
             logger.info(f"[claim-search] query {q!r} -> {len(batch)} raw result(s)")

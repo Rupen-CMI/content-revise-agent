@@ -245,7 +245,7 @@ _SERP_TERMS = ("market size", "size", "share", "forecast", "growth", "trends", "
 
 
 def serp_terms(market_name: str, logger: logging.Logger) -> dict[str, float]:
-    """Which keyword forms the top-ranking pages for the market target: the titles of Bing's web results for '<market> market'
+    """Which keyword forms the top-ranking pages for the market target: the titles of the web-style search results (Google News) for '<market> market'
     and '<market> market size share forecast', scored by how many of the first ten carry each form (rank-weighted). A form that
     most ranking titles carry is the one the market's search results reward."""
     import feeds
@@ -255,7 +255,7 @@ def serp_terms(market_name: str, logger: logging.Logger) -> dict[str, float]:
         logger.info("[keywords] ranking pages from the keyword cache (no requests sent)")
         return cached
     try:
-        hits = feeds.bing_search([], [f"{core} market", f"{core} market size share forecast"], logger)
+        hits = feeds.bing_search([], [f"{core} market", f"{core} market size share forecast"], logger, resolve=False)
     except Exception:
         logger.info("[keywords] the ranking-page lookup failed", exc_info=True)
         return {}

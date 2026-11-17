@@ -30,6 +30,7 @@ _MAX_PAGES = 4
 _WORKERS = 4
 _CANDIDATE_WORKERS = 4
 _SNIPPET_CHARS = 240
+_MIN_BEFORE_FALLBACK = 3   # outside-report candidates below which DDGS is asked as well
 
 
 def own_market(orient: dict) -> str:
@@ -155,7 +156,7 @@ def search_queries(market_name: str) -> tuple[list[str], list[str]]:
     return (
         [f"{core} market report size CAGR"],
         [f"{core} market size share forecast", f"{core} market CAGR segments key players",
-         f"{core} market report press release"],
+         f"{core} market report press release", f"{core} market"],
     )
 
 
@@ -248,19 +249,34 @@ def check_url(url: str, market_name: str, logger: logging.Logger, cmi: bool = Fa
     return {"ok": True, "title": title, "message": "Readable and about this market. Its figures will be used, adjusted by a few percent."}
 
 
+def _report_hits(market: str, exclude_hosts, want: int, logger: logging.Logger) -> list:
+    """The search hits (real URLs) that may be a report on this market, best first, at most `want`. The web-style queries run
+    on Google News, which indexes the research firms' report pages; their links are decoded only for the few candidates that
+    survive the figure filter and the report-cue and host checks. DDGS is the last fallback, tried only when fewer than
+    _MIN_BEFORE_FALLBACK survived (it switches itself off for a while when the network blocks it, so that costs seconds)."""
+    news_q, web_q = search_queries(market)
+
+    def candidates(raw: list, n: int) -> list:
+        return rank_candidates(
+            [h for h in facts.filter_figure_hits(raw, market, exclude_hosts, logger, limit=want + 6)
+             if looks_like_report(h.host, h.title, h.snippet)], n)
+
+    # A few more than wanted are decoded: a link that cannot be decoded, or two that resolve to one page, must not leave a gap.
+    kept = feeds.resolve_hits(candidates(feeds.bing_search(news_q, web_q, logger, resolve=False), want + 3), logger)[:want]
+    if len(kept) < _MIN_BEFORE_FALLBACK:
+        extra = candidates(search.run_text_searches(web_q[:2], logger), want)
+        kept = rank_candidates(kept + [h for h in extra if h.url not in {k.url for k in kept}], want)
+    return kept
+
+
 def find_pages(market_name: str, exclude_hosts, logger: logging.Logger) -> list[tuple[str, str]]:
     """(url, text) of readable pages that may report this market, found by web search, best first."""
     section(logger, "OUTSIDE REPORT SEARCH")
-    news_q, web_q = search_queries(market_name)
     try:
-        raw = feeds.bing_search(news_q, web_q, logger)
-        raw += search.run_text_searches(web_q[:2], logger)
+        kept = _report_hits(market_name, exclude_hosts, _MAX_PAGES + 2, logger)
     except Exception:
         logger.warning("[external] the outside report search failed", exc_info=True)
         return []
-    kept = rank_candidates(
-        [h for h in facts.filter_figure_hits(raw, market_name, exclude_hosts, logger, limit=_MAX_PAGES + 6)
-         if looks_like_report(h.host, h.title, h.snippet)], _MAX_PAGES + 2)
     with ThreadPoolExecutor(_WORKERS) as ex:
         texts = list(ex.map(lambda h: read_page(h.url, logger), kept))
     pages = [(h.url, t) for h, t in zip(kept, texts) if t]
@@ -278,16 +294,11 @@ def find_candidate_pages(
     section(logger, "OUTSIDE REPORT CANDIDATES")
 
     def for_market(market: str) -> list[dict]:
-        news_q, web_q = search_queries(market)
         try:
-            raw = feeds.bing_search(news_q, web_q, logger)
-            raw += search.run_text_searches(web_q[:2], logger)
+            kept = _report_hits(market, exclude_hosts, per_market, logger)
         except Exception:
             logger.warning(f"[external] the outside report search for {market!r} failed", exc_info=True)
             return []
-        kept = rank_candidates(
-            [h for h in facts.filter_figure_hits(raw, market, exclude_hosts, logger, limit=per_market + 6)
-             if looks_like_report(h.host, h.title, h.snippet)], per_market)
         return [
             {"url": h.url, "title": clean_title(h.title, market), "host": h.host,
              "snippet": h.snippet[:_SNIPPET_CHARS], "market": market}

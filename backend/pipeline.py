@@ -1142,7 +1142,7 @@ _CLAIM_POOL_GOOD = 2   # kept hits at which a claim's first query no longer need
 def run_claim_evidence(
     claims: list[dict], logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
 ) -> dict[str, list[search.SearchHit]]:
-    """Web search for backing of the claims ORIENT extracted from the original article — Bing web search
+    """Web search for backing of the claims ORIENT extracted from the original article — Google News search
     with DDGS text search as the fallback (the sources are explainers/encyclopedias/vendor reference
     pages, which news indexes don't carry; see feeds.ClaimWebSearch and search.run_text_searches). Returns {claim_id: [hits]}.
     Callers run this CONCURRENTLY with run_search_evidence (its own thread): different source
@@ -1167,12 +1167,12 @@ def run_claim_evidence(
                 if len(w) > 2 and w not in search._STOPWORDS and w not in words:
                     words.append(w)
             queries = [" ".join(words[:8])] if words else []
-        # Two channels per query, polite and sequential: Bing web search first (no rate-limit trouble at our pace),
+        # Two channels per query, polite and sequential: Google News web-style search first (no rate-limit trouble at our pace),
         # DDGS text search only when the claim is still thin. Hits accumulate across queries and channels and are
         # filtered together, so a claim ends with the best of everything found, not the last query's batch.
         raw: list[search.SearchHit] = []
         kept: list[search.SearchHit] = []
-        # Two channels per query, polite and sequential: Bing web search first (no rate-limit trouble at our pace),
+        # Two channels per query, polite and sequential: Google News web-style search first (no rate-limit trouble at our pace),
         # DDGS text search only when the claim is still thin. Hits accumulate across queries and channels and are
         # filtered together, so a claim ends with the best of everything found, not the last query's batch.
         # DDGS no longer fires after EVERY thin Bing batch, though: one thin batch is usually the
@@ -1184,7 +1184,7 @@ def run_claim_evidence(
         ddgs_used = False
         thin_streak = 0
         for qi, q in enumerate(queries):
-            raw += bing_web.search(q)
+            raw += bing_web.search(q, resolve=False)
             kept = search.filter_claim_hits(raw, c["claim"], logger, limit=_CLAIM_BPOOL_KEEP)
             if len(kept) >= _CLAIM_POOL_GOOD:
                 break
@@ -1200,6 +1200,7 @@ def run_claim_evidence(
             logger.info(f"[claim-search] {c['id']} ({c['claim'][:70]!r}): nothing usable found")
         for h in kept:
             h.scope, h.claim_id = "claim", c["id"]
+        kept = feeds.resolve_hits(kept, logger)   # Google News links are decoded only for the pages that survived the filter
         feeds.attach_excerpts(kept, c["claim"], logger, focus=c["claim"])
         pool[c["id"]] = kept
         total += len(kept)
@@ -1333,7 +1334,7 @@ def run_question_evidence(
     questions: list[dict], logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
 ) -> dict[str, list[search.SearchHit]]:
     """Web search for evidence that directly answers each chosen subheading question — the same
-    machinery (Bing web search, DDGS text-search fallback) and the same best-effort policy as
+    machinery (Google News search, DDGS text-search fallback) and the same best-effort policy as
     run_claim_evidence, since an explainer/analysis page answering a question is the same shape of
     source as one backing a claim. Runs CONCURRENTLY with run_search_evidence (see main.py's Step 2,
     which starts this right after the questions are chosen, before the general market web search):
@@ -1352,7 +1353,7 @@ def run_question_evidence(
             logger.info(f"[question-search] {qid} ({qtext[:70]!r}): answered from the CMI report, no outside search")
             continue
         query = re.sub(r"[?!.]+\s*$", "", qtext).strip()
-        raw = bing_web.search(query)
+        raw = bing_web.search(query, resolve=False)
         kept = search.filter_claim_hits(raw, qtext, logger, limit=_QUESTION_BPOOL_KEEP)
         if len(kept) < _QUESTION_POOL_GOOD:
             raw += search.run_text_searches([query], logger)
@@ -1361,6 +1362,7 @@ def run_question_evidence(
             logger.info(f"[question-search] {qid} ({qtext[:70]!r}): nothing usable found")
         for h in kept:
             h.scope, h.claim_id = "question", qid
+        kept = feeds.resolve_hits(kept, logger)   # Google News links are decoded only for the pages that survived the filter
         feeds.attach_excerpts(kept, qtext, logger, focus=qtext)
         pool[qid] = kept
         total += len(kept)
@@ -1432,7 +1434,7 @@ def run_report_claim_evidence(
     claims: list[dict], logger: logging.Logger, progress: Callable[[str], None] = lambda _: None,
 ) -> dict[str, list[search.SearchHit]]:
     """Web search for independent corroboration of each extracted report claim — the same machinery
-    (Bing web search, DDGS text-search fallback) and the same best-effort policy as
+    (Google News search, DDGS text-search fallback) and the same best-effort policy as
     run_claim_evidence/run_question_evidence. Runs CONCURRENTLY with run_search_evidence (see
     main.py's Step 2, which starts this right after the report claims are extracted, before the
     general market web search): different source profile, both stages are network-bound."""
@@ -1453,7 +1455,7 @@ def run_report_claim_evidence(
         ddgs_used = False
         thin_streak = 0
         for qi, q in enumerate(queries):
-            raw += bing_web.search(q)
+            raw += bing_web.search(q, resolve=False)
             kept = search.filter_claim_hits(raw, ctext, logger, limit=_REPORT_CLAIM_BPOOL_KEEP)
             if len(kept) >= _REPORT_CLAIM_POOL_GOOD:
                 break
@@ -1469,6 +1471,7 @@ def run_report_claim_evidence(
             logger.info(f"[report-claim-search] {cid} ({ctext[:70]!r}): nothing usable found")
         for h in kept:
             h.scope, h.claim_id = "report_claim", cid
+        kept = feeds.resolve_hits(kept, logger)   # Google News links are decoded only for the pages that survived the filter
         feeds.attach_excerpts(kept, ctext, logger, focus=ctext)
         pool[cid] = kept
         total += len(kept)
