@@ -40,8 +40,7 @@ _SHAPES = {
     "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. Where a listed fact names the category that leads that type, or gives a category\'s share or value, the same line states that leading category with its figure, as the fact gives it, and adds one clause on why it leads (the driver, the shift in demand or the adoption behind it) where a listed fact supports that reason; where no listed fact does, the line adds no reason and no figure. The lead-in does not say what the segmentation lets anyone see or do. Nothing else.',
     "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: it states the sub-segment\'s listed share or value with its year and says that it leads its split where a fact says so, then explains the growth drivers behind it, the demand pattern, the adoption trend and why the sub-segment dominates or grows, reasoning from the listed facts (the mechanism, the buyer, the use) and, where the facts say little about this sub-segment, from the market\'s own drivers that apply to it; no figure or company detail is added that no listed fact states. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers the United States and only the United States: its demand, adoption, drivers and developments as the listed facts give them, in 100 to 200 words in all. Name no other region or country anywhere in the section, not even for comparison; fewer than 100 words is a miss, so carry the U.S. picture with the listed facts plus your own analytical sentences about what it means for providers and buyers in the U.S.',
-    "us_from_report": 'Prose in one or two short paragraphs, 100 to 200 words in all, about the United States and only the United States. The listed facts are the report\'s own statements, drivers and opportunities, so the section opens with the report\'s U.S. statements where listed, then turns each driver, opportunity or leading segment into what it means for U.S. demand, adoption, buyers and providers, as inference from that fact. Put every fact in your own words, completely: a different sentence structure and different wording, never a phrase copied from the fact. A figure appears only where a listed fact states it, and no U.S. figure is ever added. Name no other region or country anywhere in the section, not even for comparison, and never say that U.S. data is missing or was not found.',
-    "us_missing": 'The single line [EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.] and nothing else: no prose, no word count, and no mention of any other region or country.',
+    "us_from_report": 'Prose in one or two short paragraphs, 100 to 200 words in all, about the United States and only the United States. The listed facts are the report\'s own statements, drivers and opportunities, so the section opens with the report\'s U.S. statements where listed, then turns each driver, opportunity or leading segment into what it means for U.S. demand, adoption, buyers and providers, as inference from that fact. Put every fact in your own words, completely: a different sentence structure and different wording, never a phrase copied from the fact. A figure appears only where a listed fact states it, and no U.S. figure is ever added. Name no other region or country anywhere in the section, not even for comparison, and never say that U.S. data is missing or was not found. Where no fact is listed at all, the section is a qualitative U.S. analysis reasoned from the market itself (who buys, what drives adoption, how providers compete), with no figure. A headline figure listed here is the whole market\'s, never a U.S. figure: where one is listed it is stated as the market\'s, never as the United States\'.',
     "key_players": 'Two entries in "paragraphs", both prose with no bullet lines. First: a short passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
     "key_players_names_only": 'Two entries in "paragraphs", both prose with no bullets. First: a short passage on how crowded or concentrated the field is, naming the companies the facts name together in its opening sentence, using only what the listed facts say. Second: here no company has a listed fact, so the companies stay named together in one or two complete sentences; never give a company a detail the facts do not supply.',
     "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, the growth rate stated earlier) and puts no label of its own on the pace ("modest", "rapid", "steady", "strong"), because the figures already say it. It uses the market\'s full name once, inside a sentence about the market itself, never a sentence about the name. It restates no fact, region, segment or company from the sections above, not even in other words: it looks ahead. Its last sentence is the CMI analyst\'s view.',
@@ -128,23 +127,22 @@ def _keyword_lines(s: dict, inp: planning.PlanInputs) -> str:
 
 def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, str]) -> str:
     msq = next((q for q in inp.questions if q["id"] == s["msq"]), None)
-    size = "" if s["length"] == "us_missing" else f'  |  about {s["words"]} words'
-    rows = [f'### {i}. {s["sop"]}  |  heading: "{s["heading"]}"{size}']
+    rows = [f'### {i}. {s["sop"]}  |  heading: "{s["heading"]}"  |  about {s["words"]} words']
     rows.append(f'Purpose (what the reader learns here): {s["point"] or "(the section\'s ordinary job)"}')
     if msq:
         rows.append("The heading is a question people really search. Answer it directly in the first one or two sentences (about 40 to 60 words), in precise terms, then continue with the section.")
     if s["length"] == "short" and s["sop"] != "trends":
         rows.append("This section has few facts: state them exactly and add the analysis they support (what they mean for buyers and providers "
                     "in this market) without adding a fact. It may land under the budget.")
-    elif s["length"] == "us_missing":
-        rows.append("Neither a verified U.S. fact nor a report fact exists for this section. Keep the heading and write only the editor line given in the "
-                    "SHAPE below, as the section's one paragraph. Do not write about any other region or country.")
     elif s["length"] == "us_from_report":
         rows.append("Little verified U.S. data was found for this market, so this section is written from the market's own facts listed below "
                     "(its U.S. statements first, then its drivers, opportunities and leading segments), each framed as what it means for U.S. demand, "
                     "adoption, buyers and providers. Rephrase every fact fully in your own words, with a different sentence structure and wording; "
-                    "add no U.S. figure that no listed fact states; name no other region or country (no North America, no Europe, no Asia).")
+                    "add no U.S. figure that no listed fact states; name no other region or country (no North America, no Europe, no Asia). "
+                    "With no fact listed, reason qualitatively from the market itself and add no figure.")
     facts_rows = [_fact_text(inp.items[f]) for f in s["facts"]]
+    if s["length"] == "us_from_report":     # a headline figure here is the market's own, so the section is never obliged to state it
+        facts_rows = [r.replace(" [REQUIRED: state this figure in the section]", "") for r in facts_rows]
     if s["sop"] == "trends" and s.get("trend_groups"):
         parts = []
         for n, g in enumerate(s["trend_groups"], 1):
@@ -173,7 +171,7 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
     if s["snippet"]:
         rows.append(f'Guest example (optional, at most one sentence, only if it makes the point clearer): "{points[s["snippet"]]}"')
     names_only = s["sop"] == "key_players" and not any(inp.items[f]["kind"] == "evidence" for f in s["facts"])
-    shape = s["length"] if s["length"] in ("us_missing", "us_from_report") else "key_players_names_only" if names_only else s["sop"]
+    shape = "us_from_report" if s["length"] == "us_from_report" else "key_players_names_only" if names_only else s["sop"]
     rows.append("SHAPE: " + _shape_text(shape, getattr(inp, "link_report", True)))
     return "\n".join(rows)
 
@@ -362,27 +360,17 @@ def _drop_orphans(kept: list[str], removed: set[int]) -> list[str]:
     return out
 
 
-_US_EDITOR_NOTE = "[EDITOR: no verified U.S. data was found for this market; add the U.S. analysis here.]"
-
-
-def editor_note(sop: str) -> str:
-    """The one line a market section carries when it has no text of its own to keep."""
-    if sop == "country_us":
-        return _US_EDITOR_NOTE
-    return f"[EDITOR: the {sop.replace('_', ' ')} section's text did not survive the checks; write it here.]"
-
-
 def keep_emptied_sections(sections: list[dict], logger: logging.Logger) -> list[dict]:
-    """The sections that still have paragraphs. A planned market section left with none keeps its heading and gets an editor
-    note instead of vanishing from the post (the editor sees where the text belongs); the opening and the transition, which
-    have no heading to keep, are dropped. Logged as a warning."""
+    """The sections that still have paragraphs, plus every planned market section left with none: it keeps its heading and an
+    empty paragraph list, and refill_empty_sections writes it again at the end of the strips (an article never carries a
+    placeholder). The opening and the transition, which have no heading to keep, are dropped. Logged as a warning."""
     out = []
     for s in sections:
         if s["paragraphs"]:
             out.append(s)
         elif s.get("sop") and s["sop"][0] in planning.ORDER:
-            logger.warning(f"[write] every paragraph of the {s['sop'][0]} section was removed; it keeps its heading with an editor note")
-            out.append({**s, "paragraphs": [editor_note(s["sop"][0])]})
+            logger.warning(f"[write] every paragraph of the {s['sop'][0]} section was removed; it keeps its heading and is written again")
+            out.append(s)
     return out
 
 
@@ -396,8 +384,7 @@ def strip_meta_sentences(sections: list[dict], logger: logging.Logger) -> list[d
             lines = []
             for line in p.split("\n"):
                 kept = [_trim_roadmap_clause(x) for x in _SENTENCE_SPLIT_RE.split(line) if x.strip()]
-                gone = {i for i, x in enumerate(kept) if not _holds_link(x) and not x.lstrip().startswith("[EDITOR")
-                        and (_META_RE.search(x) or _is_coverage_ad(x))}
+                gone = {i for i, x in enumerate(kept) if not _holds_link(x) and (_META_RE.search(x) or _is_coverage_ad(x))}
                 good = _drop_orphans(kept, gone)
                 if len(good) != len(kept):
                     logger.info(f"[write] removed {len(kept) - len(good)} process-language sentence(s) from {s['sop'] or 'the opening'}: "
@@ -972,11 +959,164 @@ def name_outside_sources(sections: list[dict], inp: planning.PlanInputs, logger:
     return sections
 
 
+# ------------------------------------------------------------------------------------------------- refilling emptied sections
+
+# The neutral qualitative paragraph a section falls back to when the fact sheet holds nothing for it at all: no figure, no claim
+# about missing data, just what shapes the market on that topic. {m} is the market's full name.
+_NEUTRAL = {
+    "report_context": "The {m} is shaped by demand from its core buyers, by the pace at which providers bring new offerings to market and by the way adoption spreads across end uses. Together these forces set how the market grows and where providers compete for share.",
+    "trends": "Demand in the {m} is moving with changes in how buyers choose and use what the market offers, and providers are adjusting their offerings to follow. Where adoption deepens, competition shifts from availability towards quality, integration and service.",
+    "segmentation": "The {m} divides along the lines buyers and providers use to organise it: what is offered, how it is delivered and who uses it. Each division reflects a different pattern of demand and a different set of competitive priorities.",
+    "subsegment": "Within the {m}, the leading sub-segments are those where buyer demand is most established and providers have the clearest offer. Their position rests on how directly they answer a recurring need and on how readily buyers adopt them.",
+    "country_us": "In the United States, demand in the {m} is shaped by buyers that expect proven performance, by an active base of providers and by a steady pace of adoption. For U.S. providers the priority is to match offerings closely to what these buyers value and to compete on quality and service.",
+    "key_players": "The {m} is served by a field of established and emerging providers that compete on the strength of their offerings, their reach and their service. Buyers weigh these factors when they choose between them, and providers keep refining their positions as demand develops.",
+    "conclusion": "Looking ahead, the {m} is positioned to keep developing as buyer demand matures and providers refine their offerings. Providers that stay close to what buyers value, and that keep their offerings current, are best placed to benefit from that development.",
+}
+_OUTLOOK_KINDS = ("drivers", "opportunities")
+
+
+def _own_sentence(text: str) -> str:
+    """One fact's text as a plain sentence: whitespace folded and a closing full stop added."""
+    t = " ".join(str(text).split()).strip()
+    return t if t[-1:] in ".!?" else t + "."
+
+
+def _fact_sentence(item: dict) -> str:
+    """A fact as a sentence of the article. A headline fact ("Market size: USD 5 billion (2025)") is turned into a statement;
+    an evidence fact that names an outside source keeps that source's name, as the attribution rules ask."""
+    text = " ".join(str(item["text"]).split())
+    if item["kind"] in ("size", "forecast", "cagr") and ": " in text:
+        label, value = text.split(": ", 1)
+        return f"{label} stands at {value}."
+    src = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", item.get("source") or "").strip()
+    sentence = _own_sentence(text)
+    if item["kind"] == "evidence" and src and src != "CMI report" and src.lower() not in text.lower():
+        sentence = f"{sentence[:-1]}, according to {src}."
+    return sentence
+
+
+def _us_safe(sentences: list[str]) -> list[str]:
+    """The sentences that name no region or country other than the United States."""
+    import content_rules
+    return [x for x in sentences
+            if not content_rules.us_only_problems([{"sop": ["country_us"], "paragraphs": [x]}])]
+
+
+def _refill_item_ids(ps: dict, inp: planning.PlanInputs) -> list[str]:
+    """The facts a section is written from when it is written again: its planned facts first, then the fact sheet's others that
+    belong to this section (the report's company list and any evidence about the companies for key players, the drivers and
+    opportunities for the conclusion, the U.S. fact pool for the U.S. section, the facts a section may hold for the rest)."""
+    sop = ps["sop"]
+    ids = [f for f in ps["facts"] if f in inp.items]
+    if sop == "country_us":
+        rank = {k: n for n, k in enumerate(planning._US_REPORT_KINDS)}
+        extra = sorted((f for f, it in inp.items.items() if (it["kind"] in rank or planning._is_us_fact(it)) and not it.get("auto")
+                        and (it["kind"] != "segments" or f.endswith(".dominant"))),
+                       key=lambda f: (0 if planning._is_us_fact(inp.items[f]) else 1, rank.get(inp.items[f]["kind"], 0)))
+    elif sop == "conclusion":
+        extra = [f for f, it in inp.items.items() if it["kind"] in _OUTLOOK_KINDS + ("forecast", "cagr")]
+    elif sop == "key_players":
+        extra = [f for f, it in inp.items.items() if sop in it["sections"] and it["kind"] in ("players", "evidence")]
+    else:
+        extra = [f for f, it in inp.items.items() if sop in it["sections"] and not it.get("auto")]
+    return list(dict.fromkeys(ids + extra))[:max(planning._FACTS_MAX.get(sop, 4), len(ids))]
+
+
+def _fallback_paragraphs(ps: dict, inp: planning.PlanInputs) -> list[str]:
+    """The section built in code from the fact sheet when even the refill call gave nothing: plain statements of the section's own
+    facts, in words and with no claim about missing data. With nothing in the fact sheet for the section, a neutral qualitative
+    paragraph about the market on that topic."""
+    sop, market = ps["sop"], inp.market_name
+    items = [inp.items[f] for f in _refill_item_ids(ps, inp)]
+    neutral = _NEUTRAL[sop].format(m=market)
+    if sop == "key_players":
+        names: list[str] = []
+        for it in items:
+            if it["kind"] == "players" and ": " in it["text"]:
+                names = [n.strip() for n in it["text"].split(": ", 1)[1].split(",") if n.strip()]
+        if not names:
+            return [neutral]
+        listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        field = "a small field" if len(names) <= 3 else "a field of moderate size" if len(names) <= 6 else "a broad and active field"
+        out = [f"Companies active in the {market} include {listed}. Together they make up {field}, in which providers compete on the strength of their offerings and their reach."]
+        evidence = [_fact_sentence(it) for it in items if it["kind"] == "evidence"][:2]
+        return out + ([" ".join(evidence)] if evidence else [])
+    if sop == "conclusion":
+        # the conclusion carries no digit: only statements without one are used, and it looks ahead in words
+        said = [_own_sentence(it["text"]) for it in items if it["kind"] in _OUTLOOK_KINDS and not re.search(r"\d", it["text"])][:2]
+        if not said:
+            return [neutral]
+        return [f"Looking ahead, the {market} is positioned to keep developing as its demand drivers carry on. " + " ".join(said)
+                + " Providers that align their offerings with these directions are best placed to benefit."]
+    if sop == "country_us":
+        us = [_fact_sentence(it) for it in items if planning._is_us_fact(it)]
+        rest = [_own_sentence(it["text"]) for it in items
+                if not planning._is_us_fact(it) and it["kind"] in ("drivers", "opportunities", "segment_drivers") and not re.search(r"\d", it["text"])]
+        said = _us_safe(us)[:3] or _us_safe([f"U.S. buyers and providers in the {market} are influenced by the following. {x}" for x in rest[:2]])
+        return [" ".join(said)] if said else [neutral]
+    said = [_fact_sentence(it) for it in items if it["kind"] != "players"][:3]
+    return [" ".join(said)] if said else [neutral]
+
+
+def _refill_block(ps: dict, inp: planning.PlanInputs, ids: list[str]) -> tuple[str, str]:
+    """(the section's block from the write prompt, built over `ids`; the extra instruction for the section). The section block is the
+    write prompt's own, so the voice, keyword and shape rules stay one set."""
+    sop = ps["sop"]
+    length = "us_from_report" if sop == "country_us" and ps.get("length") != "normal" else ps.get("length", "normal")
+    s = {**ps, "facts": ids, "length": length, "words": ps.get("words", 120)}
+    points = {p["id"]: p["text"] for p in inp.points}
+    extra = ""
+    if sop == "conclusion":
+        extra = ("\nThe conclusion looks ahead from the listed drivers and opportunities, in words only: it contains no digit and restates "
+                 "no fact, region, segment or company of the earlier sections.")
+    elif sop == "key_players":
+        extra = "\nName the companies the facts name, each inside a complete sentence."
+    return _section_block(1, s, inp, points), extra
+
+
+def refill_empty_sections(sections: list[dict], plan: dict, inp: planning.PlanInputs, report: reports.Report,
+                          logger: logging.Logger, sponsor_text: str = "") -> list[dict]:
+    """Every planned market section with no paragraph is written, never given a placeholder. Step 1: one small LLM call writes that
+    section alone from its planned facts plus the fact sheet's other facts for it, and the code backstops run again over the whole
+    post. Step 2: a section still empty (or whose call failed) is built in code from the fact sheet (_fallback_paragraphs). One
+    call per emptied section and no loop; each refill is logged as a warning."""
+    plan_by_sop = {ps["sop"]: ps for ps in plan["sections"]}
+    empty = [s for s in sections if s.get("sop") and s["sop"][0] in plan_by_sop and not s["paragraphs"]]
+    if not empty:
+        return sections
+    headings = "; ".join(f'"{s["heading"]}"' for s in sections if s.get("sop") and s["sop"][0] in planning.ORDER)
+    for s in empty:
+        sop = s["sop"][0]
+        ps = {**plan_by_sop[sop], "heading": s["heading"]}
+        logger.warning(f"[write] the {sop} section is empty: one targeted call writes it from the fact sheet")
+        try:
+            block, extra = _refill_block(ps, inp, _refill_item_ids(ps, inp))
+            prompt = prompts.REFILL_USER.format(sop=sop, title=plan["title"], market_name=report.name, today=date.today().isoformat(),
+                                                other_headings=headings, block=block, extra=extra)
+            raw = llm.chat_json(prompts.WRITE_SYSTEM, prompt, temperature=0.3, call_name=f"refill_{sop}", logger=logger, max_tokens=2500)
+            cleaned = _clean_sections([{**(raw if isinstance(raw, dict) else {}), "heading": s["heading"], "sop": [sop]}])
+            s["paragraphs"] = cleaned[0]["paragraphs"] if cleaned else []
+        except Exception as exc:        # a failed call falls through to the code fallback, never to a placeholder
+            logger.warning(f"[write] the targeted call for the {sop} section failed ({exc}); it is built from the fact sheet")
+    if any(s["paragraphs"] for s in empty):
+        sections = strip_meta_sentences(sections, logger)
+        sections = strip_untraced_figures(sections, inp, sponsor_text, logger)
+        sections = strip_repeat_figures(sections, inp, logger)
+        sections = strip_repeat_evidence(sections, inp, logger)
+    for s in sections:
+        if s.get("sop") and s["sop"][0] in plan_by_sop and not s["paragraphs"]:
+            sop = s["sop"][0]
+            s["paragraphs"] = _fallback_paragraphs({**plan_by_sop[sop], "heading": s["heading"]}, inp)
+            logger.warning(f"[write] the {sop} section is still empty after the targeted call; it is built in code from the fact sheet")
+    return sections
+
+
 # ------------------------------------------------------------------------------------------------- assembly
 
 def assemble_sections(written: dict, plan: dict, logger: logging.Logger) -> list[dict]:
     """The model's answer as the app's section list: intro (untagged), transition (tagged "transition"), then the market
-    sections in the plan's order with the plan's exact headings. A section the model left out is logged and skipped."""
+    sections in the plan's order with the plan's exact headings. A section the model left out, or returned empty, keeps its
+    heading with no paragraphs (logged); refill_empty_sections writes it later."""
     intro = _clean_sections([{"heading": "", "sop": [], "paragraphs": (written.get("intro") or {}).get("paragraphs", [])}], force_untagged=True)
     trans_raw = [{"heading": "", "sop": ["transition"], "paragraphs": (written.get("transition") or {}).get("paragraphs", [])}]
     transition = _clean_sections(trans_raw)
@@ -989,10 +1129,10 @@ def assemble_sections(written: dict, plan: dict, logger: logging.Logger) -> list
         raw = by_sop.get(ps["sop"])
         cleaned = _clean_sections([{**raw, "heading": ps["heading"], "sop": [ps["sop"]]}]) if raw is not None else []
         if not cleaned:
-            # a planned section never vanishes: it keeps its heading with an editor note where its text belongs
+            # a planned section never vanishes: it keeps its heading and is written again by refill_empty_sections
             logger.warning(f"[write] the model {'left out' if raw is None else 'returned an empty'} {ps['sop']} section; "
-                           "it keeps its heading with an editor note")
-            market.append({"heading": ps["heading"], "sop": [ps["sop"]], "paragraphs": [editor_note(ps["sop"])]})
+                           "it keeps its heading and is written again")
+            market.append({"heading": ps["heading"], "sop": [ps["sop"]], "paragraphs": []})
             continue
         if str(raw.get("heading") or "").strip() != ps["heading"]:
             logger.info(f"[write] {ps['sop']}: the heading was set to the plan's ({raw.get('heading')!r} -> {ps['heading']!r})")
@@ -1021,6 +1161,7 @@ def run_write_v2(
     sections = strip_untraced_figures(sections, inp, allowed_text, logger)
     sections = strip_repeat_figures(sections, inp, logger)
     sections = strip_repeat_evidence(sections, inp, logger)
+    sections = refill_empty_sections(sections, plan, inp, report, logger, allowed_text)
     sections = strip_reader_filler(sections, logger)
     sections = name_outside_sources(sections, inp, logger)
     sections = enforce_trend_shape(sections, logger)

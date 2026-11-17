@@ -1700,6 +1700,19 @@ def v2_active_voice_notes(sections: list[dict]) -> list[str]:
 # ('remove all these SOPs'): the code that produces them is kept untouched above, the results just no
 # longer surface in the draft's checks list. Re-enable by emptying this set. The names are derived
 # from the same constants that build them inside run_checks_v2, so the strings keep matching there.
+def v2_empty_section_problems(sections: list[dict]) -> list[str]:
+    """Market sections with no text, and any paragraph carrying an editor placeholder ("[EDITOR: ...]"). A section that would be
+    empty is written again by writer.refill_empty_sections, so a hit here means that step was skipped or failed."""
+    import planning
+    out = []
+    for s in sections:
+        label = (s.get("heading") or "").strip() or (s.get("sop") or ["the opening"])[0]
+        if s.get("sop") and s["sop"][0] in planning.ORDER and not any(str(p).strip() for p in s["paragraphs"]):
+            out.append(f"{label}: the section has no text")
+        out += [f"{label}: carries an editor placeholder: {str(p).strip()[:70]!r}" for p in s["paragraphs"] if "[EDITOR" in str(p)]
+    return out
+
+
 V2_US_EVIDENCE_CHECK_NAME = "U.S. section rests on report facts (thin U.S. evidence): verify (soft)"
 V2_VAGUE_CHECK_NAME = "Every sentence names what it refers to (none opens with this, that, these, those or a bare pronoun)"
 
@@ -1973,6 +1986,8 @@ def run_checks_v2(
     ))
 
     # ---- kept: the market sections carry the SOPs' own requirements
+    empty_problems = v2_empty_section_problems(sections)
+    results.append(CheckResult("No empty sections or placeholders", not empty_problems, "; ".join(empty_problems)))
     sub_paragraphs = sum(len(s["paragraphs"]) for s in sections if "subsegment" in s["sop"])
     results.append(CheckResult("Two sub-segment analyses", sub_paragraphs >= 2, f"found {sub_paragraphs} sub-segment paragraph(s)"))
     trend_problems = v2_trend_shape_problems(raw_sections)
@@ -1989,8 +2004,7 @@ def run_checks_v2(
         detail = ""
         if thin:
             detail = (f"{n_us} verified U.S. fact(s): the section is written from the report's own facts, framed for the U.S. Check that it "
-                      "stays on the United States and adds no U.S. figure" if us_plan.get("us_source") == "report"
-                      else f"{n_us} verified U.S. fact(s) and no report fact to write from: the section is an editor note to fill in")
+                      "stays on the United States and adds no U.S. figure")
         results.append(CheckResult(V2_US_EVIDENCE_CHECK_NAME, not thin, detail))
     import content_rules
     us_problems = content_rules.us_only_problems(sections)

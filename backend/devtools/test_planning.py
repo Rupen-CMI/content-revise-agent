@@ -309,8 +309,8 @@ inp = make_inputs()
 for fid in [f for f, it in inp.items.items() if it["kind"] in ("us", "drivers", "opportunities", "segments")]:
     del inp.items[fid]
 inp.longtails = [lt for lt in inp.longtails if lt["fact"] != "fs.us.0"]
-check("lengths: a U.S. section with no U.S. fact and no report fact at all is flagged for the editor, never filled with another region",
-      S(plan_of(raw, inp), "country_us")["length"] == "us_missing")
+check("lengths: a U.S. section with no U.S. fact and no report fact at all is a qualitative U.S. analysis, never an editor note",
+      S(plan_of(raw, inp), "country_us")["length"] == "us_from_report")
 check("facts: a regional fact cannot sit in the U.S. section", "country_us" not in planning._FACT_SECTIONS["regions"])
 check("facts: general trend evidence cannot sit in the U.S. section",
       "country_us" not in planning._EVIDENCE_TAG_SECTIONS["trends"] and "country_us" not in planning._EVIDENCE_TAG_SECTIONS["context"])
@@ -352,8 +352,8 @@ us = S(p, "country_us")
 check("U.S. thin (one fact): the section is written from the report's own facts, its U.S. statement first",
       us["length"] == "us_from_report" and us["us_source"] == "report" and us["facts"][0] == "fs.us.0" and "fs.drivers.0" in us["facts"],
       str((us["facts"], us["length"])))
-check("U.S. thin: the report's facts follow in kind order (us, drivers, opportunities, segments) up to the section cap",
-      us["facts"] == ["fs.us.0", "fs.drivers.0", "fs.opportunities.0"] and len(us["facts"]) <= planning._FACTS_MAX["country_us"],
+check("U.S. thin: the report's facts follow in kind order (us, drivers, opportunities, segments, headline figures) up to the section cap",
+      us["facts"] == ["fs.us.0", "fs.drivers.0", "fs.opportunities.0", "fs.size"] and len(us["facts"]) <= planning._FACTS_MAX["country_us"],
       str(us["facts"]))
 check("U.S. thin: a fact borrowed by the U.S. section stays where it was (trends keep their driver)",
       "fs.drivers.0" in S(p, "trends")["facts"], str(S(p, "trends")["facts"]))
@@ -365,8 +365,8 @@ check("U.S. none: also written from the report's own facts, no editor note",
       S(p, "country_us")["length"] == "us_from_report" and S(p, "country_us")["facts"][0] == "fs.drivers.0", str(S(p, "country_us")["facts"]))
 
 p = us_plan(0, with_report_facts=False)
-check("U.S. none and no report fact: the editor-note mode, with a note-sized budget",
-      S(p, "country_us")["length"] == "us_missing" and S(p, "country_us")["words"] <= 30, str((S(p, "country_us")["length"], S(p, "country_us")["words"])))
+check("U.S. none and no report fact: a qualitative U.S. analysis with the section's own budget, never an editor note",
+      S(p, "country_us")["length"] == "us_from_report" and S(p, "country_us")["words"] >= 100, str((S(p, "country_us")["length"], S(p, "country_us")["words"])))
 
 # evidence tagged us always goes to the U.S. section and never to a trend
 inp = us_inputs(2)
