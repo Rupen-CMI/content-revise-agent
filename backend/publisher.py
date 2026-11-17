@@ -3,7 +3,7 @@
 The guest article is only context for the market article: its subject opens the post as an example, and a later section
 may borrow one short point from it. One LLM call boils the article down to an `intro_angle` and a few plain points; code
 then drops any point that states a market fact (size, growth, share, segments, vendors), is attributed to CMI or a
-research firm, names the guest's brand, or carries a number the article does not itself contain. The writer sees these
+research firm or any outside source, names the guest's brand, or carries a number the article does not itself contain. The writer sees these
 points, never the raw article, which is what keeps the article's jargon and its unverified market claims out.
 
 Imports pipeline/facts for shared helpers; pipeline never imports this module (main.py does the wiring).
@@ -14,6 +14,7 @@ import re
 import facts
 import freshness
 import llm
+import outside_sources
 import prompts
 from docx_io import Paragraph, SourceArticle
 from pipeline import _BODY_CHARS, _brand_terms
@@ -30,10 +31,7 @@ _MARKET_FACT_RE = re.compile(
     r"\b(grow\w*|size[ds]?|valued|valuation|forecast\w*|cagr|share|segments?|segmentation|vendors?|players?|industry|"
     r"worth|billion|million|trillion)\b", re.IGNORECASE,
 )
-_RESEARCH_SOURCE_RE = re.compile(
-    r"\b(CMI|Coherent Market Insights|market research firm|research firm|Gartner|Forrester|IDC|Statista|Mordor|"
-    r"Grand View|MarketsandMarkets|Fortune Business)\b", re.IGNORECASE,
-)
+_RESEARCH_SOURCE_RE = re.compile(r"\b(CMI|Coherent Market Insights|market research firm|research firm)\b", re.IGNORECASE)
 # A point may not hold a measurement — a number with a unit of measure (KB, ms, kg, mph…) or a spelled-out unit of
 # measure — because a measurement is detail a reader outside the guest article's field never needs in the opening, in any industry.
 _JARGON_RE = re.compile(
@@ -72,6 +70,13 @@ def normalize_points(raw: dict, article_body: str, brand_terms: list[str], logge
     points: list[dict] = []
     for item in raw.get("points") if isinstance(raw.get("points"), list) else []:
         text = " ".join(str(item.get("text") if isinstance(item, dict) else item or "").split())
+        if not text:
+            continue
+        # a sentence that cites an outside source (an attribution frame, a research firm's name) loses that sentence or clause: a point
+        # is the article's own idea, and the post names no source but CMI
+        text, cut = outside_sources.clean_text(text)
+        if cut:
+            logger.info(f"[publisher] removed an outside source from a point: {' | '.join(x[:110] for x in cut)}")
         if not text:
             continue
         why = point_problem(text, nums, brand_terms)

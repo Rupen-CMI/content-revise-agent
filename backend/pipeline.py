@@ -15,11 +15,13 @@ import feeds
 import freshness
 import intent
 import llm
+import outside_sources
 import polarity
 import prompts
 import reports
 import search
 import sections
+import sentsplit
 import sources
 import us_search
 from sections import section_search_plan  # noqa: F401  (the Evidence step's section search plan lives in sections.py)
@@ -1902,9 +1904,78 @@ def _figures(text: str) -> set[str]:
     return out
 
 
+# A figure with its unit: "$5.2 billion" -> ("5.2", "b", True), "40%" -> ("40", "%", False), "1,200 stores" -> ("1200", "", False).
+_FIGURE_SPEC_RE = re.compile(
+    r"(?P<cur>US\$|\$|USD\s?|\u20ac|\u00a3)?\s?(?P<num>\d+(?:[.,]\d+)*)(?P<unit>\s?(?:%|percent\b|per cent\b|million\b|billion\b|trillion\b|"
+    r"thousand\b|mn\b|bn\b|[mbk]\b))?", re.IGNORECASE)
+_UNIT_CLASS = {"%": "%", "percent": "%", "per cent": "%", "million": "m", "mn": "m", "m": "m", "billion": "b", "bn": "b", "b": "b",
+               "trillion": "t", "thousand": "k", "k": "k"}
+_CURRENCY_WORD_RE = re.compile(r"\b(?:dollars?|usd|euros?|eur|pounds?|gbp)\b", re.IGNORECASE)
+# Words that carry no topic: a figure's source sentence must share a real content word with the fact, so these never count.
+_UNIT_WORDS = frozenset({"percent", "million", "billion", "trillion", "thousand", "year", "years", "annual", "than", "over", "about",
+                         "nearly", "almost", "around", "more", "from", "with", "that", "this", "which"})
+
+
+def _figure_specs(text: str) -> list[tuple[str, str, bool]]:
+    """The figures of a text as (digits, unit class, has a currency sign), under _figures' own rule (two digits or more, no plain year;
+    a single digit only with a unit or a currency sign)."""
+    out = []
+    for m in _FIGURE_SPEC_RE.finditer(text or ""):
+        n = m.group("num").replace(",", "").rstrip(".")
+        unit = _UNIT_CLASS.get(re.sub(r"\s+", " ", (m.group("unit") or "").strip().lower()), "")
+        # a single digit is a count or a label unless it carries a unit or a currency sign ("$5 billion", "9%")
+        if (len(n) >= 2 or unit or m.group("cur")) and not re.fullmatch(r"20[1-3]\d", n):
+            out.append((n, unit, bool(m.group("cur"))))
+    return out
+
+
+def _stems(text: str) -> set[str]:
+    """The topic words of a text (4+ letters, no stopword or unit word), cut to five letters so "launched" meets "launches"."""
+    return {w[:5] for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in search._STOPWORDS and w not in _UNIT_WORDS}
+
+
+def _source_sentences(hit: search.SearchHit) -> list[str]:
+    """The sentences of everything the hit gave the model: its headline, its snippet and the fetched article excerpt. The excerpt is
+    the article's opening paragraph plus the paragraphs that mention the market and carry figures (feeds._best_excerpt, at most 900
+    characters), or empty when the page could not be read; the model that wrote the fact saw nothing more than this."""
+    out: list[str] = []
+    for part in (hit.title, hit.snippet, hit.excerpt):
+        out.extend(x.strip() for x in sentsplit.split(re.sub(r"\s+", " ", part or "")) if x.strip())
+    return out
+
+
+def _figure_problem(text: str, hit: search.SearchHit) -> str:
+    """Why a selected fact's figures cannot be trusted, or "" when they can. Each figure must stand in the source inside a sentence
+    that shares a content word with the fact (a figure sitting in an unrelated sentence of the page is not the fact's figure), with
+    the same unit or scale where the fact gives one (%, million, billion, a currency). When every such source sentence itself hands the
+    figure to a third party ("per Statista, ...", "Gartner estimates ..."), it is a rival's statistic relayed by news and is dropped
+    too: the post names no outside source, and a statistic whose source cannot be named is not stated."""
+    specs = _figure_specs(text)
+    if not specs:
+        return ""
+    stems = _stems(text)
+    sentences = _source_sentences(hit)
+    for num, unit, cur in specs:
+        homes = []
+        for sent in sentences:
+            if not (stems & _stems(sent)):
+                continue
+            for n2, u2, c2 in _figure_specs(sent):
+                if n2 == num and (not unit or u2 == unit) and (not cur or c2 or _CURRENCY_WORD_RE.search(sent)):
+                    homes.append(sent)
+                    break
+        if not homes:
+            return f"{num} is not in a source sentence that matches the fact (same words, same unit)"
+        relayed = [outside_sources.attributes_to_outside(h) for h in homes]
+        if all(relayed):
+            return f"{num} is a third party's statistic relayed by the source ({', '.join(relayed[0])})"
+    return ""
+
+
 def _verify_selection_figures(selection: dict, hits: list[search.SearchHit], logger: logging.Logger) -> None:
-    """SELECT's fact/detail are LLM-written; a figure that is nowhere in the source's own text is an invented number,
-    which must never reach the writer. An item whose FACT carries one is dropped; an unsupported DETAIL is blanked."""
+    """SELECT's fact/detail are LLM-written; a figure that the source does not state in a matching sentence is an invented or misplaced
+    number, which must never reach the writer (see _figure_problem). An item whose FACT carries one is dropped; an unsupported DETAIL is
+    blanked."""
     kept = []
     for e in selection.get("evidence") or []:
         m = re.fullmatch(r"W(\d+)", str(e.get("id", "")).strip())
@@ -1912,15 +1983,14 @@ def _verify_selection_figures(selection: dict, hits: list[search.SearchHit], log
             kept.append(e)  # a bad id is dropped by run_build_evidence, which logs it
             continue
         h = hits[int(m.group(1)) - 1]
-        source = f"{h.title} {h.snippet} {h.excerpt}".replace(",", "")
-        bad_fact = sorted(n for n in _figures(str(e.get("fact", ""))) if n not in source)
+        bad_fact = _figure_problem(str(e.get("fact", "")), h)
         if bad_fact:
-            logger.warning(f"[select] dropped {e.get('id')}: its fact states {bad_fact}, which is not in the source text")
+            logger.warning(f"[select] dropped {e.get('id')}: its fact states a figure the source does not back: {bad_fact}")
             continue
         detail = str(e.get("detail") or "").strip()
-        bad_detail = sorted(n for n in _figures(detail) if n not in source)
+        bad_detail = _figure_problem(detail, h)
         if bad_detail:
-            logger.warning(f"[select] blanked the detail of {e.get('id')}: it states {bad_detail}, not in the source text")
+            logger.warning(f"[select] blanked the detail of {e.get('id')}: {bad_detail}")
             detail = ""
         e["detail"] = detail
         kept.append(e)
@@ -1981,10 +2051,9 @@ def _normalize_claim_backing(
         if not fact:
             fact = " ".join((hit.snippet or "").split())[:220]
             logger.info(f"[select] backing {pid} had no fact, substituted first words of the snippet")
-        source = f"{hit.title} {hit.snippet} {hit.excerpt}".replace(",", "")
-        bad = sorted(n for n in _figures(fact) if n not in source)
+        bad = _figure_problem(fact, hit)
         if bad:
-            logger.warning(f"[select] dropped claim backing {pid}: its fact states {bad}, which is not in the source text")
+            logger.warning(f"[select] dropped claim backing {pid}: its fact states a figure the source does not back: {bad}")
             continue
         # Same freshness policy as the market evidence (_drop_stale_facts): the draft may not cite a dated event older than
         # the freshness window, whichever stream it came from. The claim search has no recency cutoff on purpose (a
@@ -2041,10 +2110,9 @@ def _normalize_question_backing(
         if not fact:
             fact = " ".join((hit.snippet or "").split())[:220]
             logger.info(f"[select] question backing {pid} had no fact, substituted first words of the snippet")
-        source = f"{hit.title} {hit.snippet} {hit.excerpt}".replace(",", "")
-        bad = sorted(n for n in _figures(fact) if n not in source)
+        bad = _figure_problem(fact, hit)
         if bad:
-            logger.warning(f"[select] dropped question backing {pid}: its fact states {bad}, which is not in the source text")
+            logger.warning(f"[select] dropped question backing {pid}: its fact states a figure the source does not back: {bad}")
             continue
         stale = [
             m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(fact)
@@ -2103,10 +2171,9 @@ def _normalize_report_claim_backing(
         if _is_market_sizing(fact):
             logger.info(f"[select] dropped report claim backing {pid}: it states market sizing/forecast ({fact[:80]!r})")
             continue
-        source = f"{hit.title} {hit.snippet} {hit.excerpt}".replace(",", "")
-        bad = sorted(n for n in _figures(fact) if n not in source)
+        bad = _figure_problem(fact, hit)
         if bad:
-            logger.warning(f"[select] dropped report claim backing {pid}: its fact states {bad}, which is not in the source text")
+            logger.warning(f"[select] dropped report claim backing {pid}: its fact states a figure the source does not back: {bad}")
             continue
         stale = [
             m.group(0) for m in freshness.INLINE_EVENT_DATE_RE.finditer(fact)
@@ -2179,15 +2246,11 @@ def _drop_negative_facts(selection: dict, logger: logging.Logger, market_name: s
 
 # Market sizing belongs to the CMI report alone. SELECT is told to reject it (prompts.SELECT_USER, test 3); this is the
 # backstop for a model that keeps one anyway: a fact that gives the size/forecast/growth of a market or industry, or that
-# attributes anything to a rival market-research firm, would put a second, contradicting figure in the draft. The last
+# attributes a figure to a rival market-research firm or any other outside source (outside_sources: attribution frames and the
+# research-firm name shape, never a list of firm names), would put a second, contradicting figure in the draft. The last
 # two alternatives catch the sentence reading the other way round: first a sizing verb (estimates, values, puts,
 # forecasts, projects, pegs, sizes) and only then the market name and the currency amount, plus a bare market noun
 # followed straight by at and an amount with no sizing verb at all.
-_RIVAL_RESEARCH_RE = re.compile(
-    r"\b(mordor intelligence|marketsandmarkets|markets and markets|grand view research|research and markets|technavio|"
-    r"fortune business insights|precedence research|allied market research|imarc|verified market research|"
-    r"transparency market research|future market insights|persistence market research|market research future|"
-    r"polaris market research|straits research|expert market research|data bridge market research)\b", re.IGNORECASE)
 _MARKET_SIZING_RE = re.compile(
     r"\bcagr\b|\bcompound annual growth\b|\b(market|industry) size\b"
     r"|\b(market|industry|sector|segment)\b[^.;]{0,90}\b(valued|worth|sized|projected|forecast(ed)?|"
@@ -2201,7 +2264,7 @@ _MARKET_SIZING_RE = re.compile(
 
 
 def _is_market_sizing(text: str) -> bool:
-    return bool(_RIVAL_RESEARCH_RE.search(text) or _MARKET_SIZING_RE.search(text))
+    return bool(_MARKET_SIZING_RE.search(text) or outside_sources.attributes_to_outside(text))
 
 
 def _drop_market_sizing_facts(
@@ -2467,9 +2530,9 @@ def run_build_evidence(
             for c in claims:
                 line = f'* {c["id"]} [{c.get("kind") or "claim"}] "{c["claim"]}"'
                 if c["id"] in backed_ids:
-                    line += " — BACKED: apply CLAIMS rule 1, 2 or 3, whichever matches the stance of its ARTICLE EVIDENCE item(s) above, naming the source in the sentence"
+                    line += " — BACKED: apply CLAIMS rule 1, 2 or 3, whichever matches the stance of its ARTICLE EVIDENCE item(s) above, without naming the source"
                 else:
-                    line += " — NO OUTSIDE BACKING FOUND: apply CLAIMS rule 4 (hedged and attributed if it is a general statement; dropped if it is a superlative or a verdict about a named product); never state it as fact"
+                    line += " — NO OUTSIDE BACKING FOUND: apply CLAIMS rule 4 (hedged if it is a general statement; dropped if it is a superlative or a verdict about a named product); never state it as fact"
                 parts.append(line)
     if questions:
         parts.append(
@@ -3238,7 +3301,7 @@ def _paragraph_text(entry) -> str:
     """A "paragraphs" entry is a string, or an object {"paragraph": "..."} when the prompt asks the writer to name what
     each paragraph is about (the sub-segment analyses: segment, sub-segment, paragraph). The writer sometimes hands
     those objects back as JSON text inside the list instead of as objects; printed as-is that leaks serialized JSON
-    into the draft (name_outside_sources then even credits it ", per <source>"), so JSON text decodes here and its
+    into the draft (the draft would then carry the raw JSON text), so JSON text decodes here and its
     paragraph text is taken the same way. Prose that merely opens with a brace is kept unchanged."""
     if isinstance(entry, dict):
         return _paragraph_text(entry.get("paragraph") or entry.get("text") or "")

@@ -1318,153 +1318,58 @@ def v2_number_trace_problems(sections: list[dict], faq: list[dict], inp, sponsor
     return out
 
 
-# Everyday function words no sentence can avoid: excluded from the wording-overlap tie-break below, so
-# a shared one proves nothing about which fact a sentence belongs to.
-_WORDING_STOPWORDS = frozenset({
-    "that", "this", "these", "those", "they", "them", "their", "there", "here", "what", "which", "when",
-    "where", "while", "with", "from", "into", "onto", "upon", "over", "than", "then", "only", "also",
-    "very", "such", "same", "each", "both", "more", "most", "some", "will", "would", "could", "should",
-    "have", "been", "were", "does", "done", "about", "between", "through", "because", "since",
-})
+def v2_outside_source_problems(sections: list[dict], inp, faq: list[dict] = ()) -> list[str]:
+    """No outside source is named anywhere in the post (the product owner's rule: CMI is the only source an article names). A sentence is
+    reported when it names a non-CMI source: an attribution frame ("according to X", "per X", "X reported that", "a survey by X",
+    "(X, 2026)"), a research-firm-shaped name, or the bare name of a source the fact sheet lists (a two-word publication, a host). A
+    company that is the actor of its own development ("Adobe forecast that its own traffic ...", "Netcore Unbxd launched ...") is the
+    actor and never trips it: only attribution contexts count (outside_sources.allowed_names). The FAQ answers are held to the same
+    rule. The retained paragraph's own words are not the writer's and are blanked out first."""
+    import outside_sources
+    allowed = outside_sources.allowed_names(inp)
+    srcs = outside_sources.source_names(inp, allowed)
+    out: list[str] = []
+    drafts = [(str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")), p)
+              for s in sections for p in s["paragraphs"]]
+    drafts += [(f"FAQ: {str(qa.get('question', ''))[:50]}", str(qa.get("answer") or "")) for qa in faq]
+    for label, p in drafts:
+        for line in _sponsor_replacement(p, " ").split("\n"):
+            for sentence in sentsplit.split(line):
+                names = outside_sources.attributing_names(sentence, allowed, srcs)
+                if names:
+                    out.append(f"{label}: names an outside source ({', '.join(names)}): {sentence.strip()[:100]!r}")
+    return out
 
 
-def _wording_overlap(sentence: str, fact_text: str, fact_detail: str = "") -> int:
-    """How many DISTINCT content words (lowercase alphabetic words of 4+ letters, minus
-    _WORDING_STOPWORDS) a sentence shares with one fact's own text plus detail — the second tie-break
-    for figure ownership: when two outside facts tie on the figures they share with a sentence, the fact
-    whose own wording the sentence keeps is the one the sentence belongs to. Shared with the writer's
-    source-naming backstop (called as checks._wording_overlap there), so both judge the same tie."""
-    sent_words = {w for w in re.findall(r"[a-z]+", sentence.lower()) if len(w) >= 4} - _WORDING_STOPWORDS
-    fact_words = {w for w in re.findall(r"[a-z]+", f"{fact_text} {fact_detail}".lower())
-                  if len(w) >= 4} - _WORDING_STOPWORDS
-    return len(sent_words & fact_words)
-
-
-def v2_evidence_attribution_problems(sections: list[dict], inp) -> list[str]:
-    """A figure that came from an outside source (a non-CMI source: a gap-filled fact-sheet headline or a
-    selected news item) names that source, and is never credited to CMI (§3.2): the unit of naming is one
-    line of a paragraph — the name must appear at that line's first sentence using the source's figure,
-    and a source named earlier in the same line covers the later sentences of that line."""
+def v2_outside_figure_credit_problems(sections: list[dict], inp) -> list[str]:
+    """A figure taken from an outside report or news item (a gap-filled headline, an evidence figure) is never credited to CMI (§3.2):
+    a sentence that names CMI and carries a figure that only an outside fact owns is reported. A figure CMI's own facts also carry is
+    CMI's."""
     out: list[str] = []
     if inp is None:
         return out
-    # (fact id, source name, identifying numbers) for every input fact: any of them may "own" a number
-    # a sentence carries, so the full registry tells a real misattribution apart from a coincidental
-    # token shared by two different facts (Farther's "150 million" against Savvy's "150 advisors").
-    # A fact's matching relies on tokens only; the registry then lets a sentence that NAMES the owning
-    # source keep its numbers even when another fact shares those tokens.
-    registry: list[tuple[str, str, set[str]]] = []
+    cmi_figs: set[str] = set()
+    outside: list[tuple[str, set[str]]] = []
     for i in inp.items.values():
-        # Attribution uses digits only: a spelled small number ("two") is prose, not an identifying figure,
-        # so a fact whose detail says "two acquisitions" must not be blamed for a drafted "$2 trillion".
-        figs = _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", ""))
-        if figs:
-            registry.append((i["id"], i.get("source") or "CMI report", figs))
-    # The fact's own wording (text + detail) for the tie-break below, keyed by its id.
-    fact_wording = {i["id"]: (i["text"], i.get("detail", "") or "") for i in inp.items.values()}
-    # Headline gap-fills always count; a news item counts through its own numbers, which is how its
-    # fact reaches the draft.
-    relevant_kinds = ("size", "forecast", "cagr", "evidence")
-    outside: list[tuple[str, str, set[str]]] = [
-        (fid, src, figs) for fid, src, figs in registry
-        if src not in ("CMI report", "") and fid in {i["id"] for i in inp.items.values() if i["kind"] in relevant_kinds}]
+        # digits only: a spelled small number ("two") is prose, not an identifying figure
+        figs = {n for n in _fact_numbers(i["text"]) | _fact_numbers(i.get("detail", "")) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+        if i.get("source") in ("CMI report", "", None):
+            cmi_figs |= figs
+        elif i["kind"] in ("size", "forecast", "cagr", "evidence") and figs:
+            outside.append((i["id"], figs))
     if not outside:
         return out
     for s in sections:
         label = str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro"))
         for p in s["paragraphs"]:
-            # The unit of naming is one line of a paragraph (a prose paragraph or one bullet): a source
-            # named in an earlier sentence of the same line covers the later sentences of that line,
-            # and the memory resets at every line — a new line that uses the source's figure names it again.
-            for line in _sponsor_replacement(p, " ").split("\n"):
-                named_line: set[str] = set()    # outside sources named in earlier sentences of this line
-                for sentence in sentsplit.split(line):
-                    low = sentence.lower()
-                    named_line |= {src for _, src, _ in outside if _names_source(low, src)}
-                    sent_nums = _fact_numbers(sentence)
-                    if not sent_nums:
-                        continue
-                    # A source named in the sentence keeps the numbers its own facts carry: another fact
-                    # sharing those tokens (a "150 million" raised against "150 advisors") is coincidence,
-                    # not a figure the writer misattributed. Only true figures cover, never a shared year,
-                    # and source-name detection mirrors the complaint branch (the same _names_source).
-                    sent_strong = {n for n in sent_nums if not re.fullmatch(r"(?:19|20)\d\d", n)}
-
-                    def _covered(except_fid: str) -> bool:
-                        return any(((src2 not in ("CMI report", "") and _names_source(low, src2))
-                                    or (src2 == "CMI report" and _CMI_NAMED_RE.search(sentence)))
-                                   and (sent_strong & figs2)
-                                   for fid2, src2, figs2 in registry if fid2 != except_fid)
-
-                    # A token shared by two outside facts gives the weaker one a half-claim on the
-                    # sentence, and reporting it would blame the wrong fact: only the fact(s) with the
-                    # MOST figures in common with the sentence are owners, the rest are coincidence
-                    # (the overlap never counts a shared year).
-                    cands = [(fid, source, figs, {n for n in sent_nums & figs
-                                                  if not re.fullmatch(r"(?:19|20)\d\d", n)})
-                             for fid, source, figs in outside]
-                    cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands if strong]
-                    top = max((len(strong) for _, _, _, strong in cands), default=0)
-                    cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands
-                             if len(strong) == top]
-                    # A second tie-break, applied only when candidates from more than one distinct
-                    # source still stand after the figure-overlap rule: the fact whose own wording
-                    # (text + detail) the sentence keeps — the most distinct content words shared —
-                    # owns the sentence. A wording overlap that is itself tied behaves exactly as the
-                    # old rule did: every tied candidate is reported.
-                    if len({source for _, source, _, _ in cands}) > 1:
-                        best_wording = max(_wording_overlap(sentence, *fact_wording[fid])
-                                           for fid, _, _, _ in cands)
-                        cands = [(fid, source, figs, strong) for fid, source, figs, strong in cands
-                                 if _wording_overlap(sentence, *fact_wording[fid]) == best_wording]
-                    for fid, source, figs, strong in cands:
-                        hit = sent_nums & figs   # kept for the report text's fallback (strong is never empty here)
-                        if _covered(fid):
-                            continue
-                        # The 'is it named' test is the same _names_source the covering branches use, so a
-                        # source without 4+ letter words (a domain) is no longer skipped wholesale.
-                        if not _names_source(low, source) and source not in named_line:
-                            out.append(f"{label}: the figure {', '.join(sorted(strong or hit))} from {source} ({fid}) sits "
-                                       "in a sentence that does not name that source")
-                        if source.lower() not in ("cmi", "coherent market insights") and _CMI_NAMED_RE.search(sentence):
-                            out.append(f"{label}: figures from {source} ({fid}) sit in a sentence that credits CMI")
-    return out
-
-
-def _names_source(low_sentence: str, source: str) -> bool:
-    """Does a sentence (lowercased) carry a source's name? Same detection the complaint branch uses:
-    the source's 4+ letter words, or a short brand contained whole ("MSN"). A name the word finder fits
-    nothing to (a domain such as "zz8020.com" holds no 4+ letter run) counts as named when its full
-    lowercase name — the trailing ", YYYY-MM"/", undated" date suffix stripped — appears in the sentence."""
-    toks = [t for t in re.findall(r"[A-Za-z]{4,}", source)]
-    if not toks:
-        name = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", source.lower()).strip()
-        return name in low_sentence
-    return any(t.lower() in low_sentence for t in toks)
-
-
-def v2_stray_credit_problems(sections: list[dict], plan: dict, inp) -> list[str]:
-    """A source's name is written only in a section that holds one of that source's facts. A name that turns up beside a fact it does not
-    own (a segmentation line credited "per Yahoo Finance" when the list came from the report page) is a false credit."""
-    if inp is None:
-        return []
-    names: dict[str, str] = {}
-    for i in inp.items.values():
-        src = re.sub(r",\s*(?:\d{4}-\d{2}|undated)\s*$", "", str(i.get("source") or "")).strip()
-        if len(src) >= 4 and src != "CMI report":
-            names[i["id"]] = src
-    facts_of = {p["sop"]: set(p.get("facts") or []) for p in plan["sections"]}
-    out: list[str] = []
-    for s in sections:
-        if not _is_market_section(s):
-            continue
-        own = {names[f].lower() for f in facts_of.get(s["sop"][0], ()) if f in names}
-        text = " ".join(s["paragraphs"]).lower()
-        label = (s.get("heading") or "").strip() or s["sop"][0]
-        for name in dict.fromkeys(names.values()):
-            low = name.lower()
-            if low not in own and re.search(r"(?<![a-z0-9])" + re.escape(low) + r"(?![a-z0-9])", text):
-                out.append(f'{label}: credits "{name}", but none of this section\'s facts comes from it')
+            for sentence in sentsplit.split(_sponsor_replacement(p, " ").replace("\n", " ")):
+                if not _CMI_NAMED_RE.search(sentence):
+                    continue
+                nums = {n for n in _fact_numbers(sentence) if not re.fullmatch(r"(?:19|20)\d\d", n)} - cmi_figs
+                for fid, figs in outside:
+                    if nums & figs:
+                        out.append(f"{label}: figures from an outside fact ({fid}) sit in a sentence that credits CMI")
+                        break
     return out
 
 
@@ -1955,18 +1860,17 @@ def run_checks_v2(
         if trace_bad else "",
     ))
 
-    # ---- hard (§3.2): an outside source's figure names that source in the same sentence, never CMI
-    attribution_problems = v2_evidence_attribution_problems(sections, inp)
+    # ---- hard (§3.2): no outside source is named, and an outside figure is never credited to CMI
+    source_problems = v2_outside_source_problems(sections, inp, faq)
     results.append(CheckResult(
-        "Outside-source figures name their source once per paragraph, never CMI",
-        not attribution_problems,
-        "; ".join(attribution_problems) if attribution_problems else "",
+        "No outside source is named",
+        not source_problems,
+        "; ".join(source_problems[:5]) + (f" (+{len(source_problems) - 5} more)" if len(source_problems) > 5 else "")
+        if source_problems else "",
     ))
-
-    # ---- hard: a source is credited only beside its own facts
-    stray_credits = v2_stray_credit_problems(sections, plan, inp)
+    credit_problems = v2_outside_figure_credit_problems(sections, inp)
     results.append(CheckResult(
-        "A source is credited only for its own facts", not stray_credits, "; ".join(stray_credits),
+        "Outside figures are never credited to CMI", not credit_problems, "; ".join(credit_problems),
     ))
 
     # ---- hard (§3.9): placeholder figures ("USD <year>", "a stated rate", bare "%") never print

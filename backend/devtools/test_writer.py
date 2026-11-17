@@ -76,87 +76,68 @@ cites = writer.evidence_citations(sections, inp)
 check("citations: a market paragraph that uses a news item is cited, the opening and unrelated paragraphs are not",
       [c["id"] for c in cites] == ["W1"] and cites[0]["paragraph"].startswith("Acme launched a new product this year"), str(cites))
 
-# ------------------------------------------------------------------ outside sources named in the sentence that carries their figure
+# ------------------------------------------------------------------ no outside source is named (CMI is the only one)
 inp_src = make_inputs()
 inp_src.items["W2"]["source"] = "blog.apify.com, 2026-01"
 inp_src.items["W2"]["text"] = "66.2 percent of respondents plan to try AI tools."
-secs_src = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "Apify reported in January 2026 that many do not use AI. Even so, 66.2% plan to try AI-assisted tools.",
-    "- This bullet names blog.apify.com for 66.2% already.",
-    "A sentence with no figure stays as it is."]}]
-fixed = writer.name_outside_sources(secs_src, inp_src, LOG)[0]["paragraphs"]
-check("source naming: a figure sentence whose source an earlier sentence of the same line named needs no repeat of the name",
-      fixed[0] == secs_src[0]["paragraphs"][0], fixed[0])
-check("source naming: a sentence that already names the source, and one without a figure, are untouched",
-      fixed[1] == "- This bullet names blog.apify.com for 66.2% already." and fixed[2] == "A sentence with no figure stays as it is.",
-      str(fixed))
-check("source naming: report (CMI) figures are never touched",
-      writer.name_outside_sources([{"heading": "", "sop": ["report_context"], "paragraphs": ["Robo advisory opens room to grow, CMI says."]}], inp_src, LOG)[0]["paragraphs"]
-      == ["Robo advisory opens room to grow, CMI says."])
 
-# a number the report states and a news item also quotes: the sentence is the report's, no news source is credited
-inp_tie = make_inputs()
-inp_tie.items["W2"]["source"] = "PR.com, 2026-10"
-inp_tie.items["W2"]["text"] = "A firm expanded its services."
-inp_tie.items["W2"]["detail"] = "It cited U.S. retail e-commerce sales of USD 354.1 billion in the quarter."
-inp_tie.items["fs.us.0"] = {"id": "fs.us.0", "kind": "us", "tags": [], "text": "U.S. retail e-commerce sales were estimated at USD 354.1 billion.",
-                            "detail": "", "source": "", "historical": False, "sections": {"country_us"}}
-tie = writer.name_outside_sources([{"heading": "u", "sop": ["country_us"], "paragraphs": ["Retail sales were estimated at USD 354.1 billion in the quarter."]}], inp_tie, LOG)[0]["paragraphs"]
-check("source naming: a number the report states and a news item also quotes is not credited to the news source",
-      tie == ["Retail sales were estimated at USD 354.1 billion in the quarter."], str(tie))
-inp_tie.items.pop("fs.us.0")
-alone = writer.name_outside_sources([{"heading": "u", "sop": ["country_us"], "paragraphs": ["Retail sales were estimated at USD 354.1 billion in the quarter."]}], inp_tie, LOG)[0]["paragraphs"]
-check("source naming: with no report fact owning the number, the news source is still named", "per PR.com" in alone[0], str(alone))
 
-# a second figure of a source named earlier in the same line needs no repeat of the name
-inp_src.items["W2"]["detail"] = "Usage spans 12.5 million users."
-inp_src.items["W4"] = {"id": "W4", "kind": "evidence", "tags": ["context"],
-                       "text": "Adoption stands at 8.4 percent of firms.", "detail": "",
-                       "source": "Field Report", "historical": False, "sections": {"trends"}}
-same_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "The metered model tracks 66.2% of respondents, a report at Apify finds. Adoption then reaches 12.5 million users."]}]
-fixed = writer.name_outside_sources(same_line, inp_src, LOG)[0]["paragraphs"]
-check("source naming: a later sentence of the same line carrying another figure of the named source is untouched",
-      fixed[0] == "The metered model tracks 66.2% of respondents, a report at Apify finds. Adoption then reaches 12.5 million users.",
-      str(fixed))
-new_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "The metered model tracks 66.2% of respondents, a report at Apify finds.",
-    "Adoption then reaches 12.5 million users.",
-    "- Usage widens to 12.5 million users in the metered model."]}]
-fixed = "\n".join(writer.name_outside_sources(new_line, inp_src, LOG)[0]["paragraphs"]).split("\n")
-check("source naming: a new line (prose or bullet) that carries the source's figure names the source again",
-      fixed[1] == "Adoption then reaches 12.5 million users, per blog.apify.com."
-      and fixed[2] == "- Usage widens to 12.5 million users in the metered model, per blog.apify.com.", str(fixed))
-mixed = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "The metered model tracks 66.2% of respondents, Apify's January tally finds. Adoption stands at 8.4% of firms."]}]
-fixed = writer.name_outside_sources(mixed, inp_src, LOG)[0]["paragraphs"]
-check("source naming: a second outside source's figure still needs its own name in that line",
-      fixed[0] == "The metered model tracks 66.2% of respondents, Apify's January tally finds. Adoption stands at 8.4% of firms, per Field Report.",
-      str(fixed))
+def src_strip(paragraphs, inp=inp_src, sop="trends"):
+    return writer.strip_outside_sources([{"heading": "t", "sop": [sop], "paragraphs": list(paragraphs)}], inp, LOG)[0]["paragraphs"]
 
-# A domain-style source with no 4+ letter word ("zz8020.com") was never seen as named by `_names_source`, so
-# a line whose first sentence already named the site still carried ", per ..." on its later figure sentence
-inp_dom = make_inputs()
-inp_dom.items["W2"]["source"] = "zz8020.com, 2026-01"
-inp_dom.items["W2"]["text"] = "55.1 percent of tracked firms plan to adopt the tool."
-inp_dom.items["W2"]["detail"] = "Usage reaches 3.2 million users."
-dom_name = "The tracker at zz8020.com reported in January 2026 that many firms adopt the tool."
-dom_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [dom_name + " Usage reaches 3.2 million users."]}]
-fixed = writer.name_outside_sources(dom_line, inp_dom, LOG)[0]["paragraphs"]
-check("source naming: a domain-style source named in the first sentence of a line is not appended again on its later figure sentence",
-      fixed[0] == dom_line[0]["paragraphs"][0], str(fixed))
-dom_new = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    dom_name,
-    "Usage reaches 3.2 million users.",
-    "- Another 55.1% of tracked firms sit behind the plan."]}]
-fixed = "\n".join(writer.name_outside_sources(dom_new, inp_dom, LOG)[0]["paragraphs"]).split("\n")
-check("source naming: a new line that carries a domain-style source's figure names the source again",
-      fixed[1] == "Usage reaches 3.2 million users, per zz8020.com."
-      and fixed[2] == "- Another 55.1% of tracked firms sit behind the plan, per zz8020.com.", str(fixed))
-dom_solo = [{"heading": "t", "sop": ["trends"], "paragraphs": ["Usage reaches 3.2 million users."]}]
-fixed = writer.name_outside_sources(dom_solo, inp_dom, LOG)[0]["paragraphs"]
-check("source naming: an unnamed domain-style source's figure sentence still gets ', per its name' appended",
-      fixed[0] == "Usage reaches 3.2 million users, per zz8020.com.", str(fixed))
+
+out = src_strip(["According to Grand View Research, adoption reached 66.2% of firms in 2025."])
+check("no source: a leading 'According to <firm>,' is cut and the sentence stays",
+      out == ["Adoption reached 66.2% of firms in 2025."], str(out))
+out = src_strip(["Adoption reached 66.2% of firms in 2025, per MarTech Cube."])
+check("no source: a trailing ', per <outlet>' is cut", out == ["Adoption reached 66.2% of firms in 2025."], str(out))
+out = src_strip(["Adoption reached 66.2% of firms, Statista reports, and keeps rising."])
+check("no source: a mid-sentence ', <outlet> reports,' is cut", out == ["Adoption reached 66.2% of firms, and keeps rising."], str(out))
+out = src_strip(["A survey by Forrester found that 66.2% of firms plan to try AI tools."])
+check("no source: 'a survey by <name>' loses the name and keeps the survey", out == ["A survey found that 66.2% of firms plan to try AI tools."], str(out))
+out = src_strip(["Adoption reached 66.2% of firms (Statista, 2026)."])
+check("no source: a parenthetical '(<name>, 2026)' is cut", out == ["Adoption reached 66.2% of firms."], str(out))
+out = src_strip(["Statista found that 66.2% of firms plan to try AI tools."])
+check("no source: a leading '<name> found that' is cut and the statistic stays plain", out == ["66.2% of firms plan to try AI tools."], str(out))
+
+# a sentence that cannot be cut goes, with the sentence that refers to it, while the section keeps its evidence
+out = src_strip(["Acme launched a new product this year. Gartner said 66.2% of firms plan to try AI tools. Its sample covered large firms."])
+check("no source: an uncuttable citation goes with the sentence that points back at it",
+      out == ["Acme launched a new product this year."], str(out))
+check("no source: report (CMI) wording is untouched",
+      src_strip(["Robo advisory opens room to grow, CMI says."], sop="report_context") == ["Robo advisory opens room to grow, CMI says."])
+check("no source: Coherent Market Insights is untouched",
+      src_strip(["Coherent Market Insights estimates that robo advisory opens room to grow."], sop="report_context")
+      == ["Coherent Market Insights estimates that robo advisory opens room to grow."])
+
+# the actor of its own evidence item is not a cited source
+inp_actor = make_inputs()
+inp_actor.items["W2"]["source"] = "Adobe Newsroom, 2026-11"
+inp_actor.items["W2"]["text"] = "Adobe forecast that its own traffic data would show holiday retail visits up 7 percent."
+actor_para = "Adobe forecast that its own traffic data would show holiday retail visits up 7% this season."
+check("no source: the actor of its own development stays named",
+      src_strip(["Acme launched a new product this year.", actor_para], inp_actor) == ["Acme launched a new product this year.", actor_para])
+out = src_strip(["Acme launched a new product this year.", "Holiday visits rise 7%, per Adobe Newsroom."], inp_actor)
+check("no source: the publication name of that same item is still cut from an attribution",
+      out == ["Acme launched a new product this year.", "Holiday visits rise 7%."], str(out))
+
+# a section never loses its every evidence citation: the sentences stay for the check to report
+only = ["Acme launched a new product this year, Gartner said."]
+check("no source: a trailing clause is cut even when it is the section's only evidence",
+      src_strip(only) == ["Acme launched a new product this year."], str(src_strip(only)))
+only = ["Gartner said Acme launched a new product this year."]
+check("no source: a section's only evidence sentence is kept when it cannot be cut (the check reports it)",
+      src_strip(only) == only, str(src_strip(only)))
+
+# a sentence carrying a link is cleaned where it can be and never removed
+linked = "Gartner said [[CMI_LINK:Zzz Widget Services Market]] demand rises."
+out = src_strip(["Acme launched a new product this year.", linked])
+check("no source: a sentence that holds a link is never removed", len(out) == 2 and "[[CMI_LINK:" in out[1], str(out))
+
+# the FAQ and the checks use the same patterns: a sentence the strip leaves is one the check would not report
+check("no source: a text with no attribution is returned unchanged",
+      src_strip(["Acme launched a new product this year.", "Demand grows as buyers consolidate."])
+      == ["Acme launched a new product this year.", "Demand grows as buyers consolidate."])
 
 # ------------------------------------------------------------------ untraced-figure stripper (fact-side word tracing)
 # A fact that spells its figure out in words ("Sixty-three percent") has no digit in its text, so a writer
@@ -173,75 +154,6 @@ check("untraced: a digit rendering of a fact's spelled-out figure survives the s
 check("untraced: a digit figure appearing in no fact is still removed", len(spell_out) == 2, str(spell_out))
 check("untraced: a sentence carrying only a spelled number word is untouched",
       spell_out[1] == "Three trends shape the adoption path.", str(spell_out))
-
-# a token two outside facts share ("9" owned by both) neither blocks the naming nor names the wrong source:
-# the fact with the most figures in common with the sentence is its owner, the rest are coincidence
-inp_share = make_inputs()
-inp_share.items["W6"] = {"id": "W6", "kind": "evidence", "tags": ["context"],
-                         "text": "Adoption reaches 9 units among 150 teams.", "detail": "",
-                         "source": "Alpha Post", "historical": False, "sections": {"trends"}}
-inp_share.items["W7"] = {"id": "W7", "kind": "evidence", "tags": ["context"],
-                         "text": "Usage stands at 9 units, while 40 firms lag.", "detail": "",
-                         "source": "Beta Desk", "historical": False, "sections": {"trends"}}
-share_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "Adoption reaches 9 units among the tracked firms, while 40 firms lag behind."]}]
-fixed = writer.name_outside_sources(share_line, inp_share, LOG)[0]["paragraphs"]
-check("source naming: a token shared by two facts does not block the naming of the stronger owner",
-      fixed[0] == "Adoption reaches 9 units among the tracked firms, while 40 firms lag behind, per Beta Desk.",
-      str(fixed))
-amb_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "Adoption reaches 9 units among the tracked firms."]}]
-fixed = writer.name_outside_sources(amb_line, inp_share, LOG)[0]["paragraphs"]
-check("source naming: a sentence carrying only a token two facts tie on stays untouched",
-      fixed[0] == amb_line[0]["paragraphs"][0], str(fixed))
-
-# Two outside facts share one figure token ("50") but the sentence keeps only one fact's own wording:
-# the wording tie-break (most distinct content words shared with the fact's text + detail) names that
-# fact's source, never the other's — with the wording overlapping equally the sentence stays unnamed.
-inp_word = make_inputs()
-inp_word.items["W13"] = {"id": "W13", "kind": "evidence", "tags": ["context"],
-                         "text": "A survey found 50% of those surveyed expanded their staff.", "detail": "",
-                         "source": "Alpha Desk, 2026-01", "historical": False, "sections": {"trends"}}
-inp_word.items["W14"] = {"id": "W14", "kind": "evidence", "tags": ["context"],
-                         "text": "Vendor outlined a framework called the Rule of 50 combining growth and margin.",
-                         "detail": "", "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
-word_secs = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "The vendor has outlined a framework named the Rule of 50 that combines growth and margin."]}]
-fixed = writer.name_outside_sources(word_secs, inp_word, LOG)[0]["paragraphs"]
-check("source naming: a shared figure token whose sentence keeps one fact's wording names only that fact's source",
-      fixed[0] == "The vendor has outlined a framework named the Rule of 50 that combines growth and margin, per Beta Desk.",
-      str(fixed))
-tie_secs = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "The checklist keeps one mark pinned at 50 while the notes stay quiet there."]}]
-fixed = writer.name_outside_sources(tie_secs, inp_word, LOG)[0]["paragraphs"]
-check("source naming: an equal wording overlap over a shared figure token stays unnamed",
-      fixed[0] == tie_secs[0]["paragraphs"][0], str(fixed))
-
-# The unit of ownership is digits only: a fact whose only number is spelled in words ("two") owns no figure,
-# so a drafted "$2 trillion" (owned by a fact carrying the digits) gets ", per" that fact's source, and the
-# spelled-out facts never have their sources appended to it.
-inp_per = make_inputs()
-inp_per.items["W9"] = {"id": "W9", "kind": "evidence", "tags": ["context"],
-                       "text": "Adoption rose 7 percent across the tracked firms.",
-                       "detail": "", "source": "Alpha Desk, 2026-01",
-                       "historical": False, "sections": {"trends"}}
-inp_per.items["W10"] = {"id": "W10", "kind": "evidence", "tags": ["context"],
-                        "text": "Deal activity kept its pace through the whole year.",
-                        "detail": "The wave produced two acquisitions.",
-                        "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
-inp_per.items["W11"] = {"id": "W11", "kind": "evidence", "tags": ["context"],
-                        "text": "Vendors keep joining hands across the field.",
-                        "detail": "The joining runs through two platforms.",
-                        "source": "Gamma Desk, 2026-03", "historical": False, "sections": {"trends"}}
-inp_per.items["W12"] = {"id": "W12", "kind": "evidence", "tags": ["context"],
-                        "text": "Combined holdings top $2 trillion in assets.",
-                        "detail": "", "source": "Delta Desk, 2026-04",
-                        "historical": False, "sections": {"trends"}}
-per_line = [{"heading": "t", "sop": ["trends"], "paragraphs": [
-    "Combined holdings now pass more than $2 trillion in assets."]}]
-fixed = writer.name_outside_sources(per_line, inp_per, LOG)[0]["paragraphs"]
-check("source naming: an unnamed digit figure gets ', per' its own source only, never the spelled-'two' facts",
-      fixed[0] == "Combined holdings now pass more than $2 trillion in assets, per Delta Desk.", str(fixed))
 
 # ------------------------------------------------------------------ leading pointing words become 'The + noun'
 out = writer.fix_pointing_determiners([{"heading": "", "sop": ["trends"], "paragraphs": [
@@ -521,7 +433,7 @@ check("assembly: a section the model left out keeps its heading with no placehol
 # ------------------------------------------------------------------ the sub-segment JSON leak (serialized objects never print)
 # Seen live (Skin Care Products Market): the writer returned the two sub-segment analyses as JSON text inside
 # "paragraphs" instead of as objects; the old extraction printed the raw JSON, and name_outside_sources then
-# even credited the first object ", per USA TODAY on MSN" AFTER the serialized object. Every shape the model
+# even credited the first object ", per USA TODAY on MSN" AFTER the serialized object (the credit step is gone). Every shape the model
 # may return (dict, a JSON string encoding one, a JSON string encoding both, plain prose) now comes out as text.
 inp_sub = make_inputs()
 inp_sub.items["W2"]["source"] = "USA TODAY on MSN, 2026-11"
@@ -556,16 +468,14 @@ check("sub-segment leak: prose that merely opens with a brace is kept as written
                                         "paragraphs": ["{not JSON at all, yet the market grows}"]}]},
           plan, LOG) if s["sop"] == ["subsegment"])["paragraphs"]
       == ["{not JSON at all, yet the market grows}"])
-# the same bad shape through the source-naming step: the credit lands inside the prose sentence, never after
-# a serialized object (the live run's stray ", per USA TODAY on MSN" sat after the JSON's closing brace)
-named = writer.name_outside_sources(
+# the same bad shape through the source-stripping step: the prose is left exactly as the extraction gave it
+named = writer.strip_outside_sources(
     writer.assemble_sections(
         {**sub_written, "sections": [{**sub_written["sections"][0],
                                       "paragraphs": [json.dumps(obj_f), json.dumps(obj_o)]}]}, plan, LOG),
     inp_sub, LOG)
-check("sub-segment leak: the source credit lands inside the prose sentence",
-      next(s for s in named if s["sop"] == ["subsegment"])["paragraphs"]
-      == [para_f[:-1] + ", per USA TODAY on MSN.", para_o], str(named))
+check("sub-segment leak: no source credit is added to or around the prose",
+      next(s for s in named if s["sop"] == ["subsegment"])["paragraphs"] == [para_f, para_o], str(named))
 
 # ------------------------------------------------------------------ prompt
 sponsor = Paragraph(index=0, text="Teams can ask Acme Corp for help with scraping at scale today.", links=[Link(anchor="Acme Corp", url="https://acmecorp.com")])
@@ -581,10 +491,13 @@ check("prompt: the long-tail line carries the REQUIRED framing like the secondar
       str([l for l in text.splitlines() if "REQUIRED long-tail" in l]))
 check("prompt: a question heading is flagged to be answered directly", text.count("Answer it directly in the first one or two sentences") == 3)
 check("prompt: the report link token and the sponsor placeholder are present", f"[[CMI_LINK:{MARKET}]]" in text and prompts.SPONSOR_TOKEN in text)
-check("prompt: an outside-sourced fact is marked NOT CMI", "NOT CMI" not in text or "source: News Site" in text)
+check("prompt: no outside source's name is printed for naming (a news item carries its month only)",
+      "News Site" not in text and "(source:" not in text and "NOT CMI" not in text, str([l for l in text.splitlines() if "News Site" in l]))
 inp.items["fs.size"]["source"] = "marketsite.example.com"
 text2 = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-23")
-check("prompt: a report-position figure from an outside source is marked NOT CMI and named", "source: marketsite.example.com, NOT CMI" in text2)
+check("prompt: a report-position figure from an outside source is stated plainly, with no source named and never CMI",
+      "marketsite.example.com" not in text2 and "no source is named, and never CMI" in text2)
+check("prompt: the credit rule says CMI is the only source named", "CMI is the only source the post ever names" in text2)
 check("prompt: a names-only key players section is told to use plain prose", "no bullets" in text2[text2.index("### 6. key_players"):][:1500])
 check("shapes: the key_players shape prescribes complete sentences instead of Name-label bullet lines",
       "- <Company>" not in writer._SHAPES["key_players"] and "\n- " not in writer._SHAPES["key_players"]
@@ -838,7 +751,7 @@ for step in steps:
     after = step(after, LOG)
 after = writer.strip_untraced_figures(after, inp, "", LOG)
 after = writer.strip_repeat_figures(after, inp, LOG)
-after = writer.name_outside_sources(after, inp, LOG)
+after = writer.strip_outside_sources(after, inp, LOG)
 heads = [p for p in after[0]["paragraphs"] if subheads.is_subhead(p)]
 check("trend sub-headings: both survive the writer's whole cleanup pipeline, text unchanged",
       heads == [subheads.make_subhead("Adaptive Testing Is Raising Demand For Online Platforms"),

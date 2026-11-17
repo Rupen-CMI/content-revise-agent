@@ -18,7 +18,7 @@ _FAQ_HEADING_RE = re.compile(r"\bfaqs?\b|frequently asked", re.IGNORECASE)
 
 SKIPPED = [
     ("Every number traces to the report, evidence or guest points", "needs the run's fact sheet"),
-    ("Outside-source figures name their source", "needs the run's evidence"),
+    ("No outside source is named", "needs the run's fact sheet to tell an actor from a source"),
     ("Secondary keywords used in their own sections", "needs the run's keyword assignment"),
     ("FAQ questions are the planned most-searched questions", "needs the run's search demand"),
     ("Transition is 5-10% of the body", "the transition cannot be told apart from the opening by text alone"),

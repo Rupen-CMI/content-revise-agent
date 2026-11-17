@@ -308,206 +308,92 @@ d[-1]["faq"] = None
 run = run_v2(TITLE, d, faq=[])
 check("trace: the good draft traces every number", by_name(run, "Every number").passed)
 
-# ------------------------------------------------------------------ attribution
+# ------------------------------------------------------------------ no outside source is named (CMI is the only one)
 
 NEWS = {"id": "W3", "kind": "evidence", "tags": ["context"], "text": "Regional sales hit USD 4.5 billion in 2025.",
         "detail": "", "source": "Field Notes"}
 inp2 = test_planning.make_inputs()
 inp2.items["W3"] = NEWS
 
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["Regional sales hit USD 4.5 billion in 2025, per the counted filings."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: an outside figure with no source named fails",
-      not by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
 
-d = good_draft()
-d[2]["paragraphs"][1] = pad(60, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds."]) + " " + filler(70)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: naming the source clears it", by_name(run, "Outside-source").passed,
-      by_name(run, "Outside-source").detail)
+def source_check(inp, text, faq=GOOD_FAQ):
+    d = good_draft()
+    d[2]["paragraphs"][1] = pad(50, [text]) + " " + filler(80)
+    run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp, faq=faq, sponsor_brand_terms=[],
+                               sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
+    return by_name(run, "No outside source")
 
+
+r = source_check(inp2, "Regional sales hit USD 4.5 billion in 2025, per Field Notes.")
+check("source: a trailing 'per <source>' fails and names the source", not r.passed and "Field Notes" in r.detail, r.detail)
+r = source_check(inp2, "According to Field Notes, regional sales hit USD 4.5 billion in 2025.")
+check("source: a leading 'According to <source>' fails", not r.passed, r.detail)
+r = source_check(inp2, "Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds.")
+check("source: a listed source's own name written bare fails too", not r.passed, r.detail)
+r = source_check(inp2, "Regional sales hit USD 4.5 billion in 2025.")
+check("source: the same figure stated plainly passes", r.passed, r.detail)
+r = source_check(inp2, "Regional sales hit USD 4.5 billion in 2025, a Grand View Research estimate.")
+check("source: a research-firm-shaped name fails with no fact naming it", not r.passed, r.detail)
+r = source_check(inp2, "A survey by Forrester found that 40% of retail firms adopt the tools.")
+check("source: 'a survey by <name>' fails", not r.passed and "Forrester" in r.detail, r.detail)
+r = source_check(inp2, "Gartner estimates that demand rises, and the segment grows.")
+check("source: a subject-verb citation of an outside name fails", not r.passed and "Gartner" in r.detail, r.detail)
+r = source_check(inp2, "CMI says regional demand rises as buyers consolidate vendors.")
+check("source: CMI itself may be named", r.passed, r.detail)
+r = source_check(inp2, "Coherent Market Insights estimates that regional demand rises as buyers consolidate vendors.")
+check("source: Coherent Market Insights is not a research-firm shape that trips it", r.passed, r.detail)
+r = source_check(inp2, "Researchers found that buyers consolidate vendors as demand rises.")
+check("source: a generic 'Researchers found' names no source", r.passed, r.detail)
+
+# a company that is the ACTOR of its own evidence item is never a cited source; only attribution contexts count
+inp_actor = test_planning.make_inputs()
+inp_actor.items["W8"] = {"id": "W8", "kind": "evidence", "tags": ["context"],
+                         "text": "Adobe forecast that its own traffic data would show holiday retail visits up 7 percent.",
+                         "detail": "", "source": "Adobe Newsroom, 2026-11", "historical": False, "sections": {"trends"}}
+r = source_check(inp_actor, "Adobe forecast that its own traffic data would show holiday retail visits up 7% this season.")
+check("source: the actor of its own evidence item (source 'Adobe Newsroom', actor Adobe) does not trip it", r.passed, r.detail)
+r = source_check(inp_actor, "Holiday retail visits rise 7% this season, per Adobe Newsroom.")
+check("source: the publication name 'Adobe Newsroom' in an attribution still fails", not r.passed, r.detail)
+r = source_check(inp_actor, "According to Adobe, holiday retail visits rise 7% this season.")
+check("source: 'according to <the actor>' on the actor's own figure passes", r.passed, r.detail)
+
+# a listed key player that merely ends in Analytics / Insights is a product, not a research firm
+inp_players = test_planning.make_inputs()
+inp_players.items["fs.players"] = {"id": "fs.players", "kind": "players", "tags": [], "source": "CMI report", "historical": False,
+                                   "text": "Key players include Google Analytics, Sprinklr Insights and Brand Watchers.",
+                                   "detail": "", "sections": {"key_players"}}
+r = source_check(inp_players, "Google Analytics and Sprinklr Insights compete for the same marketing budgets.")
+check("source: a listed player named like a research firm (Sprinklr Insights) is not a cited source", r.passed, r.detail)
+r = source_check(test_planning.make_inputs(), "Sprinklr Insights compete for the same marketing budgets.")
+check("source: the same name with no fact sheet entry for it is a research-firm shape", not r.passed, r.detail)
+
+# a domain-style source
+inp_dom = test_planning.make_inputs()
+inp_dom.items["W8"] = {"id": "W8", "kind": "evidence", "tags": ["context"],
+                       "text": "Tool adoption reaches 6.6 percent of tracked firms.", "detail": "",
+                       "source": "zz8020.com, 2026-01", "historical": False, "sections": {"report_context"}}
+r = source_check(inp_dom, "Tool adoption reaches 6.6% of tracked firms, the count at zz8020.com finds.")
+check("source: a domain-style source named in a sentence fails", not r.passed and "zz8020.com" in r.detail, r.detail)
+r = source_check(inp_dom, "Tool adoption reaches 6.6% of tracked firms this year.")
+check("source: the plain figure passes", r.passed, r.detail)
+
+# the FAQ is held to the same rule
+r = source_check(inp2, "Regional sales hit USD 4.5 billion in 2025.",
+                 faq=[{**GOOD_FAQ[0], "answer": GOOD_FAQ[0]["answer"] + " This is per Field Notes."}] + list(GOOD_FAQ[1:]))
+check("source: an FAQ answer that names a source fails", not r.passed and "FAQ" in r.detail, r.detail)
+
+# crediting CMI for an outside figure
 d = good_draft()
-d[2]["paragraphs"][0] = pad(60, [f"CMI puts regional sales at USD 4.5 billion in 2025.",
+d[2]["paragraphs"][0] = pad(60, ["CMI puts regional sales at USD 4.5 billion in 2025.",
                                  f"The market size of the {MARKET} stands at USD 1.2 billion."])
 d[2]["paragraphs"][1] = filler(140)
 run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
                            sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: crediting CMI for an outside figure fails",
-      not by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-# the unit of naming is one line of a paragraph: a source named once covers the line's later sentences
-inp2.items["W3"]["detail"] = "Usage reaches 2.1 million users."
-inp2.items["W5"] = {"id": "W5", "kind": "evidence", "tags": ["context"],
-                    "text": "Vendor adoption stands at 8.4 percent of firms.", "detail": "",
-                    "source": "Tech Journal", "historical": False, "sections": {"report_context"}}
-
-d = good_draft()
-d[2]["paragraphs"][1] = (pad(50, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds.",
-                                  "Usage reaches 2.1 million users in the same report."]) + " " + filler(80))
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
+check("credit: crediting CMI for an outside figure fails",
+      not by_name(run, "never credited to CMI").passed, by_name(run, "never credited to CMI").detail)
+run = checks.run_checks_v2(TITLE, good_draft(), plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
                            sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: a later sentence of the same line needs no repeat of the source's name",
-      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = (pad(50, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds."])
-                         + "\nUsage reaches 2.1 million users on its own line.")
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: the same second sentence on a new line needs the source's name again",
-      not by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = (pad(50, ["Regional sales hit USD 4.5 billion in 2025, the report at Field Notes finds.",
-                                  "Vendor adoption stands at 8.4% of firms."]) + " " + filler(80))
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp2, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: a different outside source's figure in that line still needs its own name",
-      not by_name(run, "Outside-source").passed and "Tech Journal" in by_name(run, "Outside-source").detail,
-      by_name(run, "Outside-source").detail)
-
-# Two outside facts sharing one token: the sentence belongs to the fact with the most figures in common,
-# the weaker half-claim is coincidence and is never reported
-inp3 = test_planning.make_inputs()
-inp3.items["W6"] = {"id": "W6", "kind": "evidence", "tags": ["context"],
-                    "text": "Adoption reaches 9 units among 150 teams.", "detail": "",
-                    "source": "Alpha Post", "historical": False, "sections": {"trends"}}
-inp3.items["W7"] = {"id": "W7", "kind": "evidence", "tags": ["context"],
-                    "text": "Usage stands at 9 units, while 40 firms lag.", "detail": "",
-                    "source": "Beta Desk", "historical": False, "sections": {"trends"}}
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["Adoption reaches 9 units among the tracked firms, while 40 firms lag behind."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp3, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: a token shared by two facts is blamed only on the fact with the most figures in common",
-      not r.passed and "Beta Desk" in r.detail and "Alpha Post" not in r.detail, r.detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = (pad(50, ["Usage reaches 9 units, the beta desk finds.",
-                                  "Adoption stands at 9 of 150 teams in the same tally."]) + " " + filler(80))
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp3, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: a fact whose every figure the line's stronger owner does not share keeps its own naming duty",
-      not r.passed and "Alpha Post" in r.detail and "Beta Desk" not in r.detail, r.detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(60, ["Adoption reaches 9 units among the tracked firms, and the report at Beta Desk finds ",
-                                 "40 firms lag behind."]) + " " + filler(70)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp3, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: naming the stronger owner's source in the carrying line still clears it",
-      r.passed, r.detail)
-
-# A domain-style source ("zz8020.com, 2026-01") has no 4+ letter word for the token matcher, so its name is
-# detected through the normalised full name instead: a figure from it is flagged only when the sentence (or an
-# earlier sentence of the same line) carries the site's name itself
-inp_dom = test_planning.make_inputs()
-inp_dom.items["W8"] = {"id": "W8", "kind": "evidence", "tags": ["context"],
-                       "text": "Tool adoption reaches 6.6 percent of tracked firms.",
-                       "detail": "Usage spans 2.5 million users.",
-                       "source": "zz8020.com, 2026-01", "historical": False, "sections": {"report_context"}}
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["Tool adoption reaches 6.6% of tracked firms this year."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_dom, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: a domain-source figure sentence that names no site is flagged",
-      not r.passed and "zz8020.com" in r.detail, r.detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["Tool adoption reaches 6.6% of tracked firms, the count at zz8020.com finds."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_dom, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: a sentence that names the domain-style site clears its figure",
-      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = (pad(50, ["Tool adoption sits at 6.6% of tracked firms, tracked by zz8020.com.",
-                                  "Usage widens to 2.5 million users on the same count."]) + " " + filler(80))
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_dom, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: a later sentence of a line that named the domain-style site earlier needs no repeat",
-      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-# A fact whose only number is spelled in words ("two acquisitions") owns no figure: attribution reads digits
-# only, so a drafted "$2 trillion" (owned by a different fact) is never blamed on the spelled-out facts —
-# with the word-aware registry this exact draft was flagged for each of them.
-inp_two_words = test_planning.make_inputs()
-inp_two_words.items["W9"] = {"id": "W9", "kind": "evidence", "tags": ["context"],
-                             "text": "Adoption rose 7 percent across the tracked firms.",
-                             "detail": "", "source": "Alpha Desk, 2026-01",
-                             "historical": False, "sections": {"trends"}}
-inp_two_words.items["W10"] = {"id": "W10", "kind": "evidence", "tags": ["context"],
-                              "text": "Deal activity kept its pace through the whole year.",
-                              "detail": "The wave produced two acquisitions.",
-                              "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
-inp_two_words.items["W11"] = {"id": "W11", "kind": "evidence", "tags": ["context"],
-                              "text": "Vendors keep joining hands across the field.",
-                              "detail": "The joining runs through two platforms.",
-                              "source": "Gamma Desk, 2026-03", "historical": False, "sections": {"trends"}}
-inp_two_words.items["W12"] = {"id": "W12", "kind": "evidence", "tags": ["context"],
-                              "text": "Combined holdings top $2 trillion in assets.",
-                              "detail": "", "source": "Delta Desk, 2026-04",
-                              "historical": False, "sections": {"trends"}}
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["The combined holdings pass more than $2 trillion in assets, Delta Desk reported."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_two_words, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: a drafted digit figure is never blamed on facts that only spell 'two'",
-      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["Combined holdings now pass more than $2 trillion in assets."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_two_words, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: an unnamed digit figure is blamed only on the fact that owns the digits",
-      not r.passed and "Delta Desk" in r.detail and "Alpha Desk" not in r.detail
-      and "Beta Desk" not in r.detail and "Gamma Desk" not in r.detail, r.detail)
-
-# Two outside facts share one figure token ("50") but only one fact's wording sits in the sentence: the
-# wording tie-break (the most distinct content words shared with the fact's text + detail) picks that
-# fact alone for the report; a wording overlap that is itself tied keeps both facts reported.
-inp_tie = test_planning.make_inputs()
-inp_tie.items["W13"] = {"id": "W13", "kind": "evidence", "tags": ["context"],
-                        "text": "A survey found 50% of those surveyed expanded their staff.", "detail": "",
-                        "source": "Alpha Desk, 2026-01", "historical": False, "sections": {"trends"}}
-inp_tie.items["W14"] = {"id": "W14", "kind": "evidence", "tags": ["context"],
-                        "text": "Vendor outlined a framework called the Rule of 50 combining growth and margin.",
-                        "detail": "", "source": "Beta Desk, 2026-02", "historical": False, "sections": {"trends"}}
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["The vendor has outlined a framework named the Rule of 50 that combines "
-                                 "growth and margin."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_tie, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: a shared figure token whose sentence keeps one fact's wording is reported only for that fact",
-      not r.passed and "Beta Desk" in r.detail and "Alpha Desk" not in r.detail, r.detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["The vendor has outlined a framework named the Rule of 50 that combines "
-                                 "growth and margin, per Beta Desk."]) + " " + filler(70)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_tie, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-check("attribution: the wording-owned figure sentence that names its source passes",
-      by_name(run, "Outside-source").passed, by_name(run, "Outside-source").detail)
-
-d = good_draft()
-d[2]["paragraphs"][1] = pad(50, ["The checklist keeps one mark pinned at 50 while the notes stay quiet there."]) + " " + filler(80)
-run = checks.run_checks_v2(TITLE, d, plan=PLAN, inp=inp_tie, faq=GOOD_FAQ, sponsor_brand_terms=[],
-                           sponsor_text=SPONSOR_TEXT, report_text=REPORT_TEXT, report_name=MARKET)
-r = by_name(run, "Outside-source")
-check("attribution: an equal wording overlap over a shared figure token keeps both facts reported",
-      not r.passed and "Alpha Desk" in r.detail and "Beta Desk" in r.detail, r.detail)
+check("credit: the good draft credits nothing outside to CMI", by_name(run, "never credited to CMI").passed)
 
 # ------------------------------------------------------------------ placeholders
 
@@ -1077,18 +963,6 @@ for phrase, expect in [("CMI's report values the market at USD 80 billion.", Tru
     check(f"report cited: {phrase!r} -> {expect}", hit == expect)
 
 
-# ------------------------------------------------------------------ a source is credited only for its own facts
-_ev = lambda fid, src: {"id": fid, "kind": "evidence", "text": f"fact {fid} 5%", "source": src, "detail": ""}
-_inp_c = types.SimpleNamespace(items={"W1": _ev("W1", "Yahoo Finance, 2026-10"), "W2": _ev("W2", "Forbes, 2026-10"), "fs.size": {"id": "fs.size", "kind": "size", "text": "x", "source": "CMI report"}})
-_plan_c = {"sections": [{"sop": "segmentation", "facts": ["fs.size"]}, {"sop": "trends", "facts": ["W1", "W2"]}]}
-_sec = lambda sop, text: {"heading": sop, "sop": [sop], "paragraphs": [text]}
-check("credit: a name beside one of that section's own facts is fine",
-      checks.v2_stray_credit_problems([_sec("trends", "Forbes reported a shift, and Yahoo Finance carried the launch.")], _plan_c, _inp_c) == [])
-_stray = checks.v2_stray_credit_problems([_sec("segmentation", "Client Type: B2B clients and B2C clients, per Yahoo Finance.")], _plan_c, _inp_c)
-check("credit: a name written in a section that holds none of that source's facts is a false credit",
-      len(_stray) == 1 and "Yahoo Finance" in _stray[0], str(_stray))
-check("credit: an ordinary word that is part of a source's name is not a credit",
-      checks.v2_stray_credit_problems([_sec("segmentation", "Finance and insurance buyers lead this split.")], _plan_c, _inp_c) == [])
 # ------------------------------------------------------------------ summary
 
 print()
