@@ -2063,6 +2063,9 @@ def finalize(req: FinalizeRequest) -> dict:
     # Telemetry (fire-and-forget, telemetry.py): the totals snapshot was taken from the tracker
     # BEFORE run_cost_summary() popped it, so the dashboard sees the same per-run numbers as the log.
     _emit_run_completed(run, req.run_token, "ok", t0, result.title, result.sections, run_totals)
+    # Every finished run is saved to disk (run_store), even if no canvas edit ever follows: that is
+    # what lets the editor reopen it after a server restart or the run's in-memory TTL expiry.
+    _persist_run(req.run_token, run)
     return {"result": _final_payload(run, result)}
 
 
@@ -2082,9 +2085,6 @@ def _final_payload(run: RunState, result: pipeline.RevampResult) -> dict:
         for c in result.evidence_citations
     ]
     view = _keyword_view(run, result.report, result.sponsor, result.title, result.sections)
-    # Every finished run is saved to disk (run_store), even if no canvas edit ever follows: that is
-    # what lets the editor reopen it after a server restart or the run's in-memory TTL expiry.
-    _persist_run(req.run_token, run)
     return {
         "title": result.title,
         **view,
@@ -2147,10 +2147,6 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
 
 
 # ---------------------------------------------------------------- canvas: highlight words in the final draft, get a suggestion, accept it
-
-def _persist_run(token: str, run: RunState) -> bool:
-    return False    # saved to disk by run_store (see CANVAS_PLAN 1.5)
-
 
 class CanvasTarget(BaseModel):
     kind: Literal["body", "faq", "title"]
