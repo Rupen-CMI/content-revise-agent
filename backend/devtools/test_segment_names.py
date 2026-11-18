@@ -40,8 +40,7 @@ same = writer.ensure_segment_names([{"sop": ["segmentation"], "heading": "h", "p
 check("a complete section is not touched again", same[0]["paragraphs"][0] == text)
 
 # found live: the writer called the "Type" split "mailer format", and the report's category is cut off ("Letters And Envelop")
-mail = ("The market divides by two segment types.
-- By mailer format, the market covers postcards, self-mailers, letters and "
+mail = ("The market divides by two segment types.\n- By mailer format, the market covers postcards, self-mailers, letters and "
         "envelopes, dimensional mailers and catalogs.")
 mail_inp = types.SimpleNamespace(segments=[{"type": "Type", "items": ["Postcards", "Self-Mailers", "Letters And Envelop",
                                                                       "Dimensional Mailers", "Catalogs"]}])
