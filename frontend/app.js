@@ -2513,6 +2513,8 @@ function renderFinalPanel() {
 
   const faq = result.faq || [];
   document.getElementById("final-faq-block").hidden = faq.length === 0;
+  document.getElementById("final-faq-hint").textContent =
+    `Generated from the finished article and the ${state.run.reportMode && state.run.reportMode !== "cmi" ? "fact sheet" : "CMI report"} — outside the article's word limit, appended after the conclusion in the downloaded .docx.`;
   document.getElementById("final-faq").innerHTML = faqHtml(faq);
 
   // The legend's numbers come from the backend's own highlighting pass (result.keyword_counts, filled by the

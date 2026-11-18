@@ -1602,6 +1602,9 @@ def reports_confirm(req: ReportsConfirmRequest) -> dict:
     if req.fact_sheet_edits:
         facts.apply_editor_edits(run.fact_sheet, req.fact_sheet_edits)
         run.logger.info(f"REPORTS: the editor edited the {run.report_kind} fact sheet; gaps now {run.fact_sheet['gaps'] or 'none'}")
+        # the later steps (the SELECT prompt's category list, the long-tail generator) read the report's own segment names, which an
+        # own sheet starts without and an edited one has changed: they follow the sheet, as the market search already does
+        run.report.segment_terms = _search_segment_terms(run, run.report, run.fact_sheet)
     if run.fact_sheet.get("built_by_editor") and not facts.flatten_fact_sheet(run.fact_sheet):
         raise HTTPException(400, "Your fact sheet is still empty. Press Edit and add at least one figure or fact.")
     run.fact_sheet_confirmed = True

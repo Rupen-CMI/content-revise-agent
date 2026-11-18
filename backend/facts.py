@@ -1142,5 +1142,5 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
             out.append(row)
     if fs.get("players"):
         out.append({"id": "fs.players", "kind": "players", "source": base, "historical": False,
-                    "text": "Key players the report names: " + ", ".join(fs["players"])})
+                    "text": "Key players: " + ", ".join(fs["players"])})
     return out

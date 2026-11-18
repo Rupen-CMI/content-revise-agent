@@ -57,6 +57,19 @@ check("own sheet: every fact reaches the writer with no source to name",
       flat and all(not f["source"] for f in flat if f["kind"] in ("size", "cagr", "drivers")), str(flat)[:400])
 check("own sheet: segments and players are there", fs["segments"] and fs["players"] == ["PostPilot", "Lob"], str(fs)[:300])
 
+check("own sheet: the report's segment names follow the sheet's segments (SELECT and long-tail read them)",
+      main._RUNS[TOKEN].report.segment_terms == ["E-commerce", "Education"], str(main._RUNS[TOKEN].report.segment_terms))
+players_fact = next(f for f in flat if f["kind"] == "players")
+check("players fact text says nothing about a report naming them", players_fact["text"] == "Key players: PostPilot, Lob", players_fact["text"])
+import logging as _lg, writer  # noqa: E402
+meta = [{"sop": ["key_players"], "paragraphs": [
+    "PostPilot and Lob are the key players named in the Direct Mail Retargeting Market, which indicates a small group. "
+    "PostPilot and Lob are the providers the market's own account identifies as leading. "
+    "PostPilot launched a postcard API in 2025."]}]
+out = writer.strip_meta_sentences(meta, _lg.getLogger("t"))
+check("key players: sentences describing the list are stripped, the real one stays",
+      out[0]["paragraphs"] == ["PostPilot launched a postcard API in 2025."], str(out))
+
 main._RUNS.pop(TOKEN, None)
 print()
 if FAILURES:

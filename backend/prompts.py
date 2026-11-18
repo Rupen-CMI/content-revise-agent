@@ -986,7 +986,9 @@ naming the market's key participants (at most 10 words), then each of exactly FO
 list or from MARKET EVIDENCE as its own "\\n- " bullet ("- <Company>: <detail>."), 22-28 words each, giving each company TWO \
 concrete details (a product, a move, a partnership or a date) taken from the report or the evidence. Never write a bare list \
 of names and never name a company without a concrete detail. Use each company's name exactly as in COMPANY NAMES TO USE or as \
-the evidence prints it.
+the evidence prints it. How many companies are listed says nothing about the market: never infer concentration, fragmentation, \
+a "small group", a "shortlist" or a "recognized set" of providers from the length of the list, and never describe the list itself \
+("named", "identified", "the market's own account") — write about what the companies do.
   - conclusion: ONE paragraph of 5 sentences, each at most 20 words (90-100 words), last in the post: (1) the main takeaway for the publisher's subject, \
 (2) where the market is heading, in one sentence, (3) what that means for a reader of the publisher's subject, (4) one more sentence developing that implication with a concrete detail already given above, (5) ONE sentence giving a CMI analyst's view (the CMI OPINION rule \
 below), which is the post's closing judgement. It closes BOTH the \
@@ -1257,7 +1259,7 @@ Q: What are the growth estimates for <Market> till <forecast year>?
 A: The global <Market> is expected to reach USD <forecast value> by <forecast year>, increasing from USD <base value> in <base year>.
 
 Q: Which are the prominent <Market> players across the globe?
-A: Major players operating in the global <Market> include <Company 1>, <Company 2>, <Company 3>, and <Company 4>.
+A: Major players operating in the global <Market> include <Company 1>, <Company 2>, <Company 3>, and <Company 4>. (However many companies are listed, never infer concentration, fragmentation or a "shortlist" from the length of the list.)
 
 Q: What are the key factors hampering growth of the <Market>?
 A: <restraint 1>, <restraint 2>, and <restraint 3> are the key factors hampering market growth.
@@ -1623,7 +1625,7 @@ HOW TO PLAN
    4b. No repeats. A fact appears in one section only, so a figure is stated once. This is about each piece of evidence, not about each source: one source article or one report can supply several separate facts, and each of those facts is assigned to exactly one section; the same fact is never assigned to two sections, and two facts that make the same point count as one (assign only the stronger).
    4c. Required. The report's main figures are not optional: the market size, forecast and growth rate and the leading and fastest-growing regions go to report_context, every segment split goes to segmentation, and so does the leading category of a split with its stated share, except for the two sub-segments, whose figures go to subsegment. Code adds any of these you leave out, so plan each section's point around them.
    4d. Per section.
-   - key_players: name the companies together; give a company a detail only where a fact in the list supplies one, and each detail shows how that company moves the market (launches, partnerships, acquisitions, integrations, expansion), never a recognition given to it or a change in its people.
+   - key_players: the number of companies listed says nothing about market concentration, so never plan a point about concentration, fragmentation or a shortlist, nor one describing the list itself; name the companies together; give a company a detail only where a fact in the list supplies one, and each detail shows how that company moves the market (launches, partnerships, acquisitions, integrations, expansion), never a recognition given to it or a change in its people.
    - country_us: a fact tagged us (its suits list is country_us) belongs to the U.S. section and to no trend. Give the section every U.S. fact there is. With fewer than two, code builds the section from the report's own facts, so you plan it from the U.S. facts alone.
    - subsegment: name the two sub-segments in "sub_segments" ("split" is the segment type, "name" the category). When THE TWO SUB-SEGMENTS above are given, they were fixed before the news was searched and you do not choose them: copy exactly those two. Only when none are given, choose the top two categories of one split from the report facts (another split's leader only when that split states no second category), by what the facts say matters most. Give this section only facts that are about those sub-segments or the split they belong to; a fact about something else stays out, and the section stays short.
 5. Keywords.
