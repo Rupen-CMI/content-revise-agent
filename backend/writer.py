@@ -856,12 +856,20 @@ def ensure_segment_names(sections: list[dict], inp: planning.PlanInputs, logger:
                                   for p in s["paragraphs"] if isinstance(p, str)))
     lines = sec["paragraphs"][idx].split("\n")
     for seg in inp.segments:
-        missing = [c for c in seg["items"] if checks._category_stems(c) and not checks._category_stems(c) <= seen]
+        missing = [c for c in seg["items"] if checks._category_stems(c) and not checks.category_named(c, seen)]
         if not missing:
             continue
         label = re.sub(r"^\s*by\s+", "", seg["type"], flags=re.I).strip() or seg["type"]
         type_words = checks._category_stems(label)
         at = next((i for i, l in enumerate(lines) if l.startswith("- ") and type_words and type_words <= checks._stems(l)), None)
+        if at is None:
+            # the writer named the split in its own words ("by mailer format" for "Type"): the line already listing most of the
+            # split's categories is that split's line
+            named = [(sum(1 for c in seg["items"] if checks.category_named(c, checks._stems(l))), i)
+                     for i, l in enumerate(lines) if l.startswith("- ")]
+            best = max(named, default=(0, None))
+            if best[0] * 2 >= len(seg["items"]):
+                at = best[1]
         if at is None:
             lines.append(f"- By {label}: {_and_list(seg['items'])}.")
             logger.info(f"[segments] the segmentation section left out the split {seg['type']!r}; a line naming its categories was added")

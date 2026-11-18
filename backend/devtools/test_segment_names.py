@@ -39,6 +39,16 @@ check("after the repair every category reads as named",
 same = writer.ensure_segment_names([{"sop": ["segmentation"], "heading": "h", "paragraphs": [text]}], inp, logging.getLogger("t"))
 check("a complete section is not touched again", same[0]["paragraphs"][0] == text)
 
+# found live: the writer called the "Type" split "mailer format", and the report's category is cut off ("Letters And Envelop")
+mail = ("The market divides by two segment types.
+- By mailer format, the market covers postcards, self-mailers, letters and "
+        "envelopes, dimensional mailers and catalogs.")
+mail_inp = types.SimpleNamespace(segments=[{"type": "Type", "items": ["Postcards", "Self-Mailers", "Letters And Envelop",
+                                                                      "Dimensional Mailers", "Catalogs"]}])
+out = writer.ensure_segment_names([{"sop": ["segmentation"], "heading": "h", "paragraphs": [mail]}], mail_inp, logging.getLogger("t"))
+check("a split named in the writer's own words, with a cut-off category name, is recognised: no duplicate line",
+      out[0]["paragraphs"][0] == mail, out[0]["paragraphs"][0])
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

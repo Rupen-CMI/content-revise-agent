@@ -1480,6 +1480,15 @@ def _category_stems(name: str) -> set[str]:
     return {facts._stem(w) for w in _category_words(name)}
 
 
+def category_named(name: str, seen: set[str]) -> bool:
+    """Every word of the category shows in `seen` (stemmed words). A report's cut-off category word ("Letters And Envelop")
+    counts when a seen word starts with it, and a seen word counts when the category word starts with it."""
+    def has(w: str) -> bool:
+        return w in seen or (len(w) >= 5 and any(s.startswith(w) or (len(s) >= 5 and w.startswith(s)) for s in seen))
+    words = _category_stems(name)
+    return bool(words) and all(has(w) for w in words)
+
+
 def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
     """The market's main CMI figures reach the article: the size, forecast and growth rate, every stated segment share and
     value, every segment split's categories and its leading category. A figure counts when its number is in the market
@@ -1504,11 +1513,11 @@ def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
         if missing:
             out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the article")
     for seg in inp.segments:
-        absent = [c for c in seg["items"] if _category_stems(c) and not _category_stems(c) <= seg_words]
+        absent = [c for c in seg["items"] if _category_stems(c) and not category_named(c, seg_words)]
         if absent:
             out.append(f"segmentation by {seg['type']}: {', '.join(absent)} not named in the segmentation or sub-segment text")
         dom = seg.get("dominant")
-        if dom and _category_stems(dom["name"]) and not _category_stems(dom["name"]) <= seg_words:
+        if dom and _category_stems(dom["name"]) and not category_named(dom["name"], seg_words):
             out.append(f"segmentation by {seg['type']}: the leading category {dom['name']} is not named")
     return out
 
@@ -1914,7 +1923,10 @@ def run_checks_v2(
         n_us = len(planning.us_fact_ids(us_plan.get("facts") or [], inp.items))
         thin = n_us < planning._US_MIN_FACTS
         detail = ""
-        if thin:
+        if thin and us_plan.get("length") == "na_analysis":
+            detail = (f"{n_us} verified U.S. fact(s): the section is a North America analysis built on the North America facts. "
+                      "Check that it stays on North America and adds no figure")
+        elif thin:
             detail = (f"{n_us} verified U.S. fact(s): the section is written from the report's own facts, framed for the U.S. Check that it "
                       "stays on the United States and adds no U.S. figure")
         results.append(CheckResult(V2_US_EVIDENCE_CHECK_NAME, not thin, detail))
