@@ -22,6 +22,7 @@ packaging/_build/
 dist/
 backend/logs/
 backend/output/
+backend/runs/
 backend/.search_cache/
 backend/.keyword_cache/
 backend/catalog.sqlite

@@ -87,6 +87,7 @@ import recheck as recheck_mod
 import prompts
 import publisher
 import reports
+import run_store
 import search
 import sections as ev_sections
 import sopcheck
@@ -123,6 +124,13 @@ app.add_middleware(
 # configured from env or the baked bpk module, exactly like the DeepSeek key.
 telemetry.emit_app_started()
 telemetry.flush_outbox_on_start()
+
+# Saved runs (run_store: the runs/ dir) are pruned once per server launch; never let a bad file or
+# an unreadable directory stop the app from starting.
+try:
+    run_store.cleanup()
+except Exception:
+    log.warning("[run_store] startup cleanup failed", exc_info=True)
 
 
 # ---------------------------------------------------------------- auto-shutdown when the browser tab closes
@@ -482,12 +490,48 @@ def _prune_runs() -> None:
         _RUNS.pop(min(_RUNS, key=lambda t: _RUNS[t].created_at), None)
 
 
+def _persist_run(token: str, run: RunState) -> bool:
+    """Save a run's saveable fields to disk (run_store), so it survives a server restart or its
+    RUN_TTL_S expiry — the canvas editor calls this after every edit. Best-effort: a failed save
+    never touches the run in memory."""
+    return run_store.save(token, run)
+
+
+def _restore_run(token: str) -> RunState | None:
+    """Rebuild an in-memory run from run_store's saved fields, with a fresh logger. None when
+    nothing was saved for this token."""
+    data = run_store.load(token)
+    if not data:
+        return None
+    data = dict(data)
+    logger, log_path = new_run_logger(label="restored")
+    run = RunState(
+        filename=data.pop("filename", "restored.docx"),
+        article=data.pop("article", None) or SourceArticle(title="", paragraphs=[]),
+        sponsor=data.pop("sponsor", None) or Paragraph(index=0, text=""),
+        orient=data.pop("orient", None) or {},
+        candidates=data.pop("candidates", None) or [],
+        logger=logger, log_path=log_path,
+    )
+    for name, value in data.items():
+        setattr(run, name, value)
+    return run
+
+
 def _get_run(token: str | None) -> RunState:
     if not token:
         raise HTTPException(400, "Missing run_token — start from Step 1 first.")
     run = _RUNS.get(token)
+    if run is not None:
+        return run
+    # Not in memory: either this server restarted, or the run outlived RUN_TTL_S. A finished run
+    # was saved to disk (run_store) by /finalize and by every canvas edit, so restore it and the
+    # editor can keep working on it.
+    run = _restore_run(token)
     if run is None:
         raise HTTPException(404, "Unknown or expired run. Please start a new run from Step 1.")
+    log.info(f"[run_store] restored run {token[:8]}…")
+    _RUNS[token] = run
     return run
 
 
@@ -2038,6 +2082,9 @@ def _final_payload(run: RunState, result: pipeline.RevampResult) -> dict:
         for c in result.evidence_citations
     ]
     view = _keyword_view(run, result.report, result.sponsor, result.title, result.sections)
+    # Every finished run is saved to disk (run_store), even if no canvas edit ever follows: that is
+    # what lets the editor reopen it after a server restart or the run's in-memory TTL expiry.
+    _persist_run(req.run_token, run)
     return {
         "title": result.title,
         **view,
