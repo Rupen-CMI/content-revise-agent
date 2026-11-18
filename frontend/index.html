@@ -516,6 +516,13 @@
           <span class="legend-item"><i class="legend-swatch legend-swatch--evidence"></i> Cited evidence <span class="legend-count" id="legend-count-evidence"></span></span>
         </div>
 
+        <div class="canvas-toolbar" id="canvas-toolbar" hidden>
+          <button class="btn btn-secondary btn-small" id="canvas-undo-btn" type="button" disabled><i data-lucide="undo-2"></i> Undo</button>
+          <button class="btn btn-ghost btn-small" id="canvas-revert-btn" type="button" disabled><i data-lucide="rotate-ccw"></i> Revert to the agent's draft</button>
+          <span class="canvas-edits" id="canvas-edits">0 edits</span>
+          <span class="canvas-saved" id="canvas-saved" hidden></span>
+          <span class="canvas-tip">Highlight words to ask for a change &middot; double-click a paragraph, the title or an FAQ answer to edit it yourself.</span>
+        </div>
         <div class="scroll-box article-render" id="final-article"></div>
         <div class="content-card" id="final-faq-block" hidden>
           <div class="kv-block kv-block-last">

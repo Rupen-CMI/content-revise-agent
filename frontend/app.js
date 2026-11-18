@@ -1,3 +1,5 @@
+import { trimSelection, parseSource, partsToText, linkProblems } from "./canvas_helpers.js";
+
 // ---------------------------------------------------------------- config
 // Default to the page's OWN origin, not a hardcoded hostname: the frontend is served by the same
 // FastAPI app the API lives on (main.py mounts it at "/"), so whatever host/port/protocol the
@@ -236,6 +238,8 @@ async function apiGetRun(token) {
 
 // ---------------------------------------------------------------- API helpers
 async function apiPost(path, body) {
+  // dev-only: frontend/devtools/canvas_mock.js (loaded by ?canvasMock) answers /canvas/* without a backend
+  if (window.CANVAS_MOCK && path.startsWith("/canvas/")) return window.CANVAS_MOCK(path, body);
   const resp = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: body instanceof FormData ? undefined : { "Content-Type": "application/json" },
@@ -2437,10 +2441,19 @@ function _buildHighlightMatchers(result) {
   return matchers;
 }
 
-function renderSectionsHighlighted(sections, result) {
+// Canvas: marks a rendered paragraph with its target (JSON in data-target). A plain <p> carries the
+// attribute itself and is selectable word by word; a bullet list or sub-heading is wrapped in a block
+// that can be double-click edited but not highlighted (its shown text is not the stored text).
+function _canvasTag(html, target) {
+  const attr = `data-target="${JSON.stringify(target).replace(/"/g, "&quot;")}"`;
+  if (html.startsWith("<p>") && !html.includes("<ul>")) return `<p ${attr}>${html.slice(3)}`;
+  return `<div class="canvas-block" ${attr} data-nosel="1">${html}</div>`;
+}
+
+function renderSectionsHighlighted(sections, result, canvas = false) {
   const matchers = _buildHighlightMatchers(result);
   const msqHeadings = new Set((result.msq_headings || []).map((h) => h.trim().toLowerCase()));
-  return sections.map((s) => {
+  return sections.map((s, si) => {
     // A heading the plan built from a Most Searched Question carries a small tag — the reader sees
     // which headings are also real search phrases at a glance (§3.11 final view).
     const isMsq = s.heading && msqHeadings.has(s.heading.trim().toLowerCase())
@@ -2448,7 +2461,10 @@ function renderSectionsHighlighted(sections, result) {
       : "";
     const heading = s.heading ? `<h4>${escapeHtml(s.heading)}${isMsq}</h4>` : "";
     const paras = (s.paragraphs || [])
-      .map((p) => _renderParagraph(p, (segs) => renderSegmentsHighlighted(segs, matchers)))
+      .map((p, pi) => {
+        const html = _renderParagraph(p, (segs) => renderSegmentsHighlighted(segs, matchers));
+        return canvas ? _canvasTag(html, { kind: "body", section: si, paragraph: pi }) : html;
+      })
       .join("");
     return heading + paras;
   }).join("");
@@ -2464,12 +2480,12 @@ function _countOccurrences(sections, phrase) {
 }
 
 // ---------------------------------------------------------------- shared result rendering
-function faqHtml(faq) {
-  return faq.map((qa) => `
+function faqHtml(faq, canvas = false) {
+  return faq.map((qa, k) => `
     <div class="faq-item">
       <p class="faq-question"><strong>${escapeHtml(qa.question)}</strong>${qa.intent
         ? `<span class="faq-intent" title="Every FAQ entry here is a Most Searched Question from the search-demand pass, answered from the article's own facts.">MSQ &middot; ${escapeHtml(qa.intent)}</span>` : ""}</p>
-      <p class="faq-answer">${escapeHtml(qa.answer)}</p>
+      <p class="faq-answer"${canvas ? ` data-target="${JSON.stringify({ kind: "faq", index: k }).replace(/"/g, "&quot;")}"` : ""}>${escapeHtml(qa.answer)}</p>
     </div>
   `).join("");
 }
@@ -2514,17 +2530,19 @@ function renderFinalPanel() {
   document.getElementById("final-checks-passed").textContent = `${passed} / ${result.checks.length}`;
   document.getElementById("final-report-name").textContent = result.report.name;
 
-  document.getElementById("final-title").textContent = result.title;
+  const titleEl = document.getElementById("final-title");
+  titleEl.textContent = result.title;
+  titleEl.dataset.target = JSON.stringify({ kind: "title" });
   document.getElementById("final-caption").innerHTML =
     `Revised from: <em>${escapeHtml(state.article.title)}</em> &middot; Report: <a href="${result.report.url}" target="_blank" rel="noopener">${escapeHtml(result.report.name)}</a>`;
 
-  document.getElementById("final-article").innerHTML = renderSectionsHighlighted(result.sections, result);
+  document.getElementById("final-article").innerHTML = renderSectionsHighlighted(result.sections, result, true);
 
   const faq = result.faq || [];
   document.getElementById("final-faq-block").hidden = faq.length === 0;
   document.getElementById("final-faq-hint").textContent =
     `Generated from the finished article and the ${state.run.reportMode && state.run.reportMode !== "cmi" ? "fact sheet" : "CMI report"} — outside the article's word limit, appended after the conclusion in the downloaded .docx.`;
-  document.getElementById("final-faq").innerHTML = faqHtml(faq);
+  document.getElementById("final-faq").innerHTML = faqHtml(faq, true);
 
   // The legend's numbers come from the backend's own highlighting pass (result.keyword_counts, filled by the
   // same spans that produce the marks in the text) so they always match what is highlighted. A literal phrase
@@ -2549,6 +2567,429 @@ function renderFinalPanel() {
   downloadBtn.onclick = () => {
     window.location.href = `${API_BASE}/download/${encodeURIComponent(result.output_filename)}`;
   };
+
+  renderCanvasToolbar();
+  paintPending();
+}
+
+// ---------------------------------------------------------------- Canvas: highlight-and-redraft (final panel)
+// Every body paragraph, FAQ answer and the title carries data-target (see _canvasTag / faqHtml). Highlighting
+// words opens the suggest bubble; the server answers with a suggestion that stays pending (struck-through
+// before, highlighted after) until Accept. Double-click edits a target by hand. Accept, undo, revert and manual
+// saves all answer with the refreshed result, which replaces state.result and goes through the normal render.
+const canvasUi = {
+  bubble: null,    // the open suggest bubble's element
+  pending: null,   // { req, data }: the one suggestion awaiting Accept / Reject / Try again
+  editor: null,    // the open manual edit box
+  busy: false,
+};
+
+const CANVAS_QUICK_ACTIONS = [
+  ["Shorten", "Shorten this."],
+  ["Expand", "Expand this with a little more detail."],
+  ["More formal", "Make this more formal."],
+  ["Simplify", "Simplify the wording."],
+  ["Add a figure from the report", "Add a figure from the report that supports this."],
+  ["Add evidence", "Add supporting evidence from the listed facts."],
+];
+
+const canvasTargetKey = (t) => `${t.kind}:${t.section ?? ""}:${t.paragraph ?? t.index ?? ""}`;
+const canvasEl = (node) => (node.nodeType === 1 ? node : node.parentElement);
+const canvasTargetEl = (node) => (canvasEl(node) ? canvasEl(node).closest("[data-target]") : null);
+const canvasRun = () => ({ run_token: state.run.token });
+
+function canvasFind(target) {
+  const key = canvasTargetKey(target);
+  return [...document.querySelectorAll("#final-content [data-target]")]
+    .find((el) => canvasTargetKey(JSON.parse(el.dataset.target)) === key) || null;
+}
+
+function canvasSegsHtml(segs) {
+  return (segs || []).map((s) => (s.url
+    ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.text)}</a>`
+    : escapeHtml(s.text))).join("");
+}
+
+// 409 = the draft moved on under this page; 400/422 carry a sentence the editor can act on.
+function canvasFail(err, el) {
+  const text = err.status === 409 ? "The draft changed. Reload the page."
+    : (err.status === 400 || err.status === 422) ? err.message : null;
+  if (text && el) { el.textContent = text; el.hidden = false; return; }
+  showError("Canvas", text ? Object.assign(new Error(text), { status: err.status }) : err);
+}
+
+function canvasApplied(resp) {
+  state.result = resp.result;
+  state.run.canvas = resp.canvas;
+  saveResult();
+  render();
+}
+
+// -- selection -> bubble
+// Character offsets of a range boundary inside one target, counted in the target's own text.
+function canvasOffset(el, container, offset) {
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  r.setEnd(container, offset);
+  return r.toString().length;
+}
+
+function onCanvasMouseUp(e) {
+  if (canvasUi.pending || canvasUi.editor || e.detail >= 2) return;
+  if (e.target.closest(".canvas-bubble")) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  const el = canvasTargetEl(range.startContainer);
+  if (!el || el.dataset.nosel || el.id === "final-title") return;
+  const text = el.textContent;
+  const start = canvasOffset(el, range.startContainer, range.startOffset);
+  const endEl = canvasTargetEl(range.endContainer);
+  let end = text.length;
+  let clipped = false;
+  if (endEl === el) {
+    end = canvasOffset(el, range.endContainer, range.endOffset);
+  } else {
+    // a triple-click ends at the start of the next block: only real words beyond this target count
+    const rest = document.createRange();
+    rest.setStart(el, el.childNodes.length);
+    rest.setEnd(range.endContainer, range.endOffset);
+    clipped = rest.toString().trim() !== "";
+  }
+  const t = trimSelection(text, start, end);
+  if (!t) return;
+  openBubble({ target: JSON.parse(el.dataset.target), ...t }, clipped, range.getBoundingClientRect());
+}
+
+function closeBubble() {
+  if (canvasUi.bubble) canvasUi.bubble.remove();
+  canvasUi.bubble = null;
+}
+
+function openBubble(sel, clipped, rect) {
+  closeBubble();
+  const isBody = sel.target.kind === "body";
+  const bubble = document.createElement("div");
+  bubble.className = "canvas-bubble";
+  bubble.setAttribute("role", "dialog");
+  bubble.innerHTML = `
+    <div class="canvas-quote"></div>
+    <p class="canvas-clip" ${clipped ? "" : "hidden"}>Only the first paragraph's words are used.</p>
+    <div class="canvas-scope" role="group" aria-label="What to rewrite">
+      <button type="button" class="active" data-scope="selection">Words</button>
+      <button type="button" data-scope="paragraph">Paragraph</button>
+      ${isBody ? `<button type="button" data-scope="section">Section</button>` : ""}
+    </div>
+    <div class="canvas-chips">${CANVAS_QUICK_ACTIONS.map(([label], i) => `<button type="button" class="canvas-chip-btn" data-quick="${i}">${escapeHtml(label)}</button>`).join("")}</div>
+    <textarea class="canvas-instruction" rows="2" placeholder="What should change? e.g. make this more formal"></textarea>
+    <p class="canvas-error" hidden></p>
+    <div class="btn-row">
+      <button type="button" class="btn btn-primary btn-small canvas-send"><i data-lucide="loader-circle" class="spin" hidden></i> <span>Suggest</span></button>
+      <button type="button" class="btn btn-ghost btn-small canvas-close">Close</button>
+    </div>`;
+  const quote = sel.quote.length > 140 ? `${sel.quote.slice(0, 137)}...` : sel.quote;
+  bubble.querySelector(".canvas-quote").textContent = `“${quote}”`;
+  document.body.appendChild(bubble);
+  canvasUi.bubble = bubble;
+
+  const area = bubble.querySelector(".canvas-instruction");
+  const errEl = bubble.querySelector(".canvas-error");
+  const sendBtn = bubble.querySelector(".canvas-send");
+  let scope = "selection";
+  bubble.querySelectorAll("[data-scope]").forEach((b) => b.addEventListener("click", () => {
+    scope = b.dataset.scope;
+    bubble.querySelectorAll("[data-scope]").forEach((o) => o.classList.toggle("active", o === b));
+  }));
+  bubble.querySelectorAll("[data-quick]").forEach((b) => b.addEventListener("click", () => {
+    area.value = CANVAS_QUICK_ACTIONS[Number(b.dataset.quick)][1];
+    area.focus();
+  }));
+  bubble.querySelector(".canvas-close").addEventListener("click", closeBubble);
+  const send = async () => {
+    const instruction = area.value.trim();
+    if (!instruction) { errEl.textContent = "Say what should change, or pick a quick action."; errEl.hidden = false; return; }
+    errEl.hidden = true;
+    sendBtn.disabled = true;
+    sendBtn.querySelector("svg, i").hidden = false;
+    try {
+      const req = { target: sel.target, start: sel.start, end: sel.end, quote: sel.quote, instruction, scope };
+      const data = await canvasPost("/canvas/suggest", req);
+      closeBubble();
+      canvasUi.pending = { req, data };
+      renderFinalPanel();
+      const block = document.querySelector(".canvas-pending");
+      if (block) block.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    } catch (e) {
+      sendBtn.disabled = false;
+      sendBtn.querySelector("svg, i").hidden = true;
+      canvasFail(e, errEl);
+    }
+  };
+  sendBtn.addEventListener("click", send);
+  area.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
+
+  iconify();
+  sendBtn.querySelector("svg, i").hidden = true;
+  const w = bubble.offsetWidth;
+  const h = bubble.offsetHeight;
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - w - 8));
+  const below = rect.bottom + 8;
+  bubble.style.left = `${left}px`;
+  bubble.style.top = `${below + h > window.innerHeight && rect.top - h - 8 > 0 ? rect.top - h - 8 : below}px`;
+  area.focus();
+}
+
+function canvasPost(path, extra) {
+  return apiPost(path, { ...canvasRun(), ...extra });
+}
+
+// -- pending suggestion, shown in place of its paragraph
+function paintPending() {
+  document.getElementById("final-content").classList.toggle("canvas-locked", !!(canvasUi.pending || canvasUi.editor));
+  if (!canvasUi.pending) return;
+  const { req, data } = canvasUi.pending;
+  const target = data.target || req.target;
+  const el = canvasFind(target);
+  if (!el) return;
+  const block = document.createElement("div");
+  block.className = "canvas-pending";
+  block.innerHTML = `
+    <div class="canvas-pending-head"><strong>Suggested change</strong>
+      <span class="canvas-wc">${data.words_before} &rarr; ${data.words_after} words</span></div>
+    <p class="canvas-del">${canvasSegsHtml(data.before)}</p>
+    <p class="canvas-ins">${canvasSegsHtml(data.after)}</p>
+    ${data.note ? `<div class="canvas-note">${escapeHtml(data.note)}</div>` : ""}
+    <p class="canvas-error" hidden></p>
+    <div class="btn-row">
+      <button type="button" class="btn btn-primary btn-small canvas-accept"><i data-lucide="check"></i> Accept</button>
+      <button type="button" class="btn btn-secondary btn-small canvas-reject"><i data-lucide="x"></i> Reject</button>
+      <button type="button" class="btn btn-ghost btn-small canvas-retry"><i data-lucide="refresh-cw"></i> Try again</button>
+    </div>`;
+  // a section-wide suggestion stands in for every paragraph of that section
+  if (target.kind === "body" && req.scope === "section") {
+    document.querySelectorAll("#final-article [data-target]").forEach((o) => {
+      const t = JSON.parse(o.dataset.target);
+      if (o !== el && t.kind === "body" && t.section === target.section) o.hidden = true;
+    });
+  }
+  el.replaceWith(block);
+
+  const errEl = block.querySelector(".canvas-error");
+  const buttons = block.querySelectorAll("button");
+  const run = async (fn) => {
+    buttons.forEach((b) => { b.disabled = true; });
+    errEl.hidden = true;
+    try { await fn(); } catch (e) { canvasFail(e, errEl); } finally { buttons.forEach((b) => { b.disabled = false; }); }
+  };
+  block.querySelector(".canvas-accept").addEventListener("click", () => run(async () => {
+    const resp = await canvasPost("/canvas/apply", { suggestion_id: data.suggestion_id });
+    canvasUi.pending = null;
+    canvasApplied(resp);
+  }));
+  block.querySelector(".canvas-reject").addEventListener("click", () => {
+    canvasUi.pending = null;
+    renderFinalPanel();
+  });
+  block.querySelector(".canvas-retry").addEventListener("click", () => run(async () => {
+    const next = await canvasPost("/canvas/suggest", { ...req, retry_of: data.suggestion_id });
+    canvasUi.pending = { req, data: next };
+    renderFinalPanel();
+  }));
+  iconify();
+}
+
+// -- manual edit: the text with each link as a locked chip
+function canvasChip(part, removable) {
+  const chip = document.createElement("span");
+  chip.className = "canvas-edit-chip";
+  chip.contentEditable = "false";
+  chip.dataset.linkId = part.id;
+  chip.title = part.url || "";
+  chip.appendChild(document.createTextNode(part.words));
+  if (removable) {
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "canvas-edit-chip-x";
+    x.textContent = "×";
+    x.title = "Remove this link";
+    x.addEventListener("click", () => {
+      canvasUi.editor.removed.add(part.id);
+      chip.remove();
+    });
+    chip.appendChild(x);
+  }
+  return chip;
+}
+
+// Back from the edit box to parts: text, line breaks and chips (a chip's × label is never read).
+function canvasReadEditor(area) {
+  const parts = [];
+  const pushText = (v) => {
+    const last = parts[parts.length - 1];
+    if (last && last.type === "text") last.value += v; else parts.push({ type: "text", value: v });
+  };
+  const walk = (node) => {
+    node.childNodes.forEach((n) => {
+      if (n.nodeType === 3) pushText(n.nodeValue.replace(/ /g, " "));
+      else if (n.nodeType === 1) {
+        if (n.dataset.linkId) parts.push({ type: "chip", id: n.dataset.linkId });
+        else if (n.tagName === "BR") pushText("\n");
+        else {
+          if (/^(DIV|P)$/.test(n.tagName) && parts.length) pushText("\n");
+          walk(n);
+        }
+      }
+    });
+  };
+  walk(area);
+  return parts;
+}
+
+function closeEditor() {
+  if (!canvasUi.editor) return;
+  canvasUi.editor.box.remove();
+  canvasUi.editor.el.hidden = false;
+  canvasUi.editor = null;
+  document.getElementById("final-content").classList.remove("canvas-locked");
+}
+
+async function openEditor(el) {
+  const target = JSON.parse(el.dataset.target);
+  let src;
+  try {
+    src = await canvasPost("/canvas/source", { target });
+  } catch (e) {
+    canvasFail(e);
+    return;
+  }
+  if (canvasUi.editor || canvasUi.pending) return;
+  const links = src.links || [];
+  const box = document.createElement("div");
+  box.className = "canvas-editor";
+  box.innerHTML = `
+    <div class="canvas-edit-area" contenteditable="true" spellcheck="true"></div>
+    <p class="field-hint">${links.length ? "Highlighted chips are links and stay in place. " : ""}Save keeps your wording as typed.</p>
+    <p class="canvas-error" hidden></p>
+    <div class="btn-row">
+      <button type="button" class="btn btn-primary btn-small canvas-edit-save"><i data-lucide="check"></i> Save</button>
+      <button type="button" class="btn btn-ghost btn-small canvas-edit-cancel">Cancel</button>
+    </div>`;
+  const area = box.querySelector(".canvas-edit-area");
+  const cmiLink = (l) => (l.kind ? l.kind === "cmi" : isCmiLink(l.url));
+  parseSource(src.text, links).forEach((p) => {
+    if (p.type === "text") area.appendChild(document.createTextNode(p.value));
+    else area.appendChild(canvasChip(p, cmiLink(links.find((l) => l.id === p.id))));
+  });
+  el.hidden = true;
+  el.after(box);
+  canvasUi.editor = { el, box, links, removed: new Set() };
+  document.getElementById("final-content").classList.add("canvas-locked");
+  iconify();
+
+  const errEl = box.querySelector(".canvas-error");
+  area.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (target.kind !== "title") document.execCommand("insertText", false, "\n");
+  });
+  area.addEventListener("paste", (e) => {
+    e.preventDefault();
+    document.execCommand("insertText", false, e.clipboardData.getData("text/plain"));
+  });
+  box.querySelector(".canvas-edit-cancel").addEventListener("click", closeEditor);
+  const saveBtn = box.querySelector(".canvas-edit-save");
+  saveBtn.addEventListener("click", async () => {
+    const parts = canvasReadEditor(area);
+    const { lost, doubled } = linkProblems(links, parts, [...canvasUi.editor.removed]);
+    if (lost.length || doubled.length) {
+      const words = (ids) => ids.map((id) => `“${links.find((l) => l.id === id).words}”`).join(", ");
+      errEl.textContent = lost.length
+        ? `A link was deleted: ${words(lost)}. Cancel and edit again (only CMI links can be removed, with the ×).`
+        : `A link appears twice: ${words(doubled)}.`;
+      errEl.hidden = false;
+      return;
+    }
+    const newText = partsToText(parts).trim();
+    if (!newText) { errEl.textContent = "The text cannot be empty."; errEl.hidden = false; return; }
+    if (newText === src.text) { closeEditor(); return; }
+    saveBtn.disabled = true;
+    errEl.hidden = true;
+    try {
+      const resp = await canvasPost("/canvas/apply", { target, new_text: newText });
+      closeEditor();
+      canvasApplied(resp);
+    } catch (e) {
+      saveBtn.disabled = false;
+      canvasFail(e, errEl);
+    }
+  });
+  area.focus();
+}
+
+// -- toolbar (undo / revert / edit count / saved)
+function renderCanvasToolbar() {
+  const bar = document.getElementById("canvas-toolbar");
+  const c = (state.run && state.run.canvas) || null;
+  const idle = !canvasUi.pending && !canvasUi.editor && !canvasUi.busy;
+  document.getElementById("canvas-undo-btn").disabled = !(c && c.can_undo) || !idle;
+  document.getElementById("canvas-revert-btn").disabled = !(c && c.edits > 0) || !idle;
+  document.getElementById("canvas-edits").textContent = `${c ? c.edits : 0} edit${c && c.edits === 1 ? "" : "s"}`;
+  const saved = document.getElementById("canvas-saved");
+  saved.hidden = !c || c.saved === undefined;
+  if (c) {
+    saved.textContent = c.saved ? "Saved" : "Not saved";
+    saved.classList.toggle("is-saved", !!c.saved);
+  }
+  bar.hidden = !state.run || !state.run.token;
+}
+
+async function canvasToolbarAction(path) {
+  canvasUi.busy = true;
+  renderCanvasToolbar();
+  hideError();
+  try {
+    canvasApplied(await canvasPost(path, {}));
+  } catch (e) {
+    canvasFail(e);
+  } finally {
+    canvasUi.busy = false;
+    renderCanvasToolbar();
+  }
+}
+
+document.getElementById("canvas-undo-btn").addEventListener("click", () => canvasToolbarAction("/canvas/undo"));
+document.getElementById("canvas-revert-btn").addEventListener("click", () => {
+  if (confirm("Throw away every edit and go back to the agent's draft?")) canvasToolbarAction("/canvas/revert");
+});
+
+const canvasRoot = document.getElementById("final-content");
+canvasRoot.addEventListener("mouseup", onCanvasMouseUp);
+canvasRoot.addEventListener("dblclick", (e) => {
+  if (canvasUi.pending || canvasUi.editor || e.target.closest(".canvas-bubble, .canvas-pending, .canvas-editor")) return;
+  const el = canvasTargetEl(e.target);
+  if (!el || !state.run || !state.run.token) return;
+  closeBubble();
+  window.getSelection().removeAllRanges();
+  openEditor(el);
+});
+document.addEventListener("mousedown", (e) => {
+  if (canvasUi.bubble && !canvasUi.bubble.contains(e.target)) closeBubble();
+});
+document.addEventListener("scroll", (e) => {
+  if (canvasUi.bubble && !canvasUi.bubble.contains(e.target)) closeBubble();
+}, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (canvasUi.bubble) closeBubble();
+  else if (canvasUi.editor) closeEditor();
+});
+
+// dev only: ?canvasMock answers /canvas/* from canned data (no backend needed)
+if (/[?&]canvasMock\b/.test(window.location.search)) {
+  window.__canvasDebug = { state };
+  const mock = document.createElement("script");
+  mock.src = "devtools/canvas_mock.js";
+  document.head.appendChild(mock);
 }
 
 // ---------------------------------------------------------------- Recheck a humanized draft (final panel)
