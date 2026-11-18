@@ -132,6 +132,14 @@ check("rank: a dropped stale hit does not consume one of the per_market slots",
           [hit("https://old.example/x", "Old Market Report 2021", ""), hit("https://m.example/1", "First Market Report", ""),
            hit("https://m.example/2", "Dup Market Report", ""), hit("https://n.example/x", "Second Market Report", "")], 2)]
       == ["https://m.example/1", "https://n.example/x"])
+check("rank: within research hosts, a title naming exactly the market comes before a narrower market's",
+      [h.host for h in external_reports.rank_candidates(
+          [hit("https://www.gminsights.com/r", "Bi-directional Electric Vehicle Charger Market Size, Forecast", ""),
+           hit("https://www.precedenceresearch.com/r", "Electric Vehicle Charger Market Companies, Size & Trends 2026", "")],
+          6, "Electric Vehicle Charger Market")] == ["precedenceresearch.com", "gminsights.com"])
+check("exact: a qualifier before the market's words is a narrower market",
+      not external_reports._names_market_exactly("Electric Vehicle On-Board Charger Market Size", "Electric Vehicle Charger Market")
+      and external_reports._names_market_exactly("Global Electric-Vehicle Charger Market to reach", "Electric Vehicle Charger Market"))
 
 # ------------------------------------------------------------------------------- end to end
 

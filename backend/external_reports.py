@@ -136,18 +136,29 @@ def looks_stale(title: str, snippet: str, today: date | None = None, max_age_yea
     return max(years) < (today or date.today()).year - max_age_years
 
 
-def rank_candidates(hits, per_market: int) -> list:
+def _names_market_exactly(title: str, market: str) -> bool:
+    """The title names this very market, not a narrower one: the market's core words followed by "market" open the title or follow
+    a separator ("Electric Vehicle Charger Market Size..." or "Report: Electric Vehicle Charger Market"), never a qualifier
+    ("Bi-directional Electric Vehicle Charger Market", "Electric Vehicle On-Board Charger Market")."""
+    core = re.sub(r"[-\s]+", " ", _market_core(market).lower()).strip()
+    text = re.sub(r"[-\s]+", " ", (title or "").lower())
+    return bool(core) and re.search(rf"(?:^|[|:–—(]\s*|\b(?:the|global|us|u\.s\.)\s){re.escape(core)} market\b", text) is not None
+
+
+def rank_candidates(hits, per_market: int, market: str = "") -> list:
     """The candidate pages kept for the editor: stale pages (their newest mentioned year is too old) are dropped, at
-    most ONE page per host survives (the first seen), research-firm hosts come first and everything else after, each
-    group in its original order, capped at per_market. Pure: returns a new list, nothing logged or fetched."""
+    most ONE page per host survives (the first seen), research-firm hosts come first and everything else after, and within
+    each group a title that names exactly `market` (when given) comes before a narrower or neighbouring market's, each in its
+    original order, capped at per_market. Pure: returns a new list, nothing logged or fetched."""
     fresh, seen_hosts = [], set()
     for h in hits:
         if h.host in seen_hosts or looks_stale(h.title, h.snippet):
             continue
         seen_hosts.add(h.host)
         fresh.append(h)
-    research = [h for h in fresh if is_research_host(h.host)]
-    return (research + [h for h in fresh if not is_research_host(h.host)])[:max(0, per_market)]
+    # a stable sort keeps the original order inside each group
+    fresh.sort(key=lambda h: (not is_research_host(h.host), bool(market) and not _names_market_exactly(h.title, market)))
+    return fresh[:max(0, per_market)]
 
 
 def search_queries(market_name: str) -> tuple[list[str], list[str]]:
@@ -259,13 +270,13 @@ def _report_hits(market: str, exclude_hosts, want: int, logger: logging.Logger) 
     def candidates(raw: list, n: int) -> list:
         return rank_candidates(
             [h for h in facts.filter_figure_hits(raw, market, exclude_hosts, logger, limit=want + 6)
-             if looks_like_report(h.host, h.title, h.snippet)], n)
+             if looks_like_report(h.host, h.title, h.snippet)], n, market)
 
     # A few more than wanted are decoded: a link that cannot be decoded, or two that resolve to one page, must not leave a gap.
     kept = feeds.resolve_hits(candidates(feeds.bing_search(news_q, web_q, logger, resolve=False), want + 3), logger)[:want]
     if len(kept) < _MIN_BEFORE_FALLBACK:
         extra = candidates(search.run_text_searches(web_q[:2], logger), want)
-        kept = rank_candidates(kept + [h for h in extra if h.url not in {k.url for k in kept}], want)
+        kept = rank_candidates(kept + [h for h in extra if h.url not in {k.url for k in kept}], want, market)
     return kept
 
 
