@@ -47,6 +47,9 @@ check("lead: 'Per <outlet>, ...' is cut", clean("Per Statista, 62% of buyers use
 check("lead: 'As reported by <outlet>, ...' is cut", clean("As reported by Reuters, sales rose 5% in 2025.")[0] == "Sales rose 5% in 2025.")
 check("lead: 'Data from <outlet> shows ...' keeps the finding", clean("Data from Statista shows sales rose 5% in 2025.")[0] == "Data shows sales rose 5% in 2025.")
 check("lead: '<name> found that ...' leaves the statistic plain", clean("Statista found that 40% of firms adopt AI.")[0] == "40% of firms adopt AI.")
+check("mid: 'a report cited by <outlet>' drops the outlet, keeps the finding",
+      clean("A report cited by Chief Marketer in May 2026 found that 60 percent of consumers enjoy receiving mail.")[0]
+      == "A report in May 2026 found that 60 percent of consumers enjoy receiving mail.")
 check("trail: ', according to <outlet>' is cut", clean("Sales rose 5% in 2025, according to Statista.")[0] == "Sales rose 5% in 2025.")
 check("trail: ', per <outlet>' is cut", clean("Sales rose 5% in 2025, per MarTech Cube.")[0] == "Sales rose 5% in 2025.")
 check("trail: ', <outlet> reported' is cut", clean("Sales rose 5% in 2025, Gartner reported.")[0] == "Sales rose 5% in 2025.")

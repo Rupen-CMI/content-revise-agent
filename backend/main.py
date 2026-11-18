@@ -1187,9 +1187,10 @@ def _build_reports(
         raise PipelineError("The agent could not name this article's market. Pick a matched report and try again.")
     outside_texts: dict[str, str] = {}
     covered: list[str] = []      # related markets whose figures stand in for `market` (see _use_outside_pages)
-    # A link the editor pasted names its own report: nothing else is searched or substituted for it (a suggested market,
-    # by contrast, may fall back to other reports found for it and, last, to the web).
+    # A report the editor chose (a found one or a pasted link) is the ONLY report read: nothing else is searched or
+    # substituted for it. Only a market picked with no report chosen may fall back to a web search.
     pasted = bool(urls) and not markets
+    chosen_report = bool(urls)
     # R3: with a CMI report chosen, no outside report is read at all — the branch below runs only for a market
     # pick (search finds the market's reports) or pasted links.
     if not cmi_reports:
@@ -1211,18 +1212,9 @@ def _build_reports(
                         pages += [(u, t, m) for u, t in external_reports.find_pages(m, hosts, run.logger)]
                 else:
                     pages = [(u, t, market) for u, t in external_reports.find_pages(market, hosts, run.logger)]
+            # The editor chose exactly ONE report: only that report is read. Another report from the found list is never
+            # substituted for it (that put a different market's figures under the chosen report).
             ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, pages, titles, warnings, run.logger, covered)
-            if not ext_sources and urls and not pasted:
-                # Nothing the editor chose could be used: try the other reports from the same list rather than stop.
-                spare = [(r["url"], external_reports.read_page(r["url"], run.logger), r.get("market") or market)
-                         for r in run.found_reports if r.get("url") and r["url"] not in urls][:3]
-                spare = [p for p in spare if p[1]]
-                if spare:
-                    ext_sheet, ext_sources, outside_texts = _use_outside_pages(market, spare, titles, warnings, run.logger, covered)
-                    if ext_sources:
-                        warnings.append(
-                            "None of the reports you ticked could be used, so the agent used other reports from the same "
-                            "list: " + ", ".join(sorted({external_reports.host_of(s["url"]) for s in ext_sources})) + ".")
             if ext_sources:
                 sheets.append(ext_sheet)
                 sources += ext_sources
@@ -1231,6 +1223,10 @@ def _build_reports(
             raise ReportUnusable(" ".join(
                 warnings + ["No figures were taken from this link. Paste another report link, or pick a suggested market "
                             "and let the agent find a report."]))
+        if chosen_report:
+            raise ReportUnusable(" ".join(
+                warnings + ["No figures were taken from the report you chose. Choose another report from the list, or "
+                            "paste a report link of your own."]))
         # No usable report anywhere: before giving up, search the web for the market's own size, forecast and
         # CAGR (one outside page, the same strict checks, varied 3-5%). Only when even that finds nothing does
         # the step fail.

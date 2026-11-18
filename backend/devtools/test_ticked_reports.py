@@ -158,11 +158,14 @@ check("step2: the ticked report is used when it works, no fallback warning",
       [s["url"] for s in out["fact_sheet"]["sources"]] == [TICKED]
       and not any("could be used" in w for w in out["warnings"]), str(out["warnings"]))
 
-out = step2(found, {TICKED: "", SPARE: "other text"}, usable_urls={SPARE})
-check("step2: ticked report unreadable -> the other report of the list is used and the editor is told",
-      [s["url"] for s in out["fact_sheet"]["sources"]] == [SPARE]
-      and any("None of the reports you ticked could be used" in w and "mordor.example" in w for w in out["warnings"])
-      and any(TICKED in w and "could not be read" in w for w in out["warnings"]), str(out["warnings"]))
+raised = None
+try:
+    step2(found, {TICKED: "", SPARE: "other text"}, usable_urls={SPARE})
+except main.ReportUnusable as e:
+    raised = e
+check("step2: ticked report unreadable -> it stops with the reason; another report of the list is NEVER swapped in",
+      raised is not None and TICKED in str(raised) and "could not be read" in str(raised)
+      and "mordor.example" not in str(raised), str(raised))
 
 raised = None
 try:

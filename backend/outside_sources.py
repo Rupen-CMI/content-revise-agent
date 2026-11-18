@@ -243,7 +243,7 @@ _PATTERNS: list[tuple[re.Pattern, int, str]] = [
     (_compile(rf"\s*\(\s*(?i:source|sources|via)\s*:\s*(?P<name>{_ORG})[^)]*\)"), 1, "paren"),
     (_compile(rf"\s*\(\s*{_TRAIL_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*\)"), 1, "paren"),
     (_compile(rf"\b(?i:reports?|stud(?:y|ies)|surveys?|analysis|research|polls?|forecasts?|estimates?|index|ranking|whitepaper|data|figures)"
-              rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by)\s+(?P<name>{_ORG}))"), 1, "byfrom"),
+              rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by|cited by|quoted by|reported by|covered by)\s+(?P<name>{_ORG}))"), 1, "byfrom"),
     (_compile(rf"\b{_ANY_FRAME_WORDS}\s+(?P<name>{_ORG})"), 1, "nonsep"),
     (_compile(rf"\bper\s+(?P<name>{_ORG}){_POSS}(?=\s*(?:[,.;:!?)]|$))"), 1, "nonsep"),
     (_compile(rf"(?P<name>{_ORG})['’]s\s+(?:\w+\s+){{0,2}}?(?i:report|study|survey|analysis|data|research|estimate|forecast|figures|index|"

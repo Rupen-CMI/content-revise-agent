@@ -171,10 +171,11 @@ class _Bing:
         self.sections_with_hits: set[str] = set()  # sections (or "" for a query with none) that have a raw hit already (run)
         self.queries = 0                           # queries sent, retries included (search)
 
-    def _get(self, query: str) -> list[search.SearchHit] | None:
-        # News only: Bing's web feed answers automated requests with pages matching just the first query word (see Google News below).
-        url = "https://www.bing.com/news/search"
-        kind = "bing_news"
+    def _get(self, query: str, web: bool = False) -> list[search.SearchHit] | None:
+        # Bing's web feed is unreliable for automated requests (some queries get pages matching only the first word), so it
+        # runs beside Google News, never alone; the callers' relevance filters drop what is off topic.
+        url = "https://www.bing.com/search" if web else "https://www.bing.com/news/search"
+        kind = "bing_web" if web else "bing_news"
         # Dev-only disk cache (config.SEARCH_CACHE): a hit short-circuits BEFORE the politeness gate
         # and the retry/breaker machinery — a repeated dev run makes no live Bing call for a query
         # it already made within the TTL. Only successes are stored (below), so a cached entry can
@@ -198,10 +199,10 @@ class _Bing:
                 time.sleep(_BING_RETRY_WAIT_S * (attempt + 1))
         return None
 
-    def search(self, query: str) -> list[search.SearchHit]:
+    def search(self, query: str, web: bool = False) -> list[search.SearchHit]:
         if self.disabled:
             return []
-        hits = self._get(query)
+        hits = self._get(query, web)
         self.queries += 1
         if hits is None:
             self._failed_in_a_row += 1
@@ -215,7 +216,7 @@ class _Bing:
         for h in hits:
             if not h.query:
                 h.query = query
-        self._logger.info(f"[bing] {query!r} -> {len(hits)} result(s)")
+        self._logger.info(f"[bing{' web' if web else ''}] {query!r} -> {len(hits)} result(s)")
         return hits
 
     def run(
@@ -447,29 +448,37 @@ class ClaimWebSearch:
         self._logger = logger
         self._client = httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
         self._gnews = _GoogleNews(self._client, logger)
+        self._bing = _Bing(self._client, logger)
 
     def search(self, query: str, resolve: bool = True, max_resolved: int = 8) -> list[search.SearchHit]:
-        hits = self._gnews.search(query)
+        hits = _dedupe(self._bing.search(query, web=True) + self._gnews.search(query))
         return resolve_hits(hits[:max_resolved], self._logger) if resolve else hits
 
     @property
     def disabled(self) -> bool:
-        return self._gnews.disabled
+        return self._gnews.disabled and self._bing.disabled
 
     def close(self) -> None:
         self._client.close()
 
 
+def _dedupe(hits: list[search.SearchHit]) -> list[search.SearchHit]:
+    """First copy of each URL, in order (Bing web and Google News often return the same report page)."""
+    seen: set[str] = set()
+    return [h for h in hits if not (h.url in seen or seen.add(h.url))]
+
+
 def web_search(
     queries: list[str], logger: logging.Logger = _null_logger, resolve: bool = True, max_resolved: int = 8,
 ) -> list[search.SearchHit]:
-    """Web-style queries on Google News, one polite client. With resolve=False the hits keep provisional URLs on their real
+    """Web-style queries on Bing web and Google News, one polite client. With resolve=False the hits keep provisional URLs on their real
     hosts (enough for host and title filters); call resolve_hits on the survivors. Returns raw, unfiltered hits."""
     out: list[search.SearchHit] = []
     with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
-        gnews = _GoogleNews(client, logger)
+        gnews, bing = _GoogleNews(client, logger), _Bing(client, logger)
         for q in queries:
-            out += gnews.search(q)
+            out += bing.search(q, web=True) + gnews.search(q)
+    out = _dedupe(out)
     return resolve_hits(out[:max_resolved * max(1, len(queries))], logger) if resolve else out
 
 

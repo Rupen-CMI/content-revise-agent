@@ -312,7 +312,9 @@ def find_candidate_pages(
             return []
         return [
             {"url": h.url, "title": clean_title(h.title, market), "host": h.host,
-             "snippet": h.snippet[:_SNIPPET_CHARS], "market": market}
+             "snippet": h.snippet[:_SNIPPET_CHARS], "market": market,
+             # what the report itself covers (from its title), and whether that is exactly the market searched for
+             "covers": page_market_name(h.title), "exact": _names_market_exactly(h.title, market)}
             for h in kept
         ]
 
