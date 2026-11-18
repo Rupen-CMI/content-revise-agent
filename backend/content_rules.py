@@ -4,6 +4,7 @@ checks.run_checks_v2 turns them into hard checks. Nothing here calls a model."""
 import re
 
 import polarity
+import us_states
 import sentsplit
 
 _SENTENCE_SPLIT_RE = re.compile(sentsplit.BOUNDARY + r"(?=[A-Z0-9\"“])|\n+")
@@ -50,7 +51,8 @@ def us_only_problems(sections: list[dict]) -> list[str]:
             continue
         for p in s["paragraphs"]:
             for sentence in _sentences(p):
-                names = {m.group(0).lower() for m in _OTHER_RE.finditer(sentence)}
+                # a U.S. state is the U.S. ("New Mexico" is not Mexico)
+                names = {m.group(0).lower() for m in _OTHER_RE.finditer(us_states.STATE_RE.sub(" ", sentence))}
                 if _NORTH_AMERICA_RE.search(sentence) and not _US_RE.search(re.sub(_NORTH_AMERICA_RE, " ", sentence)):
                     names.add("north america")
                 if names:

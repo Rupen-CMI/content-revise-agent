@@ -35,6 +35,7 @@ import httpx
 import trafilatura
 
 import search
+import us_states
 import sections
 import sources
 
@@ -643,6 +644,16 @@ def gather(
 
 
 _US_GNEWS_RESOLVE = 8   # U.S.-query hits whose links are decoded; the rest of the batch is dropped
+_US_THIN_HEADLINES = 3  # fewer U.S.-naming headlines than this and the state-level queries run too
+_US_WORDS_RE = re.compile(r'"|\bU\.S\.|\bUSA\b|\bUS\b|(?i:\bunited states\b)|\bAmerican\b')
+
+
+def us_state_queries(us_queries: list[str]) -> list[str]:
+    """State-level queries for the U.S. section when U.S.-wide news is thin: the shortest U.S. query without its U.S. words,
+    then a few large states joined by OR (Google News reads OR)."""
+    bases = [" ".join(_US_WORDS_RE.sub(" ", q).split()) for q in us_queries]
+    base = min((b for b in bases if b), key=len, default="")
+    return [f"{base} {' OR '.join(group)}" for group in us_states.QUERY_STATE_GROUPS] if base else []
 
 
 def _us_gnews_hits(queries: list[str], query_sections: dict[str, list[str]] | None, logger: logging.Logger) -> list[search.SearchHit]:
@@ -661,8 +672,20 @@ def _us_gnews_hits(queries: list[str], query_sections: dict[str, list[str]] | No
                     h.add_sections(query_sections[q.lower()])
                     hits.append(h)
         names_us = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican\b")
-        hits.sort(key=lambda h: not names_us.search(f"{h.title} {h.snippet}"))   # stable: the engine's order within each group
-        return resolve_hits(hits[:_US_GNEWS_RESOLVE], logger)
+        resolve = _US_GNEWS_RESOLVE
+        if sum(1 for h in hits if names_us.search(f"{h.title} {h.snippet}")) < _US_THIN_HEADLINES:
+            # U.S.-wide news is thin: ask about the largest states too (a state's own development is U.S. evidence)
+            tags = query_sections[us_qs[0].lower()]
+            state_qs = us_state_queries(us_qs)
+            for q in state_qs:
+                for h in gnews.search(q):
+                    h.add_sections(tags)
+                    hits.append(h)
+            resolve += 4
+            logger.info(f"[us-search] few U.S.-wide headlines; state-level queries added: {state_qs}")
+        # stable: the engine's order within each group; a headline naming the U.S. or one of its states first
+        hits.sort(key=lambda h: not (names_us.search(f"{h.title} {h.snippet}") or us_states.STATE_RE.search(f"{h.title} {h.snippet}")))
+        return resolve_hits(hits[:resolve], logger)
     except Exception:
         logger.warning("[gnews] the U.S. queries failed", exc_info=True)
         return []

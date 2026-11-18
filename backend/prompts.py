@@ -502,7 +502,8 @@ integration, an expansion into the market. A recognition (an award, a ranking, a
 (an appointment, a departure, a leadership reshuffle) does not earn it, however concrete the company and its name \
 are: the key-players section exists to show what each player does, how it competes, how it changes the market, what \
 buyers and its rivals now face — so select such a fact under another section's tag only, or not at all. Use "us" \
-only for a fact specifically about the U.S. market. The article needs three distinct \
+only for a fact specifically about the U.S. market; a fact about one U.S. state (Texas, California, New York, ...) \
+is a U.S. fact too. The article needs three distinct \
 market trends, each examined in depth and so backed by two or three facts (prefer a named organisation, study, launch, policy or deal with its date and its figure; the three trends must differ from one another, so where the results allow it the trends facts span different directions, such as technology or product change, buyer demand and adoption, and investment or competitive moves), a U.S. paragraph, and a key-players section, so when the results allow it, make sure your selection \
 gives each of those a real supply of facts — do not label every fact the same way just because they all name a company.
 {section_rules}
@@ -593,7 +594,8 @@ competitive dynamic) — not the market's own size/growth figure.
 - subsegment: a specific named sub-segment's growth, adoption pattern, application or contribution — name the actual \
 sub-segment the report names, not a generic "segments are growing" statement.
 - country_us: a specific U.S.-market factor, driver, adoption pattern or development — specific to the U.S., not a \
-restatement of the global figure.
+restatement of the global figure. A development in one U.S. state (a Texas program, a California rule, a New York \
+launch) counts: it shows the U.S. market at state level.
 
 Each extracted claim must be:
 1. Specific and checkable: a real statement with a subject and a concrete assertion, not a vague generality and not a \
@@ -1612,7 +1614,7 @@ An opening from the guest article's subject, a short transition into the market,
 2. trends: what is changing the market, as three distinct trends, each examined in depth: what is happening, how it changes demand in this market and what it means commercially.
 3. segmentation: how the market divides and why the leading category in each split leads.
 4. subsegment: the top two sub-segments of one segment split, each looked at in detail (a second split only when the report states no second category for the first).
-5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context.
+5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context. A fact about one U.S. state belongs here: the section names the state and presents it as part of the U.S. market, never as the whole country.
 6. key_players: who leads the market.
 7. conclusion: what it all means and where the market is heading. It adds nothing new: it pulls together points already made, so it gets no facts of its own (an opportunity fact from the report is the only exception).
 
