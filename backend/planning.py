@@ -71,6 +71,9 @@ _SECTION_SOP = {"trends": "trends", "subsegment": "subsegment", "segmentation": 
 # empty section or an editor placeholder. A fact of these kinds may then sit in the U.S. section AND in the section that normally
 # holds it. The regions are left out of the pool: they name other regions and countries, which the U.S. section must never do.
 _US_MIN_FACTS = 2
+# With too few U.S. facts, North America is the next level up: a fact naming North America or Canada (a report region statement,
+# a news item) makes the section a North America analysis. Only when none exists is it written from the report's own facts.
+_NA_TEXT_RE = re.compile(r"\bnorth(?:ern)? americ(?:a|an)\b|\bcanad(?:a|ian)\b", re.I)
 _US_REPORT_KINDS = ("us", "drivers", "opportunities", "segments", "segment_drivers", "size", "forecast", "cagr", "players")
 
 
@@ -97,7 +100,7 @@ _TOPIC_RES = {
     "trends": re.compile(r"trend", re.I),
     "segmentation": re.compile(r"segment", re.I),
     "subsegment": re.compile(r"sub-?\s?segment", re.I),
-    "country_us": re.compile(r"\bu\.s\b|\bus\b|united states|country", re.I),
+    "country_us": re.compile(r"\bu\.s\b|\bus\b|united states|country|north america", re.I),
     "key_players": re.compile(r"key players?|players|participants|companies", re.I),
     "conclusion": re.compile(r"conclusion|outlook|takeaway", re.I),
 }
@@ -479,7 +482,7 @@ def topic_clusters(items: dict[str, dict]) -> dict[str, int]:
 
 # --------------------------------------------------------------------------------------------- validate and repair
 
-_REGION_SPLIT_RE = re.compile(r"region|geograph|countr|area|location", re.I)
+_REGION_SPLIT_RE = re.compile(r"region|geograph|countr|\barea\b|location", re.I)
 
 
 def _is_region_split(name: str) -> bool:
@@ -815,6 +818,16 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
     # fact is stated twice), so they are not marked used.
     us_section["us_source"] = "news"
     if len(us_fact_ids(us_section["facts"], inp.items)) < _US_MIN_FACTS:
+        na = [f for f, it in inp.items.items()
+              if f not in us_section["facts"] and not it.get("auto") and _NA_TEXT_RE.search(it.get("text") or "")]
+        na.sort(key=lambda f: f in used_facts)
+        na = na[:max(0, _FACTS_MAX["country_us"] - len(us_section["facts"]))]
+        if na:
+            us_section["facts"] += na
+            us_section["us_source"] = "north_america"
+            repair(f"country_us: fewer than {_US_MIN_FACTS} U.S. facts exist, so the section is a North America analysis "
+                   f"built on the North America facts ({', '.join(na)})")
+    if us_section["us_source"] == "news" and len(us_fact_ids(us_section["facts"], inp.items)) < _US_MIN_FACTS:
         rank = {k: n for n, k in enumerate(_US_REPORT_KINDS)}
         pool = [f for f, it in inp.items.items()
                 if it["kind"] in rank and f not in us_section["facts"] and not it.get("auto")
@@ -873,6 +886,13 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
         by_sop[best["section"]]["msq"] = best["id"]
         used_q.add(best["id"])
         repair(f"{best['section']}: fewer than {HEADING_QUESTIONS_MIN} question headings; {best['id']} was promoted to a heading")
+
+    if us_section.get("us_source") == "north_america":
+        if us_section["msq"]:
+            repair(f"country_us: question {us_section['msq']} asks about the U.S.; the section covers North America, so it moves to the FAQ")
+            used_q.discard(us_section["msq"])
+            us_section["msq"] = None
+        us_section["heading"] = f"North America {inp.market_name} Analysis"
 
     # ---- headings
     question_texts = {q["question"].lower() for q in inp.questions}
@@ -1007,7 +1027,8 @@ def validate_plan(raw, inp: PlanInputs, logger: logging.Logger) -> dict:
             # The section is about the United States and nothing else. With enough U.S. facts it rests on them; with fewer it
             # is written from the report's own facts, framed for the U.S. (with none, as a qualitative analysis of the market),
             # never filled with another region's picture and never left to an editor.
-            s["length"] = "us_from_report" if s.get("us_source") == "report" or not us_fact_ids(s["facts"], inp.items) else "normal"
+            s["length"] = ("na_analysis" if s.get("us_source") == "north_america"
+                           else "us_from_report" if s.get("us_source") == "report" or not us_fact_ids(s["facts"], inp.items) else "normal")
     budgets = compute_budgets(
         inp.sponsor_words, {s["sop"]: s["length"] for s in sections},
         {s["sop"]: len([f for f in s["facts"] if f != "fs.players"]) + (1 if "fs.players" in s["facts"] else 0) for s in sections})

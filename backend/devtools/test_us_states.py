@@ -43,6 +43,12 @@ problems = content_rules.us_only_problems(sec)
 check("U.S.-only check: New Mexico is a state, plain Mexico is still another country",
       len(problems) == 1 and "Demand in Mexico" in problems[0], str(problems))
 
+na = [{"heading": "North America Direct Mail Retargeting Market Analysis", "sop": ["country_us"],
+       "paragraphs": ["North America holds 36% of the market, and Canada and the United States lead adoption.", "Demand in Europe grew."]}]
+problems = content_rules.us_only_problems(na)
+check("North America section: North America and Canada pass, a region outside it is still flagged",
+      len(problems) == 1 and "Europe" in problems[0], str(problems))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

@@ -38,10 +38,11 @@ _DETAIL_CHARS = 300
 _SHAPES = {
     "report_context": 'One or two paragraphs. It states every listed headline figure as its fact gives it: the market size with its year, the forecast value with its year and the growth rate with its period, then the leading and the fastest-growing region where they are listed. It says where the market is heading only as far as the listed facts show.',
     "trends": 'A list "paragraphs" of exactly 13 plain-text entries, in this order. Entry 1: a lead-in paragraph of 30 to 45 words that names the market by its full name, states the three trends in one sentence and says in one sentence what they change together. Then, for each of three distinct trends, four entries: first a sub-heading entry, the string "### " followed by the trend\'s heading (6 to 12 words that state the consequence for this market, for example what is raising demand for what; never a bare label, never a question); then three paragraphs of 35 to 55 words each. Paragraph one: the development itself, anchored in a listed fact: name the organisation, study, launch or event, give its date, and state its figure and its limits (scope, sample, stage) as the fact states them. Paragraph two: the mechanism: how the development changes demand, adoption or competition in this market, tied to a listed driver or segment where one is given. Paragraph three: the commercial implication: what providers, buyers or investors in this market can do or should expect, framed as inference from the facts above and adding no new fact. A trend with few listed facts keeps all three paragraphs by reasoning more fully from what its facts show, never by adding a fact. The section ends with the third trend\'s third paragraph: no closing or summary paragraph, and no bullets anywhere in the section.',
-    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type. Each line gives one segment type and its categories, with your own connective words between the categories and never the report\'s own list wording. Where a listed fact names the category that leads that type, or gives a category\'s share or value, the same line states that leading category with its figure, as the fact gives it, and adds one clause on why it leads (the driver, the shift in demand or the adoption behind it) where a listed fact supports that reason; where no listed fact does, the line adds no reason and no figure. The lead-in does not say what the segmentation lets anyone see or do. Nothing else.',
+    "segmentation": 'One paragraph string: a lead-in sentence that uses the word "segmentation" or "segments", names the market in that same sentence as the thing the segmentation divides, and states that segmentation directly, with the report as its actor, saying how many segment types the report uses, in your own words, then one line starting with "\\n- " per segment type, one line for EVERY segment type listed (none left out). Each line gives one segment type and ALL of its categories, every category named, with your own connective words between the categories and never the report\'s own list wording. Where a listed fact names the category that leads that type, or gives a category\'s share or value, the same line states that leading category with its figure, as the fact gives it, and adds one clause on why it leads (the driver, the shift in demand or the adoption behind it) where a listed fact supports that reason; where no listed fact does, the line adds no reason and no figure. The lead-in does not say what the segmentation lets anyone see or do. Nothing else.',
     "subsegment": 'Two entries in "paragraphs", each an object {{"segment": "<split>", "sub_segment": "<category>", "paragraph": "<text>"}}, for the two sub-segments named below, in that order. Each paragraph looks at its one sub-segment: it states the sub-segment\'s listed share or value with its year and says that it leads its split where a fact says so, then explains the growth drivers behind it, the demand pattern, the adoption trend and why the sub-segment dominates or grows, reasoning from the listed facts (the mechanism, the buyer, the use) and, where the facts say little about this sub-segment, from the market\'s own drivers that apply to it; no figure or company detail is added that no listed fact states. The section names the market\'s full name at least once, and every paragraph ties its sub-segment back to the market.',
     "country_us": 'Prose in one or two short paragraphs, or a lead-in sentence followed by "\\n- " lines when each line rests on its own listed fact. It covers the United States and only the United States: its demand, adoption, drivers and developments as the listed facts give them, in 100 to 200 words in all. Name no other region or country anywhere in the section, not even for comparison; fewer than 100 words is a miss, so carry the U.S. picture with the listed facts plus your own analytical sentences about what it means for providers and buyers in the U.S.',
     "us_from_report": 'Prose in one or two short paragraphs, 100 to 200 words in all, about the United States and only the United States. The listed facts are the report\'s own statements, drivers and opportunities, so the section opens with the report\'s U.S. statements where listed, then turns each driver, opportunity or leading segment into what it means for U.S. demand, adoption, buyers and providers, as inference from that fact. Put every fact in your own words, completely: a different sentence structure and different wording, never a phrase copied from the fact. A figure appears only where a listed fact states it, and no U.S. figure is ever added. Name no other region or country anywhere in the section, not even for comparison, and never say that U.S. data is missing or was not found. Where no fact is listed at all, the section is a qualitative U.S. analysis reasoned from the market itself (who buys, what drives adoption, how providers compete), with no figure. A headline figure listed here is the whole market\'s, never a U.S. figure: where one is listed it is stated as the market\'s, never as the United States\'.',
+    "na_analysis": 'Prose in one or two short paragraphs, 100 to 200 words in all, about North America: the United States and Canada. Little U.S.-only data exists for this market, so the section analyses the North American market, opening with the listed North America facts (its share, its position, its developments) and then what they mean for demand, adoption, buyers and providers in the United States and Canada. Put every fact in your own words, completely. A figure appears only where a listed fact states it; a North America figure is stated as North America\'s, never as the United States\' alone. Name no region outside North America, and never say that U.S. data is missing or was not found.',
     "key_players": 'Two entries in "paragraphs", both prose with no bullet lines. First: a short passage that names all of the report\'s companies together in its opening sentence and says how crowded or concentrated the field is. Second: for each company that has a listed fact, one or two complete sentences naming that company and saying what it did through its own action and what that changes for buyers and for the rest of the market; a company with no listed fact appears only in the first entry\'s naming sentence and is never given a detail the facts do not supply. Every company appears inside a complete sentence that names it: no label fragment that splits a company\'s name away from its sentence, and no bullet lines for companies.',
     "key_players_names_only": 'Two entries in "paragraphs", both prose with no bullets. First: a short passage on how crowded or concentrated the field is, naming the companies the facts name together in its opening sentence, using only what the listed facts say. Second: here no company has a listed fact, so the companies stay named together in one or two complete sentences; never give a company a detail the facts do not supply.',
     "conclusion": 'One paragraph that pulls the post together using only points already made. It contains no digits at all: it refers back to earlier numbers in words (the forecast above, the growth rate stated earlier) and puts no label of its own on the pace ("modest", "rapid", "steady", "strong"), because the figures already say it. It uses the market\'s full name once, inside a sentence about the market itself, never a sentence about the name. It restates no fact, region, segment or company from the sections above, not even in other words: it looks ahead. Its last sentence is the CMI analyst\'s view.',
@@ -132,6 +133,10 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
     if s["length"] == "short" and s["sop"] != "trends":
         rows.append("This section has few facts: state them exactly and add the analysis they support (what they mean for buyers and providers "
                     "in this market) without adding a fact. It may land under the budget.")
+    elif s["length"] == "na_analysis":
+        rows.append("Little U.S.-only data was found for this market, so this section is a North America analysis (the United States "
+                    "and Canada), written from the North America facts listed below and what they mean for buyers and providers there. "
+                    "Rephrase every fact fully in your own words; add no figure that no listed fact states; name no region outside North America.")
     elif s["length"] == "us_from_report":
         rows.append("Little verified U.S. data was found for this market, so this section is written from the market's own facts listed below "
                     "(its U.S. statements first, then its drivers, opportunities and leading segments), each framed as what it means for U.S. demand, "
@@ -139,7 +144,7 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
                     "add no U.S. figure that no listed fact states; name no other region or country (no North America, no Europe, no Asia). "
                     "With no fact listed, reason qualitatively from the market itself and add no figure.")
     facts_rows = [_fact_text(inp.items[f]) for f in s["facts"]]
-    if s["length"] == "us_from_report":     # a headline figure here is the market's own, so the section is never obliged to state it
+    if s["length"] in ("us_from_report", "na_analysis"):     # a headline figure here is the market's own, so the section is never obliged to state it
         facts_rows = [r.replace(" [REQUIRED: state this figure in the section]", "") for r in facts_rows]
     if s["sop"] == "trends" and s.get("trend_groups"):
         parts = []
@@ -169,7 +174,7 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
     if s["snippet"]:
         rows.append(f'Guest example (optional, at most one sentence, only if it makes the point clearer): "{points[s["snippet"]]}"')
     names_only = s["sop"] == "key_players" and not any(inp.items[f]["kind"] == "evidence" for f in s["facts"])
-    shape = "us_from_report" if s["length"] == "us_from_report" else "key_players_names_only" if names_only else s["sop"]
+    shape = s["length"] if s["length"] in ("us_from_report", "na_analysis") else "key_players_names_only" if names_only else s["sop"]
     rows.append("SHAPE: " + _shape_text(shape, getattr(inp, "link_report", True)))
     return "\n".join(rows)
 
@@ -831,6 +836,43 @@ def strip_repeat_evidence(sections: list[dict], inp: planning.PlanInputs, logger
     return keep_emptied_sections(sections, logger)
 
 
+def _and_list(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def ensure_segment_names(sections: list[dict], inp: planning.PlanInputs, logger: logging.Logger) -> list[dict]:
+    """Every category of every segment split is named in the segmentation section (SOP). A split the writer left out gets a line
+    of its own; a split whose line misses categories has them added to that line. Names are matched the way the report-figures
+    check matches them (checks._category_words), so what this repairs is what that check reads."""
+    import checks
+    sec = next((s for s in sections if s.get("sop") and s["sop"][0] == "segmentation"), None)
+    if sec is None or not inp.segments:
+        return sections
+    idx = next((i for i, p in enumerate(sec["paragraphs"]) if isinstance(p, str) and "\n- " in p),
+               next((i for i, p in reversed(list(enumerate(sec["paragraphs"]))) if isinstance(p, str)), None))
+    if idx is None:
+        return sections
+    seen = checks._stems(" ".join(p for s in sections if s.get("sop") and s["sop"][0] in ("segmentation", "subsegment")
+                                  for p in s["paragraphs"] if isinstance(p, str)))
+    lines = sec["paragraphs"][idx].split("\n")
+    for seg in inp.segments:
+        missing = [c for c in seg["items"] if checks._category_stems(c) and not checks._category_stems(c) <= seen]
+        if not missing:
+            continue
+        label = re.sub(r"^\s*by\s+", "", seg["type"], flags=re.I).strip() or seg["type"]
+        type_words = checks._category_stems(label)
+        at = next((i for i, l in enumerate(lines) if l.startswith("- ") and type_words and type_words <= checks._stems(l)), None)
+        if at is None:
+            lines.append(f"- By {label}: {_and_list(seg['items'])}.")
+            logger.info(f"[segments] the segmentation section left out the split {seg['type']!r}; a line naming its categories was added")
+        else:
+            lines[at] = lines[at].rstrip().rstrip(".") + f"; the split also covers {_and_list(missing)}."
+            logger.info(f"[segments] the {seg['type']!r} line missed {missing}; they were added to it")
+        seen |= {w for c in seg["items"] for w in checks._category_stems(c)}
+    sec["paragraphs"][idx] = "\n".join(lines)
+    return sections
+
+
 def enforce_trend_shape(sections: list[dict], logger: logging.Logger) -> list[dict]:
     """The trends section is a lead-in and three trends of three paragraphs each (the SOP's shape). A model sometimes writes a
     fourth trend, a fourth paragraph or a closing summary: the extras are cut here and logged. A section with fewer than
@@ -1033,7 +1075,8 @@ def _refill_block(ps: dict, inp: planning.PlanInputs, ids: list[str]) -> tuple[s
     """(the section's block from the write prompt, built over `ids`; the extra instruction for the section). The section block is the
     write prompt's own, so the voice, keyword and shape rules stay one set."""
     sop = ps["sop"]
-    length = "us_from_report" if sop == "country_us" and ps.get("length") != "normal" else ps.get("length", "normal")
+    length = (ps["length"] if sop == "country_us" and ps.get("length") == "na_analysis"
+              else "us_from_report" if sop == "country_us" and ps.get("length") != "normal" else ps.get("length", "normal"))
     s = {**ps, "facts": ids, "length": length, "words": ps.get("words", 120)}
     points = {p["id"]: p["text"] for p in inp.points}
     extra = ""
@@ -1137,6 +1180,7 @@ def run_write_v2(
     sections = refill_empty_sections(sections, plan, inp, report, logger, allowed_text)
     sections = strip_reader_filler(sections, logger)
     sections = enforce_trend_shape(sections, logger)
+    sections = ensure_segment_names(sections, inp, logger)
     if not any(s["sop"] and s["sop"][0] in planning.ORDER for s in sections):
         raise RuntimeError("the writer returned no market sections")
     title = _plain(plan["title"])

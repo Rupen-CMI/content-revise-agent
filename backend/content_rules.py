@@ -20,6 +20,7 @@ _OTHER_REGIONS = (
 )
 _OTHER_RE = re.compile(r"(?<![a-z])(?:" + "|".join(re.escape(r) for r in sorted(_OTHER_REGIONS, key=len, reverse=True)) + r")(?![a-z])", re.I)
 _NORTH_AMERICA_RE = re.compile(r"north america", re.I)
+_NA_COUNTRIES_RE = re.compile(r"\b(?:canad(?:a|ian)|mexic(?:o|an))\b", re.I)
 _US_RE = re.compile(r"\bU\.S\.?|\bUSA\b|\bUS\b|(?i:united states)|\bAmerican\b")
 
 _STOP = frozenset({
@@ -49,8 +50,12 @@ def us_only_problems(sections: list[dict]) -> list[str]:
     for s in sections:
         if not _is_us(s):
             continue
+        # a North America analysis (the fallback when U.S. data is thin) may name North America and its countries
+        north_america = bool(_NORTH_AMERICA_RE.search(s.get("heading") or ""))
         for p in s["paragraphs"]:
             for sentence in _sentences(p):
+                if north_america:
+                    sentence = _NA_COUNTRIES_RE.sub(" ", _NORTH_AMERICA_RE.sub(" ", sentence))
                 # a U.S. state is the U.S. ("New Mexico" is not Mexico)
                 names = {m.group(0).lower() for m in _OTHER_RE.finditer(us_states.STATE_RE.sub(" ", sentence))}
                 if _NORTH_AMERICA_RE.search(sentence) and not _US_RE.search(re.sub(_NORTH_AMERICA_RE, " ", sentence)):

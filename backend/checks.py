@@ -1469,6 +1469,17 @@ def _category_words(name: str) -> set[str]:
     return {w for w in facts._norm(name).split() if w not in _CATEGORY_FILLER and len(w) > 1}
 
 
+def _stems(text: str) -> set[str]:
+    """The stemmed words of a text ("enterprises" and "enterprise" read the same)."""
+    import facts
+    return {facts._stem(w) for w in facts._norm(text).split()}
+
+
+def _category_stems(name: str) -> set[str]:
+    import facts
+    return {facts._stem(w) for w in _category_words(name)}
+
+
 def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
     """The market's main CMI figures reach the article: the size, forecast and growth rate, every stated segment share and
     value, every segment split's categories and its leading category. A figure counts when its number is in the market
@@ -1481,7 +1492,7 @@ def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
     market_numbers = _fact_numbers(market)
     seg_text = facts._norm(" ".join(p for s in sections if s.get("sop") and s["sop"][0] in ("segmentation", "subsegment")
                                     for p in s["paragraphs"]))
-    seg_words = set(seg_text.split())
+    seg_words = {facts._stem(w) for w in seg_text.split()}
     out: list[str] = []
     for fid, it in inp.items.items():
         if it["kind"] not in ("size", "forecast", "cagr", "segment_item"):
@@ -1493,19 +1504,18 @@ def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
         if missing:
             out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the article")
     for seg in inp.segments:
-        absent = [c for c in seg["items"] if _category_words(c) and not _category_words(c) <= seg_words]
+        absent = [c for c in seg["items"] if _category_stems(c) and not _category_stems(c) <= seg_words]
         if absent:
             out.append(f"segmentation by {seg['type']}: {', '.join(absent)} not named in the segmentation or sub-segment text")
         dom = seg.get("dominant")
-        if dom and _category_words(dom["name"]) and not _category_words(dom["name"]) <= seg_words:
+        if dom and _category_stems(dom["name"]) and not _category_stems(dom["name"]) <= seg_words:
             out.append(f"segmentation by {seg['type']}: the leading category {dom['name']} is not named")
     return out
 
 
 def v2_trend_shape_problems(sections: list[dict]) -> list[str]:
-    """The trends section is a lead-in paragraph, then three trends, each a sub-heading followed by three paragraphs, the
-    first of which carries a figure or a year (the dated development the trend rests on). Reads the sections WITH their
-    sub-headings."""
+    """The trends section is a lead-in paragraph, then three trends, each a sub-heading followed by three paragraphs. Reads the
+    sections WITH their sub-headings. (A trend need not open with a figure or a year: dropped from the SOP 2026-11-18.)"""
     sec = next((s for s in sections if "trends" in (s.get("sop") or [])), None)
     if sec is None:
         return ["there is no trends section"]
@@ -1518,8 +1528,6 @@ def v2_trend_shape_problems(sections: list[dict]) -> list[str]:
     for i, (heading, paras) in enumerate(blocks, 1):
         if len(paras) != subheads.PARAGRAPHS_PER_TREND:
             out.append(f"trend {i} ({heading[:50]!r}) has {len(paras)} paragraph(s), not {subheads.PARAGRAPHS_PER_TREND}")
-        elif not re.search(r"\d", paras[0]):
-            out.append(f"trend {i} ({heading[:50]!r}) opens with no figure or year to anchor it")
     return out
 
 
