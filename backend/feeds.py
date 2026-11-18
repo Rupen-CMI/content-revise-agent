@@ -648,11 +648,23 @@ _US_THIN_HEADLINES = 3  # fewer U.S.-naming headlines than this and the state-le
 _US_WORDS_RE = re.compile(r'"|\bU\.S\.|\bUSA\b|\bUS\b|(?i:\bunited states\b)|\bAmerican\b')
 
 
+def _on_topic(hit: search.SearchHit, us_queries: list[str]) -> bool:
+    """The hit's title or snippet carries one of the U.S. queries' own content words (not the U.S. words, not 'market')."""
+    words = {w for q in us_queries for w in re.findall(r"[a-z][a-z-]{3,}", _US_WORDS_RE.sub(" ", q).lower())}
+    words -= {"market", "markets", "industry", "adoption", "demand", "companies", "investment", "federal", "policy",
+              "expansion", "announced", "growth", "united", "states"}
+    text = f"{hit.title} {hit.snippet}".lower()
+    return any(w in text for w in words)
+
+
 def us_state_queries(us_queries: list[str]) -> list[str]:
     """State-level queries for the U.S. section when U.S.-wide news is thin: the shortest U.S. query without its U.S. words,
     then a few large states joined by OR (Google News reads OR)."""
     bases = [" ".join(_US_WORDS_RE.sub(" ", q).split()) for q in us_queries]
-    base = min((b for b in bases if b), key=len, default="")
+    bases = [b for b in bases if b]
+    # the words every U.S. query shares (the market's own, in order: "direct mail retargeting"), else the shortest query
+    shared = [w for w in bases[0].split() if all(w.lower() in b.lower().split() for b in bases)] if bases else []
+    base = " ".join(shared) if len(shared) >= 2 else min(bases, key=len, default="")
     return [f"{base} {' OR '.join(group)}" for group in us_states.QUERY_STATE_GROUPS] if base else []
 
 
@@ -671,18 +683,22 @@ def _us_gnews_hits(queries: list[str], query_sections: dict[str, list[str]] | No
                 for h in gnews.search(q):
                     h.add_sections(query_sections[q.lower()])
                     hits.append(h)
-        names_us = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican\b")
-        resolve = _US_GNEWS_RESOLVE
-        if sum(1 for h in hits if names_us.search(f"{h.title} {h.snippet}")) < _US_THIN_HEADLINES:
-            # U.S.-wide news is thin: ask about the largest states too (a state's own development is U.S. evidence)
-            tags = query_sections[us_qs[0].lower()]
-            state_qs = us_state_queries(us_qs)
-            for q in state_qs:
-                for h in gnews.search(q):
-                    h.add_sections(tags)
-                    hits.append(h)
-            resolve += 4
-            logger.info(f"[us-search] few U.S.-wide headlines; state-level queries added: {state_qs}")
+            names_us = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican\b")
+            resolve = _US_GNEWS_RESOLVE
+            # thin = few headlines that name the U.S. AND the market's own words AND are recent enough to survive the stale
+            # filter (a U.S. headline on trade or politics, or a years-old one, is no U.S. evidence for this market)
+            fresh_after = datetime.now(timezone.utc) - search._MAX_NEWS_AGE
+            if sum(1 for h in hits if names_us.search(f"{h.title} {h.snippet}") and _on_topic(h, us_qs)
+                   and (h.date is None or h.date >= fresh_after)) < _US_THIN_HEADLINES:
+                # U.S.-wide news is thin: ask about the largest states too (a state's own development is U.S. evidence)
+                tags = query_sections[us_qs[0].lower()]
+                state_qs = us_state_queries(us_qs)
+                logger.info(f"[us-search] few recent U.S.-wide headlines; state-level queries added: {state_qs}")
+                for q in state_qs:
+                    for h in gnews.search(q):
+                        h.add_sections(tags)
+                        hits.append(h)
+                resolve += 4
         # stable: the engine's order within each group; a headline naming the U.S. or one of its states first
         hits.sort(key=lambda h: not (names_us.search(f"{h.title} {h.snippet}") or us_states.STATE_RE.search(f"{h.title} {h.snippet}")))
         return resolve_hits(hits[:resolve], logger)

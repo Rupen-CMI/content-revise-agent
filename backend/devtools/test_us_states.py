@@ -33,6 +33,10 @@ check("state queries: the market words without the U.S. words, then states joine
       qs and qs[0] == 'direct mail retargeting Texas OR California OR Florida OR "New York"' and len(qs) == 2, str(qs))
 check("state queries: nothing to build from -> none", feeds.us_state_queries(["United States"]) == [])
 
+q = ["US direct mail retargeting market"]
+check("thin U.S. news: an off-topic U.S. headline is not U.S. evidence for this market",
+      not feeds._on_topic(hit("U.S. allies on edge as Trump heads to summit"), q) and feeds._on_topic(hit("US brands boost direct mail spend"), q))
+
 sec = [{"heading": "Direct mail retargeting in the United States", "sop": ["country_us"],
         "paragraphs": ["Brands in New Mexico and Texas mailed more postcards in 2026.", "Demand in Mexico grew."]}]
 problems = content_rules.us_only_problems(sec)

@@ -50,7 +50,9 @@ check("questions: an unknown kind is dropped", demand.normalize_questions([q("pr
 check("questions: a question that does not name the market is dropped",
       demand.normalize_questions([q("trends", "What is changing in widgets right now?")], MARKET, LOG) == [])
 check("questions: a definition is dropped", demand.normalize_questions([q("size", "What is the Zzz Widget Services Market?")], MARKET, LOG) == [])
-check("questions: too short is dropped", demand.normalize_questions([q("size", "Zzz widget services size?")], MARKET, LOG) == [])
+check("questions: a search phrase posing as a question is rebuilt as its kind's question",
+      [x["question"] for x in demand.normalize_questions([q("size", "Zzz widget services size?")], MARKET, LOG)]
+      == ["How big is the zzz widget services market?"])
 check("questions: too long is dropped",
       demand.normalize_questions([q("size", "How big is the Zzz Widget Services Market " + "and so on " * 8 + "?")], MARKET, LOG) == [])
 check("questions: a missing question mark is added",
@@ -248,7 +250,7 @@ _q = demand.normalize_questions([{"intent": "us", "question": "cosmeceuticals ma
                                  {"intent": "region", "question": "which region leads the cosmeceuticals market in north america"}],
                                 "Cosmeceuticals Market", _logging.getLogger("t"))
 check("questions: place names are capitalised ('United States', 'North America')",
-      [q["question"] for q in _q] == ["Which region leads the cosmeceuticals market in North America?", "Cosmeceuticals market in the United States?"],
+      [q["question"] for q in _q] == ["Which region leads the cosmeceuticals market in North America?", "How is the cosmeceuticals market performing in the US?"],
       str([q["question"] for q in _q]))
 
 print()
