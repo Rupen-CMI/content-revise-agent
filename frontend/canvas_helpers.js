@@ -56,3 +56,33 @@ export function wordCount(text) {
 }
 
 export const segmentsText = (segs) => (segs || []).map((s) => s.text).join("");
+
+// Word-level difference between two texts, for the suggestion view: [{op: "same"|"del"|"ins", text}], in reading order.
+// Tokens are words with their trailing spaces, compared by longest common subsequence (a paragraph is a few hundred
+// tokens at most, so the table stays small).
+export function wordDiff(before, after) {
+  const tok = (s) => (s || "").match(/\S+\s*|\s+/g) || [];
+  const a = tok(before), b = tok(after);
+  const key = (t) => t.trim();
+  const n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      L[i][j] = key(a[i]) === key(b[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    }
+  }
+  const out = [];
+  const push = (op, text) => {
+    const last = out[out.length - 1];
+    if (last && last.op === op) last.text += text; else out.push({ op, text });
+  };
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (key(a[i]) === key(b[j])) { push("same", b[j]); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) push("del", a[i++]);
+    else push("ins", b[j++]);
+  }
+  while (i < n) push("del", a[i++]);
+  while (j < m) push("ins", b[j++]);
+  return out;
+}

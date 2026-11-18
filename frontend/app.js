@@ -1,4 +1,4 @@
-import { trimSelection, parseSource, partsToText, linkProblems } from "./canvas_helpers.js";
+import { trimSelection, parseSource, partsToText, linkProblems, wordDiff } from "./canvas_helpers.js";
 
 // ---------------------------------------------------------------- config
 // Default to the page's OWN origin, not a hardcoded hostname: the frontend is served by the same
@@ -2610,6 +2610,13 @@ function canvasSegsHtml(segs) {
     : escapeHtml(s.text))).join("");
 }
 
+// The suggestion as one paragraph: unchanged words plain, removed words struck through, added words highlighted.
+function canvasDiffHtml(before, after) {
+  const text = (segs) => (segs || []).map((x) => x.text).join("");
+  return wordDiff(text(before), text(after)).map((d) => (d.op === "same" ? escapeHtml(d.text)
+    : `<span class="canvas-${d.op === "del" ? "del" : "ins"}">${escapeHtml(d.text)}</span>`)).join("");
+}
+
 // 409 = the draft moved on under this page; 400/422 carry a sentence the editor can act on.
 function canvasFail(err, el) {
   const text = err.status === 409 ? "The draft changed. Reload the page."
@@ -2756,8 +2763,7 @@ function paintPending() {
   block.innerHTML = `
     <div class="canvas-pending-head"><strong>Suggested change</strong>
       <span class="canvas-wc">${data.words_before} &rarr; ${data.words_after} words</span></div>
-    <p class="canvas-del">${canvasSegsHtml(data.before)}</p>
-    <p class="canvas-ins">${canvasSegsHtml(data.after)}</p>
+    <p class="canvas-diff">${canvasDiffHtml(data.before, data.after)}</p>
     ${data.note ? `<div class="canvas-note">${escapeHtml(data.note)}</div>` : ""}
     <p class="canvas-error" hidden></p>
     <div class="btn-row">

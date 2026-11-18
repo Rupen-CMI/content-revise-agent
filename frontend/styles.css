@@ -1710,6 +1710,8 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .canvas-wc { color: var(--text-muted); font-size: 12.5px; }
 .canvas-del { background: var(--danger-soft); text-decoration: line-through; text-decoration-color: var(--danger); border-radius: var(--radius-sm); padding: 6px 8px; }
 .canvas-ins { background: var(--success-soft); border-radius: var(--radius-sm); padding: 6px 8px; }
+.canvas-diff { line-height: 1.7; }
+.canvas-diff .canvas-del, .canvas-diff .canvas-ins { padding: 1px 2px; }
 .canvas-note {
   margin: 8px 0;
   padding: 8px 10px;
