@@ -131,8 +131,13 @@ for para in [run.sections[0]["paragraphs"][1], f"A {CMI} then {prompts.SPONSOR_T
     d, _ = canvas.display_map(para, run.sponsor)
     check(f"display: matches expand_segments for {para[:30]!r}", d == "".join(t for t, _ in pipeline.expand_segments(para, run.sponsor, None)))
 
-sel = canvas.locate(run, tpara(2, 1), 10, 20, run.sections[2]["paragraphs"][1][10:20])
-check("locate: plain words map one to one", sel.selected_raw == run.sections[2]["paragraphs"][1][10:20] and not sel.atoms)
+_p = run.sections[2]["paragraphs"][1]
+_w0 = _p.index(" ", 5) + 1
+_w1 = _p.index(" ", _w0 + 1)
+sel = canvas.locate(run, tpara(2, 1), _w0, _w1, _p[_w0:_w1])
+check("locate: plain words map one to one", sel.selected_raw == _p[_w0:_w1] and not sel.atoms, sel.selected_raw)
+sel = canvas.locate(run, tpara(2, 1), _w0 + 2, _w1, _p[_w0 + 2:_w1])
+check("locate: a selection cut inside a word grows to the whole word", sel.selected_raw == _p[_w0:_w1], sel.selected_raw)
 check("locate: a stale quote is refused with 409", raises(lambda: canvas.locate(run, tpara(2, 1), 10, 20, "not the words"), 409) is None)
 check("locate: an empty selection is refused with 400", raises(lambda: canvas.locate(run, tpara(2, 1), 5, 5, ""), 400) is None)
 check("locate: a missing paragraph is refused with 400", raises(lambda: canvas.locate(run, tpara(2, 9), 0, 1, "x"), 400) is None)
@@ -324,7 +329,9 @@ try:
     check("api: the result's display sections show the new text", shown.endswith("deploy widgets in more places."), shown)
     check("api: the docx is rewritten with the check re-run", docx_path.is_file() and body["result"]["output_filename"] == docx_path.name and body["result"]["checks"])
     check("api: the accepted instruction's numbers need none; history keeps the agent's draft", run.canvas["original"]["sections"] == ORIGINAL)
-    check("api: applying again is 404 (the suggestion is spent)", post("/canvas/apply", {"run_token": TOKEN, "suggestion_id": sid}).status_code == 404)
+    _again = post("/canvas/apply", {"run_token": TOKEN, "suggestion_id": sid})
+    check("api: applying again is 409 with a message the page can show (the suggestion is spent)",
+          _again.status_code == 409 and "Select the words again" in _again.text, _again.text)
 
     # a suggestion made on a draft that then changed is refused
     ANSWERS[:] = [{"replacement": "Providers, large and small, keep adding capacity", "note": ""}]
@@ -395,6 +402,39 @@ canvas.apply_manual(run, tpara(2, 1), "Second edit of this paragraph.")
 check("history: two edits, undo twice restores the original paragraph",
       (canvas.undo(run), canvas.undo(run), run.sections[2]["paragraphs"][1])[2].startswith("Providers keep adding capacity"))
 check("history: the agent's draft is kept from the first edit and not overwritten", run.canvas["original"]["sections"][2]["paragraphs"][1].startswith("Providers keep"))
+
+# ------------------------------------------------------------------ live-test regressions (2026-11-18 browser test)
+run = make_run()
+T = tpara(2, 1)
+_p = run.sections[2]["paragraphs"][1]
+_words = _p.split()
+_mid = " ".join(_words[6:9])
+_whole = " ".join(_words[:6] + ["clearly", "rewritten", "middle", "words"] + _words[9:])
+out = suggest(run, T, _mid, instruction="make it clearer", answers=[{"replacement": _whole, "note": ""}])
+check("echo: a words-scope answer that repeats the paragraph is used as the paragraph, never spliced (no doubled text)",
+      run.canvas["pending"][out["suggestion_id"]]["new"] == [_whole], str(run.canvas["pending"][out["suggestion_id"]]["new"]))
+
+run = make_run()
+_p = run.sections[2]["paragraphs"][1]
+_sel = " ".join(_p.split()[2:8])
+out = suggest(run, T, _sel, instruction="Shorten",
+              answers=[{"replacement": _sel + " and a good deal more besides", "note": "Shortened."},
+                       {"replacement": " ".join(_sel.split()[:3]), "note": ""}])
+check("length: a 'Shorten' answer that came back longer is refused and asked again; the shorter one is kept",
+      out["words_after"] < out["words_before"] and "fewer words" in CALLS[-1]["user"], str(out["words_before"]) + "->" + str(out["words_after"]))
+
+run = make_run()
+_err = raises(lambda: suggest(run, T, _sel, instruction="Shorten",
+                              answers=[{"replacement": _sel + " plus extra words", "note": ""},
+                                       {"replacement": _sel + " plus even more extra words", "note": ""}]), 422)
+check("length: two longer answers to 'Shorten' give a 422", _err is None, str(_err))
+try:
+    suggest(run, T, _sel, instruction="Shorten", answers=[{"replacement": _sel + " plus extra words", "note": ""},
+                                                          {"replacement": _sel + " plus even more extra words", "note": ""}])
+    _msg = ""
+except canvas.CanvasError as e:
+    _msg = e.detail
+check("length: the 422 says it could not be made shorter", "shorter" in _msg, _msg)
 
 print()
 if FAILURES:

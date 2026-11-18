@@ -211,12 +211,14 @@ function sponsorCandidatesFrom(article) {
 // Builds an Error carrying the backend's structured failure info (error_code/message/technical)
 // when present, so showError() can render a plain-language banner instead of raw JSON/exc text.
 async function _apiError(resp) {
+  // the body can be read only once: take it as text, then parse it as JSON when it is JSON (most errors are plain text)
+  const raw = await resp.text().catch(() => "");
   let detail;
   try {
-    const body = await resp.json();
+    const body = JSON.parse(raw);
     detail = body.detail ?? body;
   } catch {
-    detail = await resp.text().catch(() => resp.statusText);
+    detail = raw || resp.statusText;
   }
   const err = new Error(typeof detail === "string" ? detail : detail.message || resp.statusText);
   if (detail && typeof detail === "object") {
@@ -1082,6 +1084,10 @@ document.getElementById("final-regenerate-btn").addEventListener("click", async 
     const data = await apiPost("/finalize", { run_token: state.run.token });
     state.result = data.result;
     state.run.stage = "finalized";
+    // the server dropped the old draft's canvas history with it
+    state.run.canvas = { can_undo: false, edits: 0, saved: !!(state.run.canvas && state.run.canvas.saved) };
+    canvasUi.pending = null;
+    canvasUi.editor = null;
     saveResult();
   } catch (e) {
     showError("Final checks (regenerate draft)", e);
@@ -2612,15 +2618,17 @@ function canvasSegsHtml(segs) {
 
 // The suggestion as one paragraph: unchanged words plain, removed words struck through, added words highlighted.
 function canvasDiffHtml(before, after) {
-  const text = (segs) => (segs || []).map((x) => x.text).join("");
+  const text = (segs) => (segs || []).map((x) => x.text).join("").replace(/(^|\n)### /g, "$1");
   return wordDiff(text(before), text(after)).map((d) => (d.op === "same" ? escapeHtml(d.text)
     : `<span class="canvas-${d.op === "del" ? "del" : "ins"}">${escapeHtml(d.text)}</span>`)).join("");
 }
 
 // 409 = the draft moved on under this page; 400/422 carry a sentence the editor can act on.
 function canvasFail(err, el) {
-  const text = err.status === 409 ? "The draft changed. Reload the page."
-    : (err.status === 400 || err.status === 422) ? err.message : null;
+  const text = [400, 404, 409, 422].includes(err.status)
+    ? (err.message && !/^(Conflict|Not Found|Bad Request|Unprocessable)/.test(err.message) ? err.message
+      : err.status === 409 ? "The draft changed. Reload the page." : err.message)
+    : null;
   if (text && el) { el.textContent = text; el.hidden = false; return; }
   showError("Canvas", text ? Object.assign(new Error(text), { status: err.status }) : err);
 }
@@ -2788,7 +2796,17 @@ function paintPending() {
     try { await fn(); } catch (e) { canvasFail(e, errEl); } finally { buttons.forEach((b) => { b.disabled = false; }); }
   };
   block.querySelector(".canvas-accept").addEventListener("click", () => run(async () => {
-    const resp = await canvasPost("/canvas/apply", { suggestion_id: data.suggestion_id });
+    let resp;
+    try {
+      resp = await canvasPost("/canvas/apply", { suggestion_id: data.suggestion_id });
+    } catch (e) {
+      if (e.status !== 404 && e.status !== 409) throw e;
+      // the draft moved on since this suggestion was made: drop it and show the draft as it is now
+      canvasUi.pending = null;
+      renderFinalPanel();
+      showError("Canvas", e);
+      return;
+    }
     canvasUi.pending = null;
     canvasApplied(resp);
   }));

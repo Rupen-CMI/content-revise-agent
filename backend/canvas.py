@@ -163,6 +163,11 @@ def locate(run, target: dict, start: int, end: int, quote: str) -> RawSelection:
         raise CanvasError(400, "Select some words first.")
     if display[start:end] != quote or end > len(display):
         raise CanvasError(409, STALE)
+    # the selection covers whole words: a word cut in two ("Or|ganizations") came back with its other half doubled
+    while start > 0 and display[start - 1].isalnum() and display[start].isalnum():
+        start -= 1
+    while end < len(display) and display[end - 1].isalnum() and display[end].isalnum():
+        end += 1
     touched = [s for s in spans if s.d0 < end and s.d1 > start]
     atoms = [s for s in touched if s.atomic]
     d_start = min([start] + [s.d0 for s in atoms])
@@ -470,6 +475,30 @@ def _ask(run, sel, instruction, scope, retry_text, problem, logger) -> tuple[str
     return text, str(raw.get("note") or "").strip()
 
 
+_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'%.,-]*")
+_SHORTER_RE = re.compile(r"\b(?:shorten|shorter|concise|tighten|tighter|trim|cut|condense|brief)\b", re.I)
+_LONGER_RE = re.compile(r"\b(?:expand|longer|elaborate|lengthen|more detail|in more depth)\b", re.I)
+
+
+def _echoes_context(replacement: str, sel: RawSelection) -> bool:
+    """True when a words-scope answer repeats the paragraph around the selection (the model returned the whole paragraph instead of
+    the words between the marks): five or more words just before or just after the selection reappear in it, in order."""
+    text = " ".join(_WORD_RE.findall(replacement.lower()))
+    before = _WORD_RE.findall(sel.raw[:sel.r_start].lower())[-6:]
+    after = _WORD_RE.findall(sel.raw[sel.r_end:].lower())[:6]
+    return any(len(side) >= 5 and " ".join(side) in text for side in (before, after))
+
+
+def _length_problem(instruction: str, old: str, new: str) -> str:
+    """A shorten-style instruction that came back no shorter (or an expand-style one no longer) is refused with the reason."""
+    n_old, n_new = len(_WORD_RE.findall(old)), len(_WORD_RE.findall(new))
+    if _SHORTER_RE.search(instruction) and not _LONGER_RE.search(instruction) and n_new >= n_old:
+        return f"the editor asked for it shorter, but your text has {n_new} words against {n_old}; return fewer words than {n_old}"
+    if _LONGER_RE.search(instruction) and not _SHORTER_RE.search(instruction) and n_new <= n_old:
+        return f"the editor asked for it longer, but your text has {n_new} words against {n_old}; return more words than {n_old}"
+    return ""
+
+
 def _paragraphs_from(replacement: str, scope: str) -> list[str]:
     if scope == "section":
         return [p.strip() for p in re.split(r"\n\s*\n", replacement.strip()) if p.strip()]
@@ -508,13 +537,25 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
     problem = ""
     for attempt in range(2):
         replacement, model_note = _ask(run, sel, instruction, scope, retry_text, problem, logger)
-        new_paras = [splice(sel, replacement)] if scope == "selection" else _paragraphs_from(replacement, scope)
-        if scope == "selection":
+        whole = scope == "selection" and _echoes_context(replacement, sel)
+        if whole:
+            # the answer is the whole paragraph, not the marked words: it stands as the paragraph (spliced into the gap it would
+            # repeat the paragraph's own text around itself)
+            logger.info("[canvas] the words-scope answer repeats the surrounding paragraph; it is used as the whole paragraph")
+            new_paras = _paragraphs_from(replacement, "paragraph")
+        else:
+            new_paras = [splice(sel, replacement)] if scope == "selection" else _paragraphs_from(replacement, scope)
+        if scope == "selection" and not whole:
             problem = check_suggestion(old_text, replacement, instruction) or ""
+            problem = problem or _length_problem(instruction, old_text, replacement)
+        elif scope == "selection":
+            problem = (check_suggestion(sel.raw, "\n\n".join(new_paras), instruction)
+                       or _length_problem(instruction, sel.raw, "\n\n".join(new_paras)) if new_paras else "no text came back")
         elif not new_paras:
             problem = "no text came back"
         else:
             problem = check_suggestion(old_text, "\n\n".join(new_paras), instruction) or ""
+            problem = problem or _length_problem(instruction, old_text, "\n\n".join(new_paras))
             sub_old = [p for p in old_paras if subheads.is_subhead(p)]
             if not problem and scope == "section" and sub_old != [p for p in new_paras if subheads.is_subhead(p)]:
                 problem = "the sub-headings must come back exactly as they are, in their places"
@@ -524,8 +565,12 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
             break
         logger.info(f"[canvas] suggestion refused ({problem})" + (": retrying once" if attempt == 0 else ""))
     if problem:
-        raise CanvasError(422, "The link could not be kept in the suggestion, so none was made. Try again, or edit by hand." if "link" in problem or "marker" in problem
-                          else f"The writer gave no usable suggestion ({problem}). Try again.")
+        if "link" in problem or "marker" in problem:
+            raise CanvasError(422, "The link could not be kept in the suggestion, so none was made. Try again, or edit by hand.")
+        if "asked for it" in problem:
+            raise CanvasError(422, "The writer could not make it " + ("shorter" if "shorter" in problem else "longer")
+                                   + " without losing content. Try a smaller selection or a different instruction.")
+        raise CanvasError(422, f"The writer gave no usable suggestion ({problem}). Try again.")
 
     extra = set(c["editor_numbers"]) | _numbers(instruction)
     new_paras, dropped = guard(run, si, j0, j1, new_paras, extra, logger, faq_index=faq_index)
@@ -559,7 +604,7 @@ def apply_suggestion(run, suggestion_id: str) -> None:
         c = state(run)
         sug = c["pending"].get(suggestion_id)
         if sug is None:
-            raise CanvasError(404, "That suggestion is no longer available. Ask again.")
+            raise CanvasError(409, "The draft changed since this suggestion was made. Select the words again and ask again.")
         t = sug["target"]
         current = ([read_raw(run, t)] if t["kind"] == "faq"
                    else list(run.sections[sug["si"]]["paragraphs"][sug["j0"]:sug["j1"] + 1])) if _in_range(run, sug) else None
