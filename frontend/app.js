@@ -879,6 +879,35 @@ for (const kind of REPORT_KINDS) {
   document.getElementById(`reports-${kind}-link-fetch-btn`).addEventListener("click", () => runReportsFetch(kind));
 }
 
+// "Build my own fact sheet": no report covers the market, so the editor starts from an empty sheet for it and fills it in.
+document.getElementById("reports-own-btn").addEventListener("click", async () => {
+  const run = state.run;
+  if (_runBusy() || !run || !(run.pickedMarkets || []).length) return;
+  if (run.sheets.competitor && !confirm("This replaces the competitor fact sheet you have with an empty one. Continue?")) return;
+  run.fetching = "competitor";
+  run.reportTab = "competitor";
+  run.stage = "reports_pending";
+  render();
+  try {
+    storeReportSheet("competitor", await apiPost("/reports/fetch", {
+      run_token: run.token, kind: "competitor", markets: [run.pickedMarkets[0]], report_urls: [], url_markets: {}, own_sheet: true }));
+    run.stage = "reports_ready";
+  } catch (e) {
+    showError("Step 1 (build your own fact sheet)", e);
+    run.stage = hasAnyReportSheet() ? "reports_ready" : "reports";
+  }
+  run.fetching = null;
+  saveRunPointer();
+  render();
+  // open the empty sheet straight in edit mode
+  const el = document.getElementById("reports-competitor-factsheet");
+  if (el && el._fs && el._fs.fs && el._fs.fs.built_by_editor && !el._fs.editing) {
+    el._fs.draft = buildFactSheetDraft(el._fs.fs);
+    el._fs.editing = true;
+    fsRender(el);
+  }
+});
+
 document.getElementById("reports-find-btn").addEventListener("click", async () => {
   const run = state.run;
   if (_runBusy() || !run || !(run.pickedMarkets || []).length || run.finding) return;
@@ -1287,6 +1316,8 @@ function updateReportsControls() {
   document.getElementById("reports-cmi-clear").hidden = !hasCmi;
   document.getElementById("step1-agent-clear").hidden = !hasMarket;
   document.getElementById("reports-find-btn").disabled = busy || !hasMarket;
+  document.getElementById("reports-own-btn").disabled = busy || !hasMarket;
+  document.getElementById("reports-own-hint").textContent = hasMarket ? `For ${run.pickedMarkets[0]}` : "Pick a market above first.";
   document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
   // the hint beside "Fetch selected report" speaks of the list only; a bad pasted link is reported in its own row
   const hints = {
@@ -1581,6 +1612,7 @@ function fsSourceHtml(fs, entry) {
   };
   const sources = fs.sources || [];
   if (sources.length) return sources.map(link).join(" + ");
+  if (fs.built_by_editor) return "your own figures";
   return fs.report_mode === "external" ? escapeHtml((fs.external || {}).name || "competitor report") : "CMI report";
 }
 

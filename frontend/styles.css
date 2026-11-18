@@ -1444,6 +1444,7 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .report-url-foot .field-hint { margin: 0; }
 /* the "found" list shares the list's side padding, like the suggestion list above it */
 .reports-found-block { padding: 6px 20px 0; }
+.report-own-block { padding: 14px 20px 6px; border-top: 1px solid var(--border, #e5e7eb); margin-top: 12px; }
 /* a fetch button sits directly under the list it fetches, with the list's side padding */
 .reports-fetch-row { padding: 0 20px 16px; }
 #reports-cmi-note { padding: 0 20px 18px; margin: 0; }

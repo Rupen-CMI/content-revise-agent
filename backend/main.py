@@ -893,6 +893,9 @@ class ReportsFetchRequest(BaseModel):
     markets: list[str] = Field(default_factory=list)
     report_urls: list[str] = Field(default_factory=list)
     url_markets: dict[str, str] = Field(default_factory=dict)
+    # Competitor tab only: no report exists for the market, so the editor builds the fact sheet themselves (an empty sheet
+    # for the picked market that they fill in; no report is read, searched or linked).
+    own_sheet: bool = False
 
 
 class ReportsConfirmRequest(BaseModel):
@@ -1499,12 +1502,39 @@ def _reports_payload(run: RunState) -> dict:
             "report_mode": run.report_mode, "warnings": run.report_warnings, "confirmed": run.fact_sheet_confirmed}
 
 
+OWN_SHEET_NOTE = (
+    "You are building this fact sheet yourself, because no report covers this market. Press Edit and add the market size, "
+    "forecast, growth rate, segments, U.S. facts, drivers and key players you have. Your figures are used exactly as you "
+    "enter them, no source is named for them and no report is linked in the article.")
+
+
+def _start_own_sheet(run: RunState, req: ReportsFetchRequest) -> dict:
+    """The competitor tab's "Build my own fact sheet": an empty sheet for the picked market (else the article's own market)
+    that the editor fills in through the usual edits (facts.apply_editor_edits). It is never filled from a report on a
+    different market. Its figures are the editor's own: written plainly, never varied, never credited to CMI."""
+    market = (_clean_markets(req.markets) or [external_reports.own_market(run.orient)])[0]
+    if not market:
+        raise HTTPException(400, "Pick a market first.")
+    fs = facts._empty_fact_sheet()
+    fs.update({"sources": [], "variance": [], "report_mode": "external", "built_by_editor": True})
+    run.picked_markets, run.picked_report_ids, run.picked_urls = [market], [], []
+    run.report_tabs["competitor"] = {
+        "report": _outside_report(market, fs, {}), "fact_sheet": fs, "report_mode": "external",
+        "warnings": [OWN_SHEET_NOTE], "covers_market": market, "host": "",
+    }
+    _activate_report(run, "competitor")
+    run.logger.info(f"REPORTS: the editor is building their own fact sheet for {market}")
+    return _reports_payload(run)
+
+
 @app.post("/reports/fetch")
 @_reports_step("reports")
 def reports_fetch(req: ReportsFetchRequest) -> dict:
     """Reports step, one tab's Fetch button: read the chosen report(s) into a fact sheet (_build_reports), keep it under its
     tab (run.report_tabs[kind]) and make it the run's active sheet, unconfirmed. Evidence is NOT searched here."""
     run = _get_run(req.run_token)
+    if req.kind == "competitor" and req.own_sheet:
+        return _start_own_sheet(run, req)
     picked, urls, markets, cmi_pages = _resolve_report_pick(run, req)
     # record the editor's picks before any work starts, so a page reload mid-fetch can restore them
     run.picked_markets, run.picked_report_ids, run.picked_urls = markets, [c.news_id for c in picked], urls + cmi_pages
@@ -1572,6 +1602,8 @@ def reports_confirm(req: ReportsConfirmRequest) -> dict:
     if req.fact_sheet_edits:
         facts.apply_editor_edits(run.fact_sheet, req.fact_sheet_edits)
         run.logger.info(f"REPORTS: the editor edited the {run.report_kind} fact sheet; gaps now {run.fact_sheet['gaps'] or 'none'}")
+    if run.fact_sheet.get("built_by_editor") and not facts.flatten_fact_sheet(run.fact_sheet):
+        raise HTTPException(400, "Your fact sheet is still empty. Press Edit and add at least one figure or fact.")
     run.fact_sheet_confirmed = True
     run.hits = run.selection = run.evidence = None      # anything searched from the earlier facts is stale
     return _reports_payload(run)
