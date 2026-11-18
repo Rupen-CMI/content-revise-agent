@@ -1516,7 +1516,7 @@ def _start_own_sheet(run: RunState, req: ReportsFetchRequest) -> dict:
     if not market:
         raise HTTPException(400, "Pick a market first.")
     fs = facts._empty_fact_sheet()
-    fs.update({"sources": [], "variance": [], "report_mode": "external", "built_by_editor": True})
+    fs.update({"sources": [], "variance": [], "report_mode": "external", "built_by_editor": True, "market_name": market})
     run.picked_markets, run.picked_report_ids, run.picked_urls = [market], [], []
     run.report_tabs["competitor"] = {
         "report": _outside_report(market, fs, {}), "fact_sheet": fs, "report_mode": "external",
@@ -1525,6 +1525,25 @@ def _start_own_sheet(run: RunState, req: ReportsFetchRequest) -> dict:
     _activate_report(run, "competitor")
     run.logger.info(f"REPORTS: the editor is building their own fact sheet for {market}")
     return _reports_payload(run)
+
+
+def _rename_own_market(run: RunState, raw: str) -> None:
+    """The market name the editor typed on their own fact sheet: it becomes the run's market everywhere the evidence search,
+    the planner and the writer read it (the stand-in report's name, the picked market, the sheet). Ends in 'Market'."""
+    name = " ".join(str(raw or "").split()).strip(" .")
+    if not name:
+        raise HTTPException(400, "Enter the market name.")
+    if not re.search(r"\bmarkets?$", name, re.I):
+        name += " Market"
+    if name == run.fact_sheet.get("market_name"):
+        return
+    run.logger.info(f"REPORTS: the editor named their own fact sheet's market {name!r} (was {run.fact_sheet.get('market_name')!r})")
+    run.fact_sheet["market_name"] = name
+    run.report.name = run.report.subject = name       # the tab holds the same Report object
+    run.picked_markets = [name]
+    tab = run.report_tabs.get(run.report_kind)
+    if tab:
+        tab["covers_market"] = name
 
 
 @app.post("/reports/fetch")
@@ -1599,6 +1618,8 @@ def reports_confirm(req: ReportsConfirmRequest) -> dict:
         _activate_report(run, req.kind)
     if run.fact_sheet is None or run.report is None:
         raise HTTPException(400, "No fact sheet yet — fetch a report first.")
+    if req.fact_sheet_edits and run.fact_sheet.get("built_by_editor") and "market_name" in req.fact_sheet_edits:
+        _rename_own_market(run, req.fact_sheet_edits["market_name"])
     if req.fact_sheet_edits:
         facts.apply_editor_edits(run.fact_sheet, req.fact_sheet_edits)
         run.logger.info(f"REPORTS: the editor edited the {run.report_kind} fact sheet; gaps now {run.fact_sheet['gaps'] or 'none'}")

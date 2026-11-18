@@ -882,7 +882,7 @@ for (const kind of REPORT_KINDS) {
 // "Build my own fact sheet": no report covers the market, so the editor starts from an empty sheet for it and fills it in.
 document.getElementById("reports-own-btn").addEventListener("click", async () => {
   const run = state.run;
-  if (_runBusy() || !run || !(run.pickedMarkets || []).length) return;
+  if (_runBusy() || !run) return;
   if (run.sheets.competitor && !confirm("This replaces the competitor fact sheet you have with an empty one. Continue?")) return;
   run.fetching = "competitor";
   run.reportTab = "competitor";
@@ -890,7 +890,7 @@ document.getElementById("reports-own-btn").addEventListener("click", async () =>
   render();
   try {
     storeReportSheet("competitor", await apiPost("/reports/fetch", {
-      run_token: run.token, kind: "competitor", markets: [run.pickedMarkets[0]], report_urls: [], url_markets: {}, own_sheet: true }));
+      run_token: run.token, kind: "competitor", markets: (run.pickedMarkets || []).slice(0, 1), report_urls: [], url_markets: {}, own_sheet: true }));
     run.stage = "reports_ready";
   } catch (e) {
     showError("Step 1 (build your own fact sheet)", e);
@@ -1316,8 +1316,9 @@ function updateReportsControls() {
   document.getElementById("reports-cmi-clear").hidden = !hasCmi;
   document.getElementById("step1-agent-clear").hidden = !hasMarket;
   document.getElementById("reports-find-btn").disabled = busy || !hasMarket;
-  document.getElementById("reports-own-btn").disabled = busy || !hasMarket;
-  document.getElementById("reports-own-hint").textContent = hasMarket ? `For ${run.pickedMarkets[0]}` : "Pick a market above first.";
+  document.getElementById("reports-own-btn").disabled = busy;
+  document.getElementById("reports-own-hint").textContent = hasMarket
+    ? `Starts as ${run.pickedMarkets[0]}; you can rename it in the sheet.` : "You name the market in the sheet.";
   document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
   // the hint beside "Fetch selected report" speaks of the list only; a bad pasted link is reported in its own row
   const hints = {
@@ -1728,6 +1729,7 @@ function buildFactSheetDraft(fs) {
     })),
     us: list(fs.us), drivers: list(fs.drivers), opportunities: list(fs.opportunities), segment_drivers: list(fs.segment_drivers, ["split", "name"]),
     players: [...(fs.players || [])],
+    ...(fs.built_by_editor ? { market: fs.market_name || "" } : {}),
   };
 }
 
@@ -1742,6 +1744,7 @@ function draftToEdits(d) {
     })),
     us: texts(d.us), drivers: texts(d.drivers), opportunities: texts(d.opportunities), segment_drivers: texts(d.segment_drivers),
     players: [...d.players],
+    ...(d.market !== undefined ? { market_name: d.market } : {}),
   };
 }
 
@@ -1753,6 +1756,12 @@ function factSheetEditHtml(d, fs, kind) {
   const gapHint = fs && fs.built_by_editor ? "enter it here" : "not found in the report: enter it here";
   const out = [];
 
+  if (d.market !== undefined) {
+    // an own sheet: the editor names the market; the evidence search and the article use this name
+    out.push(`<section class="fs-edit-group"><h4>Market</h4><div class="fs-edit-row"><label class="fs-edit-label">Market name</label>`
+      + `${inp("market", d.market, "e.g. Direct Mail Retargeting Market")}</div>`
+      + `<div class="fs-hint">The evidence search and the article use this name. Write it the way the market is commonly called.</div></section>`);
+  }
   out.push(`<section class="fs-edit-group"><h4>Headline figures</h4>`);
   for (const [key, label, whenLabel] of FS_HEADLINES) {
     const e = fs[key];

@@ -70,6 +70,17 @@ out = writer.strip_meta_sentences(meta, _lg.getLogger("t"))
 check("key players: sentences describing the list are stripped, the real one stays",
       out[0]["paragraphs"] == ["PostPilot launched a postcard API in 2025."], str(out))
 
+r = c.post("/reports/confirm", json={"run_token": TOKEN, "kind": "competitor",
+                                     "fact_sheet_edits": {"market_name": "  postcard retargeting  "}})
+d = r.json()
+run = main._RUNS[TOKEN]
+check("own sheet: the editor's market name becomes the run's market (report, picked market, sheet), 'Market' appended",
+      r.status_code == 200 and run.report.name == "Postcard Retargeting Market".replace("Postcard Retargeting", "postcard retargeting")
+      and run.picked_markets == [run.report.name] and d["fact_sheet"]["market_name"] == run.report.name
+      and d["report"]["covers_market"] == run.report.name, r.text[:300])
+r = c.post("/reports/confirm", json={"run_token": TOKEN, "kind": "competitor", "fact_sheet_edits": {"market_name": "  "}})
+check("own sheet: an empty market name is refused", r.status_code == 400 and "market name" in r.text, r.text[:200])
+
 main._RUNS.pop(TOKEN, None)
 print()
 if FAILURES:
