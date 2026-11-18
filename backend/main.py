@@ -70,6 +70,7 @@ from pydantic import BaseModel, Field
 
 import spelling
 import checks
+import canvas
 import clients as clients_mod
 import config
 import demand
@@ -347,6 +348,7 @@ class RunState:
     section_queries: dict = field(default_factory=dict)         # {section: [query, ...]} as the model wrote them
     search_groups: list[str] = field(default_factory=list)      # the source groups the query step chose
     step2_timer: "StageTimer | None" = None   # the running Reports/Evidence step's timer: GET /step2/progress reads which stages are live
+    canvas: dict = field(default_factory=dict)  # the canvas editor's state (see canvas.state): pending suggestions, history, original, editor_numbers
 
 
 _RUNS: dict[str, RunState] = {}
@@ -1826,6 +1828,7 @@ def _step4_chain(run: RunState) -> dict:
     sections, faq = spelling.apply(sections, faq, variety, keep)
     run.logger.info(f"[spelling] body and FAQ set to {variety} spelling (the guest article's own)")
     run.title, run.sections, run.evidence_citations, run.faq = title, sections, evidence_citations, faq
+    run.canvas = {}     # a regenerated draft starts without the previous draft's canvas edits
     run.logger.info(f"STEP 4 DONE — draft {title!r} ({len(sections)} sections, {len(faq)} MSQ FAQ entries"
                     + (f"; plan repairs: {'; '.join(plan.get('repairs'))}" if plan.get("repairs") else "") + ")")
     return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url), "faq": faq,
@@ -1853,6 +1856,7 @@ def step4(req: Step4Request) -> dict:
     except (PipelineError, LLMError) as e:
         raise _pipeline_failure(run.logger, "Step 4", e)
     run.title, run.sections, run.evidence_citations, run.faq = title, sections, evidence_citations, faq
+    run.canvas = {}     # a regenerated draft starts without the previous draft's canvas edits
     run.logger.info(f"STEP 4 DONE — draft '{title}' ({len(sections)} sections, {len(evidence_citations)} evidence citations, {len(faq)} FAQ entries)")
     return {"title": title, "sections": _display_sections(sections, run.sponsor, run.report.url), "faq": faq}
 
@@ -2015,6 +2019,12 @@ def finalize(req: FinalizeRequest) -> dict:
     # Telemetry (fire-and-forget, telemetry.py): the totals snapshot was taken from the tracker
     # BEFORE run_cost_summary() popped it, so the dashboard sees the same per-run numbers as the log.
     _emit_run_completed(run, req.run_token, "ok", t0, result.title, result.sections, run_totals)
+    return {"result": _final_payload(run, result)}
+
+
+def _final_payload(run: RunState, result: pipeline.RevampResult) -> dict:
+    """What /finalize returns under "result": the display view, the checks, the citations with their fact text, the report, the FAQ and
+    the clients. Shared with the canvas, which sends the same payload after every edit so the final page renders it unchanged."""
     # Map each citation's evidence ID back to its original fact text for a human-readable label
     # in the UI (e.g. a hover tooltip) — the citation itself only carries the ID + paragraph.
     facts_by_id = {str(e.get("id", "")).strip().upper(): e.get("fact", "") for e in (run.selection.get("evidence") or [])}
@@ -2029,18 +2039,16 @@ def finalize(req: FinalizeRequest) -> dict:
     ]
     view = _keyword_view(run, result.report, result.sponsor, result.title, result.sections)
     return {
-        "result": {
-            "title": result.title,
-            **view,
-            "report": _report_dict(result.report),
-            "checks": [
-                {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
-            ],
-            "evidence_citations": citations_out,
-            "output_filename": result.output_path.name if result.output_path else None,
-            "faq": result.faq,
-            "clients": _client_dicts(run),
-        }
+        "title": result.title,
+        **view,
+        "report": _report_dict(result.report),
+        "checks": [
+            {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
+        ],
+        "evidence_citations": citations_out,
+        "output_filename": result.output_path.name if result.output_path else None,
+        "faq": result.faq,
+        "clients": _client_dicts(run),
     }
 
 
@@ -2089,6 +2097,110 @@ async def recheck(run_token: str, file: UploadFile = File(...)) -> dict:
         "notes": parsed["notes"],
         "filename": Path(name).name,
     }}
+
+
+# ---------------------------------------------------------------- canvas: highlight words in the final draft, get a suggestion, accept it
+
+def _persist_run(token: str, run: RunState) -> bool:
+    return False    # saved to disk by run_store (see CANVAS_PLAN 1.5)
+
+
+class CanvasTarget(BaseModel):
+    kind: Literal["body", "faq", "title"]
+    section: int | None = None
+    paragraph: int | None = None
+    index: int | None = None
+
+
+class CanvasSuggestRequest(BaseModel):
+    run_token: str | None = None
+    target: CanvasTarget
+    start: int
+    end: int
+    quote: str
+    instruction: str = ""
+    scope: Literal["selection", "paragraph", "section"] = "selection"
+    retry_of: str | None = None
+
+
+class CanvasSourceRequest(BaseModel):
+    run_token: str | None = None
+    target: CanvasTarget
+
+
+class CanvasApplyRequest(BaseModel):
+    run_token: str | None = None
+    suggestion_id: str | None = None
+    target: CanvasTarget | None = None
+    new_text: str | None = None
+
+
+def _canvas_run(token: str | None) -> RunState:
+    run = _get_run(token)
+    if not run.title or not run.sections:
+        raise HTTPException(400, "No draft yet — finish Step 4 first.")
+    return run
+
+
+def _canvas_reply(token: str, run: RunState) -> dict:
+    """After a change: the checks and the docx again (no LLM), the same payload /finalize returns, the draft saved."""
+    assert run.report is not None and run.selection is not None and run.evidence is not None and run.hits is not None
+    try:
+        result = pipeline.refresh_final(
+            run.article, run.sponsor, run.report, run.candidates, run.orient, run.selection, run.hits,
+            run.title, run.sections, run.evidence, run.filename, run.logger,
+            evidence_citations=run.evidence_citations, faq=run.faq, longtails=run.longtails,
+            plan=run.plan, plan_inputs=run.plan_inputs,
+        )
+    except (PipelineError, LLMError) as e:
+        raise _pipeline_failure(run.logger, "canvas re-check", e)
+    saved = _persist_run(token, run)
+    return {"result": _final_payload(run, result), "canvas": {**canvas.status(run), "saved": saved}}
+
+
+def _canvas_call(fn, *args):
+    try:
+        return fn(*args)
+    except canvas.CanvasError as e:
+        raise HTTPException(e.status, e.detail)
+
+
+@app.post("/canvas/suggest")
+def canvas_suggest(req: CanvasSuggestRequest) -> dict:
+    run = _canvas_run(req.run_token)
+    return _canvas_call(canvas.suggest, run, req.target.model_dump(), req.start, req.end, req.quote, req.instruction,
+                        req.scope, req.retry_of, run.logger)
+
+
+@app.post("/canvas/source")
+def canvas_source(req: CanvasSourceRequest) -> dict:
+    return _canvas_call(canvas.source, _canvas_run(req.run_token), req.target.model_dump())
+
+
+@app.post("/canvas/apply")
+def canvas_apply(req: CanvasApplyRequest) -> dict:
+    run = _canvas_run(req.run_token)
+    if req.suggestion_id:
+        _canvas_call(canvas.apply_suggestion, run, req.suggestion_id)
+    elif req.target is not None and req.new_text is not None:
+        _canvas_call(canvas.apply_manual, run, req.target.model_dump(), req.new_text)
+    else:
+        raise HTTPException(400, "Send a suggestion_id, or a target with new_text.")
+    return _canvas_reply(req.run_token, run)
+
+
+@app.post("/canvas/undo")
+def canvas_undo(req: FinalizeRequest) -> dict:
+    run = _canvas_run(req.run_token)
+    _canvas_call(canvas.undo, run)
+    return _canvas_reply(req.run_token, run)
+
+
+@app.post("/canvas/revert")
+def canvas_revert(req: FinalizeRequest) -> dict:
+    run = _canvas_run(req.run_token)
+    _canvas_call(canvas.revert, run)
+    return _canvas_reply(req.run_token, run)
 
 
 @app.get("/download/{filename}")

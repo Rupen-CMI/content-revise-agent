@@ -635,16 +635,18 @@ def strip_reader_filler(sections: list[dict], logger: logging.Logger) -> list[di
     return sections
 
 
-def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, sponsor_text: str, logger: logging.Logger) -> list[dict]:
+def strip_untraced_figures(sections: list[dict], inp: planning.PlanInputs, sponsor_text: str, logger: logging.Logger,
+                           extra_allowed: set[str] | frozenset = frozenset()) -> list[dict]:
     """An invented or rounded figure ("near 7%" from a 7.3% CAGR) must never print. The write prompt bans
     rounding and the trace check flags a number that no fact-sheet entry, evidence item, guest point, the
     sponsor text or the market name carries, but a prompt rule alone did not hold in every replay — so the
     sentence goes, in code, exactly like the FAQ answers' own strip_unsupported (§3.8) and like
-    strip_meta_sentences above: the whole sentence is removed, nothing is rewritten."""
+    strip_meta_sentences above: the whole sentence is removed, nothing is rewritten. `extra_allowed` adds figures that are allowed
+    besides the facts' (the canvas: numbers the editor typed)."""
     if inp is None:
         return sections
     import checks
-    allowed: set[str] = set()
+    allowed: set[str] = set(extra_allowed)     # the canvas passes the figures the editor typed
     for i in inp.items.values():
         allowed |= checks._fact_numbers_with_words(i["text"]) | checks._fact_numbers_with_words(i.get("detail", ""))
         allowed |= checks._fact_numbers_with_words(i.get("source", ""))

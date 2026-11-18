@@ -1789,3 +1789,50 @@ FAQ_ANSWER_MAX_WORDS = 60
 
 FAQ_MSQ_USER = (_FAQ_HEAD + prompt_rules.render(groups=("ANALYSIS",), only=("positive",))
                 + prompt_rules.render(groups=("LANGUAGE",), only=("voice", "grammar", "continuity", "active", "filler", "sentences")) + _FAQ_TAIL)
+
+
+# ---------------------------------------------------------------- canvas: the editor highlights words in the finished draft and asks for a change
+CANVAS_SYSTEM = WRITE_SYSTEM + """
+
+In this task you are not writing the article from the start. An editor has the finished draft open, has highlighted a passage and tells you in a sentence what to change. You redraft only that passage, in the same voice as the text around it, and everything you write is held to the same rules as the original draft. Respond with JSON only."""
+
+CANVAS_USER = """THE ARTICLE: "{title}"
+THE MARKET: {market_name}
+TODAY'S DATE: {today}
+Sections, in order: {headings}
+
+THE PART THE EDITOR IS WORKING ON ({section_label}). {selection_note}
+{section_text}
+
+{neighbours}
+
+{block}
+
+ALL OTHER FACTS AND EVIDENCE OF THE ARTICLE (compact; each may be used where it fits the instruction; the name in brackets after a fact is for your information only and is never written):
+{other_facts}
+
+THE GUEST ARTICLE'S OWN POINTS (context):
+{points}
+{client}
+THE EDITOR'S INSTRUCTION (verbatim; follow it unless a rule below forbids it):
+{instruction}
+
+WHAT YOU RETURN
+{scope_rule}
+{retry}
+RULES FOR THIS REDRAFT
+1. Link markers: a marker is text in double square brackets ([[CMI_LINK:...]], [[CLIENT_LINK:L1|...]], [[SPONSOR_PARAGRAPH]]). Every marker inside the part you rewrite comes back once, unchanged, character for character, and you add no marker of your own. A [[CMI_LINK:...]] marker is dropped only if the editor's instruction explicitly asks for the link to be removed.
+2. Figures: a figure appears only if a fact listed above states it (exactly as the fact gives it) or the editor's instruction itself gives it. Never invent, round or estimate a figure, and never add a company detail, date or claim that no listed fact supports. If the instruction asks for something the facts cannot support, leave it out and say so in "note".
+3. No outside source is named: no publication, research firm, data provider or consultancy. CMI's own analysis may be credited in the wording the draft already uses (for example "A CMI analyst judges"). The client whose paragraph the opening restates is never named or promoted; its link words stay exactly as they are.
+4. The rewritten text must read whole inside its surroundings: match the neighbouring sentences in tense, spelling variety and register, keep the sentence order logical, and leave no dangling reference to a sentence you removed.
+5. Write the "replacement" text only: no quotation marks around it, no explanation, no ⟦SEL⟧ tags.
+{rules}
+Return JSON in exactly this shape:
+{{"replacement": "<the text as described under WHAT YOU RETURN>", "note": "<what you could not do and why, or an empty string>"}}"""
+
+CANVAS_RULE_SELECTION = ('Return "replacement": the text that takes the place of EXACTLY the words between ⟦SEL⟧ and ⟦/SEL⟧ and nothing else. '
+                         'The words around the marks stay as they are, so your text must join them into correct, complete sentences.')
+CANVAS_RULE_PARAGRAPH = ('Return "replacement": the whole paragraph that contains the marks, rewritten as one paragraph, as the instruction asks. '
+                         'The marks only show where the editor was looking; the paragraph as a whole is yours to redraft.')
+CANVAS_RULE_SECTION = ('Return "replacement": every paragraph of the part above, rewritten as the instruction asks, separated by one blank line. '
+                       'A line that starts with "### " is a sub-heading and comes back exactly as it is, in its place.')

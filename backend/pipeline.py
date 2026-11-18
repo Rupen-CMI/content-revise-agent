@@ -4118,7 +4118,7 @@ def _revise_pass(
     return new_title, new_sections, kept_citations
 
 
-def run_finalize(
+def refresh_final(
     article: SourceArticle, sponsor: Paragraph, report: reports.Report,
     candidates: list[reports.CatalogEntry], orient: dict, selection: dict,
     hits: list[search.SearchHit],
@@ -4129,11 +4129,11 @@ def run_finalize(
     longtails: list[dict] = (),
     plan: dict | None = None, plan_inputs=None,
 ) -> RevampResult:
-    """SOP checks + write .docx. Returns the finished RevampResult. `faq` (from run_faq) is never
-    passed to a length/word-count/SOP check whose body is the article itself — the market-first
-    chain's run_checks_v2 DOES read the FAQ (plan §3.8: FAQ figures must trace), but no article
-    length or share check ever counts FAQ words (they sit outside the article entirely). It is
-    appended to the .docx output after the article's own sections (see faq_sections)."""
+    """The checks + .docx half of run_finalize, with no LLM call and no telemetry or cost logging: what finalize runs, and what the
+    canvas re-runs after every accepted edit. `faq` (from run_faq) is never passed to a length/word-count/SOP check whose body is the
+    article itself — the market-first chain's run_checks_v2 DOES read the FAQ (plan §3.8: FAQ figures must trace), but no article
+    length or share check ever counts FAQ words (they sit outside the article entirely). It is appended to the .docx output after
+    the article's own sections (see faq_sections)."""
     section(logger, "SOP CHECKS")
     report_text = _report_text(report)
     primary_kw, secondary_kw = _seo_keyword_plan(report.name)
@@ -4166,6 +4166,25 @@ def run_finalize(
     result.output_path = output_path
     logger.info(f"OUTPUT FILE: {output_path}")
     return result
+
+
+def run_finalize(
+    article: SourceArticle, sponsor: Paragraph, report: reports.Report,
+    candidates: list[reports.CatalogEntry], orient: dict, selection: dict,
+    hits: list[search.SearchHit],
+    title: str, sections: list[dict], evidence: str,
+    original_filename: str, logger: logging.Logger,
+    evidence_citations: list[dict] = (),
+    faq: list[dict] = (),
+    longtails: list[dict] = (),
+    plan: dict | None = None, plan_inputs=None,
+) -> RevampResult:
+    """SOP checks + write .docx. Returns the finished RevampResult (see refresh_final)."""
+    return refresh_final(
+        article, sponsor, report, candidates, orient, selection, hits, title, sections, evidence,
+        original_filename, logger, evidence_citations=evidence_citations, faq=faq, longtails=longtails,
+        plan=plan, plan_inputs=plan_inputs,
+    )
 
 
 def revamp(
