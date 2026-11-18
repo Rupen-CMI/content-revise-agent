@@ -894,11 +894,24 @@ def enforce_trend_shape(sections: list[dict], logger: logging.Logger) -> list[di
         kept = blocks[:subheads.TRENDS_PER_SECTION]
         out = lead[:1]
         cut_paragraphs = 0
+        split_paragraphs = 0
         for heading, paras in kept:
             out.append(subheads.make_subhead(heading))
+            paras = list(paras)
+            # a strip that emptied a paragraph leaves the trend short: its longest paragraph is split at a sentence break
+            while 0 < len(paras) < subheads.PARAGRAPHS_PER_TREND:
+                i = max(range(len(paras)), key=lambda k: len(paras[k]))
+                sents = [x for x in _SENTENCE_SPLIT_RE.split(paras[i]) if x.strip()]
+                if len(sents) < 2 or "\n" in paras[i]:
+                    break
+                half = (len(sents) + 1) // 2
+                paras[i:i + 1] = [" ".join(sents[:half]), " ".join(sents[half:])]
+                split_paragraphs += 1
             out += paras[:subheads.PARAGRAPHS_PER_TREND]
             cut_paragraphs += max(0, len(paras) - subheads.PARAGRAPHS_PER_TREND)
         extra_trends, extra_lead = len(blocks) - len(kept), max(0, len(lead) - 1)
+        if split_paragraphs:
+            logger.info(f"[write] trends: {split_paragraphs} paragraph(s) split at a sentence break so every trend keeps three paragraphs")
         if extra_trends or cut_paragraphs or extra_lead:
             logger.info(f"[write] trends: cut {extra_trends} extra trend(s), {cut_paragraphs} extra paragraph(s) and {extra_lead} extra lead-in "
                         "paragraph(s) so the section keeps its shape of three trends with three paragraphs each")

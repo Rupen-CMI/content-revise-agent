@@ -89,6 +89,11 @@ def _trim_name(name: str) -> str:
 
 # ------------------------------------------------------------------------------------------------ research-firm shape
 _FIRM_SUFFIXES = frozenset({"research", "insights", "intelligence", "reports", "consulting", "strategies"})
+# Names of public bodies and institutions ("Australian Council for Educational Research", "Office for Students"): never a research firm.
+# The capitalised words (joined by for / of / and / the) that run up to a name: the rest of an institution's name.
+_FULL_NAME_BEFORE_RE = re.compile(r"(?:(?:[A-Z][\w'’.&-]*|for|of|and|the|on)\s+)*$")
+_INSTITUTION_RE = re.compile(r"\b(?:council|university|college|school|academy|association|society|federation|foundation|agency|"
+                             r"department|ministry|office|commission|board|bureau|authority|administration|institute of)\b", re.I)
 # A word before the suffix that makes a phrase generic, not a firm ("Artificial Intelligence", "Customer Insights", "Business Intelligence").
 _GENERIC_PREFIX = frozenset("""
 artificial business competitive market markets customer customers consumer consumers marketing sales data security threat buyer
@@ -109,6 +114,8 @@ def firm_shaped(name: str) -> bool:
     """Does a name have the shape of a research firm's? (Coherent Market Insights never does.)"""
     n = (name or "").strip()
     if not n or _CMI_RE.search(n):
+        return False
+    if _INSTITUTION_RE.search(n):
         return False
     letters = re.sub(r"[^a-z]", "", n.lower())
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\-]*(?:\.[A-Za-z0-9\-]+)*\.[a-z]{2,}(?:\.[a-z]{2})?", n):
@@ -235,7 +242,9 @@ _compile = re.compile
 _PATTERNS: list[tuple[re.Pattern, int, str]] = [
     (_compile(rf"^\s*{_LEAD_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*[,:]\s+"), 1, "lead"),
     (_compile(rf"\s*,?\s*{_TRAIL_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?{_END}"), 1, "trail"),
-    (_compile(rf"^\s*(?P<name>{_ORG})\s+{_VERBS}\s+that\s+"), 2, "lead"),
+    (_compile(rf"^\s*(?:[A-Z][A-Za-z.]+['’]s\s+)?(?P<name>{_ORG})\s+{_VERBS}\s+"
+              rf"(?P<when>(?:in|on|during|earlier in|late in|early in)\s+(?:[A-Z][a-z]+\s+)?(?:\d{{1,2}},?\s+)?\d{{4}})\s+that\s+"), 2, "leadwhen"),
+    (_compile(rf"^\s*(?:[A-Z][A-Za-z.]+['’]s\s+)?(?P<name>{_ORG})\s+{_VERBS}\s+that\s+"), 2, "lead"),
     (_compile(rf"\s*,\s*(?P<name>{_ORG})\s+{_VERBS}(?:\s+(?:in|on|this|last|earlier)\s+[A-Za-z]+(?:\s+\d{{4}})?)?{_END}"), 2, "trail"),
     (_compile(rf",\s*{_TRAIL_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*,"), 1, "mid"),
     (_compile(rf",\s*(?P<name>{_ORG})\s+{_VERBS}\s*,"), 2, "mid"),
@@ -285,6 +294,11 @@ def _scan(sentence: str, allowed: Allowed, srcs: tuple | list) -> list[_Hit]:
             if mode == "lead":
                 new = sentence[m.end():]
                 hits.append(_Hit(name, "lead", m, 0, m.end(), (new[:1].upper() + new[1:]) if new else "", tier, m.group(0)))
+            elif mode == "leadwhen":
+                # the statement keeps its date: "<Org> said in November 2026 that X" -> "In November 2026, X"
+                when = m.group("when")
+                new = f"{when[:1].upper() + when[1:]}, {sentence[m.end():]}"
+                hits.append(_Hit(name, "lead", m, 0, m.end(), new, tier, m.group(0)))
             elif mode in ("trail", "paren"):
                 hits.append(_Hit(name, mode, m, m.start(), m.end(), "", tier, m.group(0)))
             elif mode == "mid":
@@ -300,6 +314,10 @@ def _scan(sentence: str, allowed: Allowed, srcs: tuple | list) -> list[_Hit]:
     seen = {_norm(h.name) for h in hits}
     for m in _FIRM_RE.finditer(sentence):
         name = _trim_name(m.group("name"))
+        # the full name the match ends ("Australian Council for Educational Research" for "Educational Research"): an institution's
+        # name is never a research firm's
+        if _INSTITUTION_RE.search(_FULL_NAME_BEFORE_RE.search(sentence[:m.start("name")]).group(0)):
+            continue
         if _norm(name) not in seen and firm_shaped(name) and not allowed.covers(name):
             hits.append(_Hit(name, "firm", m))
             seen.add(_norm(name))

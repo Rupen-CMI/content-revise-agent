@@ -1726,7 +1726,8 @@ def run_checks_v2(
         naming_issues = clients_mod.naming_problems(token_sections, client_list)
         results.append(CheckResult("Client not named or promoted: the backlink is its only mention",
                                    not naming_issues, "; ".join(naming_issues)))
-        feature_issues = clients_mod.feature_problems(token_sections, client_list, market_name, getattr(inp, "intro_angle", "") or "")
+        feature_issues = clients_mod.feature_problems(token_sections, client_list, market_name, getattr(inp, "intro_angle", "") or "",
+                                                      [p.get("text", "") for p in getattr(inp, "points", None) or []])
         results.append(CheckResult("Client's offer not described: the opening speaks of the market, not of what the client sells",
                                    not feature_issues, "; ".join(feature_issues)))
     else:
