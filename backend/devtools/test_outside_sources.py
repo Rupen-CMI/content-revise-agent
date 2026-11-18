@@ -125,7 +125,8 @@ check("attributing_names: the cited publication is reported, the actor is not",
 
 # ------------------------------------------------------------------ SELECT: attribution of a figure to an outside source
 check("select: a figure per a research firm is flagged", bool(osrc.attributes_to_outside("Per Statista, 62% of shoppers use AI assistants.")))
-check("select: a statistic verb on a plain outside name is flagged", bool(osrc.attributes_to_outside("Gartner estimates 40% of CIOs will buy AI tools.")))
+check("select: a company forecasting from its own data is kept", not osrc.attributes_to_outside("US holiday online sales to grow 6.7% as discounts attract shoppers, Adobe Analytics forecasts"))
+check("select: a statistic verb on a research-firm shape is flagged", bool(osrc.attributes_to_outside("Mordor Intelligence estimates 40% of CIOs will buy AI tools.")))
 check("select: a firm-shaped attribution is flagged even with no digit", bool(osrc.attributes_to_outside("Mordor Intelligence expects strong growth.")))
 check("select: a news speech verb on a company is not a relayed statistic",
       osrc.attributes_to_outside("Reuters reported that Tesla will invest $5 billion in new plants.") == [])
@@ -167,8 +168,8 @@ check("figures: a '%' fact against a plain-count source is dropped",
       select("40% of shopper queries are handled by AI agents.", hit("Counts", "Retailers say 40 shopper queries are now handled by AI agents.")) == [])
 relayed = hit("Shopping study", "According to Statista, 62% of shoppers use AI assistants for gift ideas.")
 check("figures: a rival's statistic relayed by the news item is dropped", select("62% of shoppers use AI assistants for gift ideas.", relayed) == [])
-relayed2 = hit("Shopping study", "Statista estimates 62% of shoppers use AI assistants for gift ideas.")
-check("figures: a statistic verb relays it too", select("62% of shoppers use AI assistants for gift ideas.", relayed2) == [])
+relayed2 = hit("Shopping study", "Precedence Research estimates 62% of shoppers use AI assistants for gift ideas.")
+check("figures: a research firm's statistic verb relays it too", select("62% of shoppers use AI assistants for gift ideas.", relayed2) == [])
 own = hit("Adobe news", "Adobe said its traffic data shows 62% of shoppers use AI assistants for gift ideas.")
 check("figures: the actor's own statement of its own figure is kept", len(select("62% of shoppers use AI assistants for gift ideas.", own)) == 1)
 mixed = hit("Shopping study", "62% of shoppers use AI assistants for gift ideas.", "According to Statista, 62% of shoppers use AI assistants for gift ideas.")

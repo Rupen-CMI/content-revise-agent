@@ -373,7 +373,10 @@ def attributes_to_outside(text: str) -> list[str]:
         for h in _scan(s, EMPTY, ()):
             if h.mode in ("firm", "source"):
                 continue    # a bare firm-shaped product name in news is not a citation; an attribution without a figure is cut at write time
-            if not firm_shaped(h.name) and not (digit and (h.tier == 1 or _STAT_VERBS_RE.search(h.text))):
+            # A company announcing its own numbers ("US holiday online sales to grow 6.7%, Adobe Analytics forecasts") is primary
+            # data, kept and later written without the name; only a relaying frame ("per Statista, 62% ...") or a research-firm
+            # shape marks a statistic borrowed from someone else.
+            if not firm_shaped(h.name) and not (digit and h.tier == 1):
                 continue
             if h.name not in out:
                 out.append(h.name)
