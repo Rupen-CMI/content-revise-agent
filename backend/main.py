@@ -1503,7 +1503,7 @@ def _reports_payload(run: RunState) -> dict:
 
 
 OWN_SHEET_NOTE = (
-    "You are building this fact sheet yourself, because no report covers this market. Press Edit and add the market size, "
+    "You are building this fact sheet yourself, because no report covers this market. Add the market size, "
     "forecast, growth rate, segments, U.S. facts, drivers and key players you have. Your figures are used exactly as you "
     "enter them, no source is named for them and no report is linked in the article.")
 

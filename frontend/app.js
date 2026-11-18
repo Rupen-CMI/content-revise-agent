@@ -1600,6 +1600,8 @@ function formatDuration(totalSeconds) {
 const FS_HEADLINES = [["size", "Market size", "year"], ["forecast", "Forecast", "year"], ["cagr", "Growth rate (CAGR)", "period"]];
 const FS_STATEMENTS = [["us", "U.S. market"], ["drivers", "Drivers"], ["opportunities", "Opportunities"], ["segment_drivers", "Segment drivers"]];
 const FS_GAP = `<span class="fs-gap">not found in the report</span>`;
+// A sheet the editor builds themselves has no report behind it: an empty part is simply not given yet.
+const fsGap = (fs) => (fs && fs.built_by_editor ? `<span class="fs-gap">not added</span>` : FS_GAP);
 const FS_LEAD_BASIS = { stated: "stated by the source", derived: "worked out from its figures", editor: "set by the editor" };
 
 function fsSourceHtml(fs, entry) {
@@ -1617,7 +1619,7 @@ function fsSourceHtml(fs, entry) {
 }
 
 function factSheetViewHtml(fs, kind) {
-  const competitor = kind === "competitor";
+  const competitor = kind === "competitor" && !fs.built_by_editor;   // an own sheet has no original to compare with
   const cols = competitor ? 4 : 3;
   const base = fsSourceHtml(fs, null);
   // One table per section: the section title band first (the darkest surface), then the
@@ -1642,7 +1644,7 @@ function factSheetViewHtml(fs, kind) {
       + `${competitor ? `<td class="fs-orig">${original || "&mdash;"}</td>` : ""}`
       + `<td class="fs-used">${used}</td><td class="fs-source">${source}</td></tr>`;
   };
-  const gapRow = (label) => row(escapeHtml(label), FS_GAP, "", "", "fs-gap-row");
+  const gapRow = (label) => row(escapeHtml(label), fsGap(fs), "", "", "fs-gap-row");
   const badge = (e) => (e && e.edited_by_editor ? ' <span class="fs-badge">edited by editor</span>' : "");
   const agent = (text) => (text ? `<div class="fs-agent">Agent read: ${escapeHtml(text)}</div>` : "");
   const quote = (q) => (q ? `<div class="fs-quote">&ldquo;${escapeHtml(q)}&rdquo;</div>` : "");
@@ -1748,7 +1750,7 @@ function factSheetEditHtml(d, fs, kind) {
     `<input type="text" class="text-input fs-input" data-path="${path}" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder || "")}">`;
   const btn = (act, label, attrs = "", cls = "btn btn-secondary btn-small") => `<button type="button" class="${cls}" data-act="${act}" ${attrs}>${label}</button>`;
   const x = (act, attrs) => `<button type="button" class="report-url-remove fs-remove" data-act="${act}" ${attrs} title="Remove">&times;</button>`;
-  const gapHint = "not found in the report: enter it here";
+  const gapHint = fs && fs.built_by_editor ? "enter it here" : "not found in the report: enter it here";
   const out = [];
 
   out.push(`<section class="fs-edit-group"><h4>Headline figures</h4>`);
@@ -1782,12 +1784,12 @@ function factSheetEditHtml(d, fs, kind) {
       const was = kind === "competitor" ? (fs[key] || []).find((s) => s.id === e.id) : null;
       if (was && was.original_text) out.push(`<div class="fs-hint">Competitor original: ${escapeHtml(was.original_text)}</div>`);
     });
-    if (!d[key].length) out.push(`<p class="fs-note">${FS_GAP}</p>`);
+    if (!d[key].length) out.push(`<p class="fs-note">${fsGap(fs)}</p>`);
     out.push(`<div class="btn-row">${btn("add-item", "Add one", `data-key="${key}"`)}</div></section>`);
   }
   out.push(`<section class="fs-edit-group"><h4>Key players</h4>`);
   d.players.forEach((name, i) => out.push(`<div class="fs-edit-row">${inp(`players.${i}`, name, "Company")}${x("remove-player", `data-i="${i}"`)}</div>`));
-  if (!d.players.length) out.push(`<p class="fs-note">${FS_GAP}</p>`);
+  if (!d.players.length) out.push(`<p class="fs-note">${fsGap(fs)}</p>`);
   out.push(`<div class="btn-row">${btn("add-player", "Add a company")}</div></section>`);
   return `<div class="fs-edit">${out.join("")}</div>`;
 }
@@ -1869,6 +1871,7 @@ function fsRender(container) {
   // An outside report may cover a related market that stands in for the picked one (report.covers_market, from report.host).
   const covers = opts.report && opts.report.covers_market && opts.report.covers_market !== opts.report.name ? opts.report.covers_market : "";
   const readFrom = !opts.report ? ""
+    : fs && fs.built_by_editor ? `your own figures for ${escapeHtml(opts.report.name)} (no report)`
     : covers ? `${escapeHtml(covers)} report${opts.report.host ? ` (${escapeHtml(opts.report.host)})` : ""}, standing in for ${escapeHtml(opts.report.name)}`
     : opts.report.url ? `<a href="${escapeHtml(opts.report.url)}" target="_blank" rel="noopener">${escapeHtml(opts.report.name)}</a>${opts.report.host ? ` (${escapeHtml(opts.report.host)})` : ""}`
     : `${escapeHtml(opts.report.name)}${opts.report.host ? ` (${escapeHtml(opts.report.host)})` : ""}`;
@@ -1876,7 +1879,7 @@ function fsRender(container) {
   container.innerHTML = `${warnings}<div class="fs-toolbar"><div class="fs-title">${label}`
     + `${opts.confirmed ? ' <span class="fs-badge fs-badge-ok">confirmed</span>' : ""}</div><div class="fs-tools">${tools}</div></div>${report}`
     + (st.editing
-      ? `<p class="field-hint">Change any value, or fill one the report did not give. What you enter is used exactly as typed (never adjusted) and marked as yours; the agent's reading stays on record.</p>${factSheetEditHtml(st.draft, fs, kind)}`
+      ? `<p class="field-hint">${fs && fs.built_by_editor ? "Add the figures and facts you have for this market." : "Change any value, or fill one the report did not give."} What you enter is used exactly as typed (never adjusted) and marked as yours; the agent's reading stays on record.</p>${factSheetEditHtml(st.draft, fs, kind)}`
       : factSheetViewHtml(fs, kind));
   iconify();
 }
