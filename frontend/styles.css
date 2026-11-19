@@ -1644,31 +1644,34 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .canvas-block > ul, .canvas-block > p { margin-top: 0; }
 
 .canvas-bubble {
-  position: fixed;
+  position: absolute;   /* page coordinates: it scrolls with the selected words */
   z-index: 60;
-  width: 340px;
+  width: 440px;
   max-width: calc(100vw - 16px);
-  padding: 12px;
+  padding: 18px 20px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 .canvas-quote {
-  font-size: 12.5px;
+  font-size: 13.5px;
+  line-height: 1.5;
   font-style: italic;
   color: var(--text-muted);
-  max-height: 3.6em;
+  max-height: 4.5em;
   overflow: hidden;
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
 }
-.canvas-clip { margin: 0; font-size: 12px; color: var(--warning); }
+.canvas-clip { margin: 0; font-size: 12.5px; color: var(--warning); }
 .canvas-scope { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; align-self: flex-start; }
 .canvas-scope button {
-  padding: 5px 12px;
-  font-size: 12.5px;
+  padding: 7px 16px;
+  font-size: 13px;
   background: var(--bg-sunken);
   color: var(--text-muted);
   border: 0;
@@ -1677,10 +1680,10 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 }
 .canvas-scope button:last-child { border-right: 0; }
 .canvas-scope button.active { background: var(--accent); color: var(--accent-contrast); }
-.canvas-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.canvas-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .canvas-chip-btn {
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: 6px 13px;
+  font-size: 13px;
   background: var(--accent-soft);
   color: var(--accent);
   border: 1px solid var(--border);
@@ -1690,16 +1693,20 @@ mark.hl-evidence { background: var(--hl-evidence-bg); color: var(--hl-evidence-t
 .canvas-chip-btn:hover { border-color: var(--accent); }
 .canvas-instruction {
   width: 100%;
+  box-sizing: border-box;
+  min-height: 76px;
   resize: vertical;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
 .canvas-instruction:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.canvas-bubble .btn-row { gap: 10px; margin-top: 2px; }
 .canvas-error { margin: 0; font-size: 12.5px; color: var(--danger); }
 
 .canvas-pending {

@@ -2707,7 +2707,7 @@ function openBubble(sel, clipped, rect) {
       ${isBody ? `<button type="button" data-scope="section">Section</button>` : ""}
     </div>
     <div class="canvas-chips">${CANVAS_QUICK_ACTIONS.map(([label], i) => `<button type="button" class="canvas-chip-btn" data-quick="${i}">${escapeHtml(label)}</button>`).join("")}</div>
-    <textarea class="canvas-instruction" rows="2" placeholder="What should change? e.g. make this more formal"></textarea>
+    <textarea class="canvas-instruction" rows="3"placeholder="What should change? e.g. make this more formal"></textarea>
     <p class="canvas-error" hidden></p>
     <div class="btn-row">
       <button type="button" class="btn btn-primary btn-small canvas-send"><i data-lucide="loader-circle" class="spin" hidden></i> <span>Suggest</span></button>
@@ -2758,11 +2758,13 @@ function openBubble(sel, clipped, rect) {
   sendBtn.querySelector("svg, i").hidden = true;
   const w = bubble.offsetWidth;
   const h = bubble.offsetHeight;
+  // placed in page coordinates (the bubble is position:absolute), so it scrolls with the words it belongs to
   const left = Math.max(8, Math.min(rect.left, window.innerWidth - w - 8));
-  const below = rect.bottom + 8;
-  bubble.style.left = `${left}px`;
-  bubble.style.top = `${below + h > window.innerHeight && rect.top - h - 8 > 0 ? rect.top - h - 8 : below}px`;
-  area.focus();
+  const below = rect.bottom + 10;
+  const top = below + h > window.innerHeight && rect.top - h - 10 > 0 ? rect.top - h - 10 : below;
+  bubble.style.left = `${left + window.scrollX}px`;
+  bubble.style.top = `${top + window.scrollY}px`;
+  area.focus({ preventScroll: true });
 }
 
 function canvasPost(path, extra) {
@@ -3010,9 +3012,6 @@ canvasRoot.addEventListener("dblclick", (e) => {
 document.addEventListener("mousedown", (e) => {
   if (canvasUi.bubble && !canvasUi.bubble.contains(e.target)) closeBubble();
 });
-document.addEventListener("scroll", (e) => {
-  if (canvasUi.bubble && !canvasUi.bubble.contains(e.target)) closeBubble();
-}, true);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (canvasUi.bubble) closeBubble();
