@@ -18,8 +18,10 @@ from datetime import date
 import checks
 import clients as clients_mod
 import config
+import content_rules
 import llm
 import planning
+import polarity
 import prompt_rules
 import prompts
 import subheads
@@ -250,9 +252,12 @@ def _other_facts(run, shown: str) -> str:
     if inp is None:
         return "- (none)"
     rows = []
+    ignore = polarity.market_words(inp.market_name)
     for fid, it in inp.items.items():
         if f"[{fid}]" in shown:
             continue
+        if polarity.is_negative(f'{it.get("text", "")} {it.get("detail", "")}', ignore):
+            continue    # a setback that reached an older run's pool (polarity.py has since learnt its words) is never offered
         text = " ".join(str(it.get("text", "")).split())[:300]
         rows.append(f"[{fid}] {text} ({it.get('source') or 'no source named'})")
     return "\n".join(rows) or "- (none)"
@@ -273,6 +278,39 @@ def _whole_article(run, si: int) -> str:
     if run.faq:
         out.append("## FAQ\n" + "\n".join(f'Q: {f.get("question", "")} A: {f.get("answer", "")}' for f in run.faq))
     return "\n\n".join(out)
+
+
+def _coverage(run, si: int, j0: int, j1: int, faq_index: int | None) -> str:
+    """What the article already uses, worked out in code: each news evidence item's place (or that it is not in the article yet),
+    and the figures printed outside the part being edited. Left to read the whole article itself, the model told the editor that
+    unused items were "already stated elsewhere" and restated figures other sections print (live, Riz healthcare IT draft)."""
+    inp = run.plan_inputs
+    lines = []
+    if inp is not None:
+        items = _evidence_items(run)
+        where: dict[str, list[str]] = {}
+        for i, s in enumerate(run.sections):
+            for j, p in enumerate(s["paragraphs"]):
+                place = "this part" if faq_index is None and i == si and j0 <= j <= j1 else f'"{s.get("heading") or "the opening"}"'
+                for eid in sorted(_cites(p, items, run)):
+                    if place not in where.setdefault(eid, []):
+                        where[eid].append(place)
+        used = [f"[{eid}] in {', '.join(where[eid])}" for eid in sorted(where, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)]
+        unused = [f'[{it["id"]}]' for it in items if it["id"] not in where]
+        lines.append("News evidence already in the article: " + ("; ".join(used) or "none"))
+        lines.append("News evidence NOT in the article yet: " + (", ".join(unused) or "none"))
+    _, rest = _part_and_rest(run, si, j0, j1, faq_index)
+    shown: list[str] = []
+    for x in (rest if faq_index is None else []):
+        text = _plain(x)
+        for m in writer._FIGURE_RE.finditer(text):
+            figure = m.group(0).strip().rstrip(",.")
+            if (not re.fullmatch(r"(?:19|20)\d\d", m.group("num").rstrip(",.")) and writer._figure_keys(text[m.start():m.end() + 24])
+                    and figure not in shown):
+                shown.append(figure)
+    if faq_index is None:
+        lines.append("Figures the article already prints outside this part (never print them again here): " + (", ".join(shown) or "none"))
+    return "\n".join(lines)
 
 
 def _raw_with_selection(sel: RawSelection) -> str:
@@ -301,6 +339,10 @@ def build_prompt(run, sel: RawSelection, instruction: str, scope: str, retry_rep
         k = target["index"]
         section_text = f'Question: {run.faq[k].get("question", "")}\nAnswer: {marked}'
         label = "a FAQ answer (a direct, standalone answer of about 40 to 60 words)"
+    if target["kind"] == "body":
+        part = (si, 0, len(s["paragraphs"]) - 1, None) if scope == "section" else (si, target["paragraph"], target["paragraph"], None)
+    else:
+        part = (-1, 0, 0, target["index"])
     selection_note = f"The words to change are marked {SEL_OPEN}...{SEL_CLOSE} in the text below (the marks are not part of the article)."
     headings = "; ".join(f'"{x["heading"]}"' for x in run.sections if x.get("heading")) or "(none)"
     shown = _facts_block(run, s)
@@ -319,7 +361,7 @@ def build_prompt(run, sel: RawSelection, instruction: str, scope: str, retry_rep
     return prompts.CANVAS_USER.format(
         title=run.title, market_name=inp.market_name if inp is not None else run.report.name, today=date.today().isoformat(),
         headings=headings, article=_whole_article(run, si if target["kind"] == "body" else -1), section_label=label, selection_note=selection_note, section_text=section_text, neighbours=neighbours,
-        block=shown, other_facts=_other_facts(run, shown),
+        block=shown, other_facts=_other_facts(run, shown), coverage=_coverage(run, *part),
         points="\n".join(f'[{p["id"]}] {p["text"]}' for p in (inp.points if inp is not None else [])) or "- (none)",
         client=client, instruction=instruction.strip(),
         scope_rule={"selection": prompts.CANVAS_RULE_SELECTION, "paragraph": prompts.CANVAS_RULE_PARAGRAPH,
@@ -349,7 +391,7 @@ def _cut(sentence: str) -> str:
 
 
 def guard(run, si: int, j0: int, j1: int, new_paras: list[str], extra_numbers: set[str], logger: logging.Logger,
-          faq_index: int | None = None) -> tuple[list[str], list[str]]:
+          faq_index: int | None = None, instruction: str = "") -> tuple[list[str], list[str]]:
     """(the new paragraphs after the writer's strips, what the strips removed as sentences for the note). The strips run on a COPY of
     all sections with ONLY the changed paragraphs tracked (each carries a letters-only first line), so the repeat checks see the rest
     of the article but nothing else is rewritten. A FAQ answer is checked as a pseudo-section after the article, beside the other
@@ -411,11 +453,13 @@ def guard(run, si: int, j0: int, j1: int, new_paras: list[str], extra_numbers: s
             else:
                 notes.append("Cut an outside source's name from a sentence.")
     final = [p if m is None else (state[i] or "").strip() for i, (m, p) in enumerate(zip(marks, new_paras))]
-    final, copied = _drop_copies(run, si if faq_index is None else -1, j0, j1, faq_index, final)
-    notes += [f'Dropped "{_cut(x)}": the article already says it.' for x in copied]
-    return [p for p in final if p], notes
+    final, added_notes = _drop_added(run, si if faq_index is None else -1, j0, j1, faq_index, final, instruction, extra_numbers)
+    return [p for p in final if p], notes + added_notes
 
 
+# the note reasons of a sentence that repeats the article (the writer's two repeat strips and _drop_added's three)
+_REPEAT_REASONS = ("it repeated a figure printed earlier", "it cited evidence already used elsewhere", "the article already says it",
+                   "the article already gives that figure", "the article already reports that development")
 _COPY_STOP = set("the a an of and or in on to for with by at as is are was were that this these its it from into than which who their be "
                  "has have had will can".split())
 _COPY_SHARE = 0.8     # copied sentences measured 0.97-1.0 of their words in the original; two different sentences of one draft <= 0.67
@@ -426,28 +470,84 @@ def _content_words(sentence: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", sentence.lower()) if w not in _COPY_STOP and len(w) > 2}
 
 
-def _drop_copies(run, si: int, j0: int, j1: int, faq_index: int | None, paras: list[str]) -> tuple[list[str], list[str]]:
-    """A suggestion's sentence that restates one the article already has outside the changed paragraphs goes (live: "back this up" on a
-    sub-segment paragraph copied the next paragraph's four sentences into it). The strips only catch news evidence repeated across
-    sections; this catches any sentence, also inside the same section. A sentence carrying a link marker is never dropped, and only
-    sentences the suggestion adds are checked (the part's own sentences stay)."""
-    # a body edit is held against the body and a FAQ answer against the other answers: the FAQ restates the body's points by design
-    elsewhere, own = [], set()
+def _plain(text: str) -> str:
+    """`text` as the reader sees its words: link markers reduced to their link words (a link's address carries digits that are no
+    figure)."""
+    return clients_mod.plain(re.sub(prompts.CMI_LINK_PATTERN, r"\1", text.replace(prompts.SPONSOR_TOKEN, " ")))
+
+
+_CURRENCY = {"$": "usd", "€": "eur", "£": "gbp", "₹": "inr"}
+
+
+def _figures(text: str) -> set[tuple[str, str]]:
+    """writer._figure_keys with one currency spelling: the facts write "$3.7 million", the draft "USD 3.7 million"."""
+    return {(v, " ".join(_CURRENCY.get(w, w) for w in u.split())) for v, u in writer._figure_keys(_plain(text))}
+
+
+def _evidence_items(run) -> list[dict]:
+    """The run's news evidence as the citation matcher takes it ({id, fact}), setbacks left out (they are never offered)."""
+    inp = run.plan_inputs
+    if inp is None:
+        return []
+    ignore = polarity.market_words(inp.market_name)
+    return [{"id": i["id"], "fact": i["text"]} for i in inp.items.values()
+            if i["kind"] == "evidence" and not polarity.is_negative(f'{i["text"]} {i.get("detail", "")}', ignore)]
+
+
+def _cites(text: str, items: list[dict], run) -> set[str]:
+    """The evidence ids `text` reports: by the citation matcher (names and words), or by the item's own figure (a one-figure item
+    has no second figure for the matcher: "$3.7 million" of AI spending read as unused while the trends printed it)."""
+    if not items:
+        return set()
+    out = content_rules.evidence_cited_ids(_plain(text), items, run.plan_inputs.market_name)
+    figures = _figures(text)
+    return out | {it["id"] for it in items if figures and _figures(it["fact"]) & figures}
+
+
+def _part_and_rest(run, si: int, j0: int, j1: int, faq_index: int | None) -> tuple[list[str], list[str]]:
+    """(the changed part's own sentences, every other sentence it is held against). A body edit is held against the body and a FAQ
+    answer against the other answers: the FAQ restates the body's points by design."""
+    own, rest = [], []
     if faq_index is None:
         for i, s in enumerate(run.sections):
             for j, p in enumerate(s["paragraphs"]):
-                if not (i == si and j0 <= j <= j1):
-                    elsewhere += [w for w in map(_content_words, _sentences(p)) if w]
-                else:
-                    own.update(_sentences(p))
+                (own if i == si and j0 <= j <= j1 else rest).extend(_sentences(p))
     else:
         for k, qa in enumerate(run.faq or []):
-            answer = _sentences(str(qa.get("answer") or ""))
-            if k == faq_index:
-                own.update(answer)
-            else:
-                elsewhere += [w for w in map(_content_words, answer) if w]
-    out, copied = [], []
+            (own if k == faq_index else rest).extend(_sentences(str(qa.get("answer") or "")))
+    return own, rest
+
+
+def _drop_added(run, si: int, j0: int, j1: int, faq_index: int | None, paras: list[str], instruction: str,
+                extra_numbers: set[str]) -> tuple[list[str], list[str]]:
+    """(the paragraphs, a note line per sentence dropped). A sentence the suggestion ADDS (not one of the part's own sentences, word
+    for word) goes when
+    - it restates a sentence the article already has elsewhere (live: "back this up" on a sub-segment paragraph copied the next
+      paragraph's four sentences into it);
+    - it prints a figure the article already prints elsewhere, or that this suggestion has already printed (live: "add more data" on
+      the size paragraph restated the forecast figure; writer.strip_repeat_figures only removes a LATER repeat of an outside source's
+      figure, so a report figure, or a repeat of a figure printed further down the article, passed). A figure the part itself
+      already carried may be reworded once; a figure the editor typed is the editor's call;
+    - it reports a news development the article already reports outside the part (live: "beef it up" on the U.S. section retold
+      the Kyndryl acquisition the companies section reports; writer.strip_repeat_evidence keeps the EARLIER citation, so an added
+      sentence in an earlier section survived it);
+    - it describes a setback, unless the editor asked for one (live: "beef it up" wrote in an antitrust investigation; the articles
+      carry favourable developments only, see polarity.py).
+    A sentence carrying a link marker is never dropped: the link's marker must come back."""
+    own_list, rest = _part_and_rest(run, si, j0, j1, faq_index)
+    own = set(own_list)
+    rest_words = [w for w in map(_content_words, rest) if w]
+    own_figures = set().union(*map(_figures, own_list)) if own_list else set()
+    rest_figures = set() if faq_index is not None else set().union(*map(_figures, rest)) if rest else set()
+    editor = {n.replace(",", "") for n in extra_numbers}
+    ignore = polarity.market_words(run.plan_inputs.market_name if run.plan_inputs is not None else "")
+    asked_setback = polarity.is_negative(instruction, ignore)
+    items = _evidence_items(run)
+    own_cited = set().union(*(_cites(x, items, run) for x in own_list)) if own_list else set()
+    rest_cited = set() if faq_index is not None else set().union(*(_cites(x, items, run) for x in rest)) if rest else set()
+    printed: set[tuple[str, str]] = set()
+    told: set[str] = set()
+    out, notes = [], []
     for p in paras:
         if subheads.is_subhead(p):
             out.append(p)
@@ -458,16 +558,29 @@ def _drop_copies(run, si: int, j0: int, j1: int, faq_index: int | None, paras: l
             for x in _SPLIT.split(line):
                 if not x.strip():
                     continue
-                w = _content_words(x)
-                if (len(w) >= _COPY_MIN_WORDS and "[[" not in x and " ".join(x.split()) not in own
-                        and any(len(w & o) / len(w) >= _COPY_SHARE for o in elsewhere)):
-                    copied.append(x)
+                figs = {f for f in _figures(x) if f[0] not in editor}
+                cites = _cites(x, items, run)
+                why = ""
+                if " ".join(x.split()) not in own and "[[" not in x:
+                    w = _content_words(x)
+                    if len(w) >= _COPY_MIN_WORDS and any(len(w & o) / len(w) >= _COPY_SHARE for o in rest_words):
+                        why = "the article already says it"
+                    elif any(f in printed or (f in rest_figures and f not in own_figures) for f in figs):
+                        why = "the article already gives that figure"
+                    elif cites & ((rest_cited - own_cited) | told):
+                        why = "the article already reports that development"
+                    elif not asked_setback and polarity.is_negative(_plain(x), ignore):
+                        why = "it describes a setback, and the article carries favourable developments only"
+                if why:
+                    notes.append(f'Dropped "{_cut(x)}": {why}.')
                     continue
+                printed |= figs
+                told |= cites
                 keep.append(x)
             if keep:
                 lines.append(" ".join(keep))
         out.append("\n".join(lines))
-    return out, copied
+    return out, notes
 
 
 # ------------------------------------------------------------------------------------------------ the editor state on the run
@@ -640,6 +753,8 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
     old_text = sel.selected_raw if scope == "selection" else "\n\n".join(old_paras)
 
     problem = ""
+    extra = set(c["editor_numbers"]) | _numbers(instruction)
+    guarded, dropped = [], []
     for attempt in range(2):
         replacement, model_note = _ask(run, sel, instruction, scope, retry_text, problem, logger)
         cut = sel
@@ -680,8 +795,15 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
         if not problem and scope == "paragraph" and subheads.is_subhead(old_paras[0]) and new_paras and not subheads.is_subhead(new_paras[0]):
             new_paras[0] = subheads.SUBHEAD_PREFIX + new_paras[0].lstrip("# ")
         if not problem:
-            break
-        logger.info(f"[canvas] suggestion refused ({problem})" + (": retrying once" if attempt == 0 else ""))
+            guarded, dropped = guard(run, si, j0, j1, new_paras, extra, logger, faq_index=faq_index, instruction=instruction)
+            repeats = [d for d in dropped if any(r in d for r in _REPEAT_REASONS)]
+            if not repeats or attempt == 1:
+                break
+            # cut out after the fact, a retold development leaves the sentences that led into it or built on it behind ("these
+            # combinations widen ..." with the combinations gone, live): the writer is asked once more, told what it repeated
+            problem = ("it retold what the article already says elsewhere (" + " ".join(repeats) + "). Leave all of that out, together "
+                       "with any sentence that only leads into it or builds on it")
+        logger.info(f"[canvas] suggestion refused ({problem[:300]})" + (": retrying once" if attempt == 0 else ""))
     if problem:
         if "link" in problem or "marker" in problem:
             raise CanvasError(422, "The link could not be kept in the suggestion, so none was made. Try again, or edit by hand.")
@@ -690,8 +812,7 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
                                    + " without losing content. Try a smaller selection or a different instruction.")
         raise CanvasError(422, f"The writer gave no usable suggestion ({problem}). Try again.")
 
-    extra = set(c["editor_numbers"]) | _numbers(instruction)
-    new_paras, dropped = guard(run, si, j0, j1, new_paras, extra, logger, faq_index=faq_index)
+    new_paras = guarded
     if not new_paras:
         raise CanvasError(422, "Every sentence of the suggestion was dropped by the guardrails"
                                + (f" ({dropped[0]})" if dropped else "") + ". Rephrase the instruction or edit by hand.")

@@ -194,6 +194,17 @@ kept_solo = writer.strip_repeat_evidence(copy.deepcopy(solo_sections), repeat_in
 check("the wholesale guard: a section whose only citation is a repeat keeps it",
       kept_solo[1]["paragraphs"] == solo_sections[1]["paragraphs"])
 
+# ---- a roll of player names cites no fact about one of those players; a sentence that restates the fact does ------------
+
+FTC = {"id": "W44", "fact": "The U.S. Federal Trade Commission opened an antitrust investigation into health records company Epic Systems."}
+ROLL = ("The competitive landscape brings together Epic Systems, Oracle Health, Optum, Allscripts Healthcare Solutions, "
+        "Athenahealth, Cerner, GE HealthCare and McKesson.")
+check("a roll of names does not cite a fact about one of them (a name of several words counts as one shared word)",
+      "W44" not in content_rules.evidence_cited_ids(ROLL, [FTC], "Healthcare IT Market"))
+check("a sentence that restates the fact still cites it",
+      "W44" in content_rules.evidence_cited_ids("In August 2026 the Federal Trade Commission opened an antitrust investigation "
+                                                "into Epic Systems.", [FTC], "Healthcare IT Market"))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

@@ -277,9 +277,42 @@ r = suggest(run, T, "Providers keep adding capacity as buyers adopt widgets in m
     {"replacement": "According to News Site, buyers adopt widgets in more settings. Providers keep adding capacity.", "note": ""}])
 after = "".join(x["text"] for x in r["after"])
 check("guard: an outside source name is stripped", "News Site" not in after, after)
-check("guard: a fact-backed figure is kept", "USD 1.2 billion" in "".join(x["text"] for x in suggest(
-    run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Add the size", answers=[
-        {"replacement": "The market stands at USD 1.2 billion in 2025. Providers keep adding capacity.", "note": ""}])["after"]))
+check("guard: a fact-backed figure is kept", "13.1%" in "".join(x["text"] for x in suggest(
+    run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Add the growth rate", answers=[
+        {"replacement": "The market grows at 13.1% a year. Providers keep adding capacity.", "note": ""}])["after"]))
+_r = suggest(run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Add more data", answers=[
+    {"replacement": "The market grows at 13.1% a year. Its USD 1.2 billion base in 2025 widens the room for providers. "
+                    "Providers keep adding capacity.", "note": ""}] * 2)
+_after = "".join(x["text"] for x in _r["after"])
+check("guard: a figure the article already prints elsewhere is not printed again (a report figure, printed in an EARLIER paragraph)",
+      "1.2 billion" not in _after and "13.1%" in _after and "already gives that figure" in _r["note"], _after + " | " + _r["note"])
+_r = suggest(run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Add more data", answers=[
+    {"replacement": "The market grows at 13.1% a year. Providers keep adding capacity, and 13.1% growth rewards them.", "note": ""}] * 2)
+_after = "".join(x["text"] for x in _r["after"])
+check("guard: a figure is printed once within the suggestion", _after.count("13.1%") == 1, _after)
+try:
+    suggest(run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Beef it up", answers=[
+        {"replacement": "Providers keep adding capacity as buyers adopt widgets in more settings. "
+                        "Regulators opened an antitrust investigation into Acme in 2026.", "note": ""}])
+    _msg = "no error"
+except canvas.CanvasError as e:
+    _msg = f"{e.status} {e.detail}"
+check("guard: an added setback is dropped and named (the articles carry favourable developments only)",
+      _msg.startswith("422") and "setback" in _msg, _msg)
+_r = suggest(run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Mention the antitrust investigation into Acme",
+             answers=[{"replacement": "Providers keep adding capacity as buyers adopt widgets in more settings. "
+                                      "Regulators opened an antitrust investigation into Acme in 2026.", "note": ""}])
+run.sections[3]["paragraphs"][2] = "Acme launched a new product for widget buyers, which widens the product range on offer."
+_r2 = suggest(run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "Beef it up", answers=[
+    {"replacement": "Providers keep adding capacity as buyers adopt widgets in more settings. In 2026 Acme launched a new product "
+                    "for buyers of widget services. Buyers now weigh service depth across more settings.", "note": ""},
+    {"replacement": "Providers keep adding capacity as buyers adopt widgets in more settings. "
+                    "Buyers now weigh service depth across more settings.", "note": ""}])
+_after = "".join(x["text"] for x in _r2["after"])
+check("guard: a development a LATER section already reports is not retold; the writer is asked again, told what it repeated",
+      "Acme launched" not in _after and "service depth" in _after and "retold what the article already says" in CALLS[-1]["user"]
+      and "already reports that development" in CALLS[-1]["user"], _after + " | " + _r2["note"])
+check("guard: a setback the editor asks for stays (the editor's call)", "antitrust" in "".join(x["text"] for x in _r["after"]), _r["note"])
 check("guard: when every sentence is dropped the suggestion is 422", raises(lambda: suggest(
     run, T, "Providers keep adding capacity as buyers adopt widgets in more settings.", "x", answers=[
         {"replacement": "Demand rose 45% last year.", "note": ""}]), 422) is None)
@@ -467,17 +500,32 @@ _other = "Regional testing networks expand secure remote proctoring capacity acr
 run.sections[2]["paragraphs"].append(_other)
 try:
     suggest(run, T, " ".join(_lw[:4]), instruction="back this up", scope="paragraph",
-            answers=[{"replacement": _LONG + " " + _other, "note": ""}])
+            answers=[{"replacement": _LONG + " " + _other, "note": ""}] * 2)
     _msg = "no error"
 except canvas.CanvasError as e:
     _msg = f"{e.status} {e.detail}"
 check("copies: a suggestion that only copies another paragraph's sentence gives a 422 saying the article already says it",
       _msg.startswith("422") and "already says it" in _msg, _msg)
 out = suggest(run, T, " ".join(_lw[:4]), instruction="back this up", scope="paragraph",
-              answers=[{"replacement": _LONG + " Buyers now expect integrated scoring dashboards. " + _other, "note": ""}])
+              answers=[{"replacement": _LONG + " Buyers now expect integrated scoring dashboards. " + _other, "note": ""}] * 2)
 _new = run.canvas["pending"][out["suggestion_id"]]["new"]
 check("copies: the copied sentence goes, the genuinely new one stays",
       _other not in _new[0] and "integrated scoring dashboards" in _new[0] and "already says it" in out["note"], str(_new))
+
+# ------------------------------------------------------------------ what the article already uses, worked out in code
+run = make_run()
+run.plan_inputs.items["W3"] = {"id": "W3", "kind": "evidence", "text": "Regulators opened an antitrust investigation into Beta Corp.",
+                               "source": "News Site", "tags": [], "sections": []}
+run.sections[3]["paragraphs"][1] = "Acme launched a new product for widget buyers, a launch that widens the product range."
+_cov = canvas._coverage(run, 2, 1, 1, None)
+check("coverage: news evidence the article cites is listed with its place, the rest as not in the article yet",
+      '[W1] in "' in _cov and "NOT in the article yet: [W2]" in _cov, _cov)
+check("coverage: a setback item is never offered", "W3" not in _cov and "antitrust" not in canvas._other_facts(run, ""), _cov)
+check("coverage: the figures printed outside the part are listed, years left out",
+      "USD 1.2 billion" in _cov and "2025" not in _cov.split("Figures")[1], _cov)
+_prompt = canvas.build_prompt(run, canvas.locate(run, tpara(2, 1), *quote_at(run, tpara(2, 1), "Providers keep adding")), "add anything missed", "paragraph")
+check("coverage: the prompt carries it, and the note rule bars describing additions and the plan's internals",
+      "WHAT THE ARTICLE ALREADY USES" in _prompt and "never describes what you added" in _prompt and "favourable developments only" in _prompt)
 
 _n = canvas._clean_note("No listed fact gives it: the telehealth facts (fs.drivers.2, fs.us.3) give no count, and W45 is dated July 2026.")
 check("note: the plan's fact ids are taken out of the note the editor reads", "fs." not in _n and "W45" not in _n and "facts give" in _n, _n)

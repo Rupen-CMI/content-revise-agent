@@ -13,16 +13,25 @@ NEGATIVE_STEMS = (
     "penalt", "lawsuit", "layoff", "bankrupt", "fraud", "breach", "vulnerab", "delay", "shutdown", "stagnat",
     "weaken", "weakness", "obstacle", "impediment", "bottleneck", "pressures", "burden", "backlash", "recall",
     "fatal", "outage", "cyberattack", "ransomware", "violation", "sanction", "tariff", "inflation",
+    # legal and regulatory action against a company (found live: "The FTC opened an antitrust investigation into Epic Systems"
+    # had no hit, passed the evidence backstop and reached a canvas suggestion as a U.S. development)
+    "antitrust", "anticompetitive", "anti-competitive", "subpoena", "indict", "misconduct", "scandal", "allegation",
 )
 # Whole words that must not match as a stem inside a longer word ("fine" in "refine", "ban" in "bank").
 NEGATIVE_WORDS = ("ban", "bans", "banned", "fine", "fines", "fined", "dropped", "falling", "fell", "weak", "struggle",
                   "struggles", "struggling", "fail", "fails", "failed", "failure", "failures", "cost burden", "high cost",
                   "lack of", "limited by", "pose risk", "poses risk", "posing risk", "face risk", "faces risk", "facing risk",
                   "high risk", "rising risk", "growing risk", "increasing risk", "major risk", "serious risk",
-                  "significant risk", "concern over", "concern about", "pricing pressure", "margin pressure")
+                  "significant risk", "concern over", "concern about", "pricing pressure", "margin pressure",
+                  "sued", "sues", "accused", "probe into", "probe of", "class action")
 
 _STEM_RE = re.compile(r"\b(?:" + "|".join(NEGATIVE_STEMS) + r")\w*", re.I)
 _WORD_RE = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in NEGATIVE_WORDS) + r")\b", re.I)
+# An inquiry opened against someone ("opened an antitrust investigation", "is facing the FTC probe", "under investigation"). A
+# bare "investigation" or "probe" stays neutral: clinical investigations and ultrasound probes are products of some markets.
+_ACTION_RE = re.compile(r"\b(?:opened|opens|launched|launches|began|begins|started|starts|faces|facing|faced|under)\s+"
+                        r"(?:an?\s+|the\s+)?(?:(?!clinical|scientific|research|medical|diagnostic)[\w.'-]+\s+){0,3}?"
+                        r"(?:investigation|probe|inquiry)\b", re.I)
 
 # Phrases that use a negative word to say something positive. They are blanked before matching, so "no longer a barrier"
 # or "reduces the risk of fraud" never counts as negative wording.
@@ -56,7 +65,8 @@ def negative_hits(text: str, ignore=frozenset()) -> list[str]:
         return []
     cleaned = _neutralise(text)
     found: list[str] = []
-    for m in sorted([*_STEM_RE.finditer(cleaned), *_WORD_RE.finditer(cleaned)], key=lambda m: m.start()):
+    for m in sorted([*_STEM_RE.finditer(cleaned), *_WORD_RE.finditer(cleaned), *_ACTION_RE.finditer(cleaned)],
+                    key=lambda m: m.start()):
         word = m.group(0).lower()
         if any(word.startswith(i) or i.startswith(word) for i in ignore):
             continue

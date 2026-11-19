@@ -133,8 +133,20 @@ def _sentence_citations(
     citation" (found live), whose later true citations the repeat-evidence stripper then removed."""
     import pipeline
     stems = _content_stems(sentence) - own
+    fact_of = {it["id"]: it["fact"] for it in items}
     return [eid for eid in sorted(pipeline._evidence_used_ids(sentence, items))
-            if len(stems & facts_of[eid]) >= _EVIDENCE_MIN_SHARED_WORDS]
+            if _shared_words(stems & facts_of[eid], fact_of[eid]) >= _EVIDENCE_MIN_SHARED_WORDS]
+
+
+def _shared_words(shared: frozenset[str], fact: str) -> int:
+    """How many words a sentence shares with a fact, a name of several words counting once: "Epic Systems" is one shared
+    name, not two shared words (found live: a roll of player names, "Epic Systems, Oracle Health, ...", shared "epic",
+    "system" and "health" with the FTC's investigation into Epic Systems and so cited it, and the item read as used)."""
+    import pipeline
+    n = len(shared)
+    for _, phrase in pipeline._fact_entities(fact):
+        n -= max(0, len(_content_stems(phrase) & shared) - 1)
+    return n
 
 
 def _fact_stems(items: list[dict], market_name: str = "") -> tuple[dict[str, frozenset[str]], frozenset[str]]:
