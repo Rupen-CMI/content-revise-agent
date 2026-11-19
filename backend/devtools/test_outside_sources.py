@@ -134,6 +134,18 @@ check("attributing_names: the cited publication is reported, the actor is not",
 
 # ------------------------------------------------------------------ SELECT: attribution of a figure to an outside source
 check("select: a figure per a research firm is flagged", bool(osrc.attributes_to_outside("Per Statista, 62% of shoppers use AI assistants.")))
+# the trends and sub-segment spec (2026-11-19) asks for statistics from government bodies, regulators, associations and institutions
+check("select: a figure an association publishes is kept",
+      osrc.attributes_to_outside("According to the American Association of Colleges of Nursing, the faculty vacancy rate was 7.2% in 2025.") == [])
+check("select: a figure a government agency publishes is kept",
+      osrc.attributes_to_outside("According to the U.S. Energy Information Administration, EV sales rose 12% in 2025.") == [])
+check("select: a figure a national statistics office publishes is kept",
+      osrc.attributes_to_outside("Per the Office for National Statistics, 18% of retail sales were online in 2025.") == [])
+check("select: a rival firm's figure is still flagged even with an institution-like word",
+      bool(osrc.attributes_to_outside("According to Allied Market Research, adoption reached 40% in 2025.")))
+check("official body: a statistics portal brand is a rival, not an official body",
+      osrc.rival_brand("Statista") and not osrc.official_body("Statista"))
+check("official body: a research-firm name is never an official body", not osrc.official_body("Fortune Business Insights"))
 check("select: a company forecasting from its own data is kept", not osrc.attributes_to_outside("US holiday online sales to grow 6.7% as discounts attract shoppers, Adobe Analytics forecasts"))
 check("select: a statistic verb on a research-firm shape is flagged", bool(osrc.attributes_to_outside("Mordor Intelligence estimates 40% of CIOs will buy AI tools.")))
 check("select: a firm-shaped attribution is flagged even with no digit", bool(osrc.attributes_to_outside("Mordor Intelligence expects strong growth.")))

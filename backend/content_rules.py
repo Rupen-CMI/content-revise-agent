@@ -93,29 +93,43 @@ def _content_stems(sentence: str) -> frozenset[str]:
     )
 
 
-def repeated_point_problems(sections: list[dict], threshold: float = 0.55, min_stems: int = 6, market_name: str = "") -> list[str]:
+def repeated_point_problems(
+    sections: list[dict], threshold: float = 0.55, min_stems: int = 6, market_name: str = "", own_terms=(),
+) -> list[str]:
     """Two sentences in DIFFERENT market sections that make the same point: their content words overlap by at least
-    `threshold` of the shorter sentence's. A point is made once in the article."""
-    seen: list[tuple[str, frozenset[str], str]] = []
+    `threshold` of the shorter sentence's. A point is made once in the article.
+
+    `own_terms` are words every article on the topic must carry — the market's own name and each analysed
+    sub-segment's category name. The sub-segment analysis has to open by naming its category and the split it leads
+    ("Online delivery leads the mode split ... at 55.9%"), and the segmentation list has to name the same category in
+    the same split, so that shared vocabulary says nothing about whether the point repeats. Subtracting it (as the
+    market's own name already is) lets a real repeat — the same reasoning said twice — still be caught. The subtraction
+    is for the overlap only: the min-stems gate and the shorter-sentence denominator use the full stems, because a
+    sentence that names its category is not thereby too short to compare (subtracting first let a genuine repeat that
+    happens to name the category drop out of the check)."""
+    seen: list[tuple[str, frozenset[str], frozenset[str], str]] = []
     out: list[str] = []
     own = _content_stems(market_name)       # the market's own name is in every section and says nothing about the point
+    for term in own_terms:
+        own |= _content_stems(str(term or ""))
     for s in sections:
         if not _is_market(s):
             continue
         label = (s.get("heading") or "").strip() or s["sop"][0]
         for p in s["paragraphs"]:
             for sentence in _sentences(p):
-                stems = _content_stems(sentence) - own
-                if len(stems) < min_stems:
+                full = _content_stems(sentence)
+                if len(full) < min_stems:
                     continue
-                for other_label, other_stems, other in seen:
+                stems = full - own          # the category name is required wording, so it never counts as overlap
+                for other_label, other_stems, other_full, other in seen:
                     if other_label == label:
                         continue
                     shared = len(stems & other_stems)
-                    if shared / min(len(stems), len(other_stems)) >= threshold:
+                    if shared / min(len(full), len(other_full)) >= threshold:
                         out.append(f"{label} repeats {other_label}: {sentence[:70]!r} / {other[:70]!r}")
                         break
-                seen.append((label, stems, sentence))
+                seen.append((label, stems, full, sentence))
     return out
 
 

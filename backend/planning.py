@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import clients as clients_mod
 import demand
 import facts
+import freshness
 import llm
 import market_names
 import prompts
@@ -36,11 +37,11 @@ _TRANSITION_MAX_WORDS = 40
 # explanation), the intro budgets to ~18% (hard-capped 20%, growing-article exception for a long retained
 # paragraph), and the transition and market block take fixed shares of that target.
 MAX_WORDS = 1700
-TARGET_WORDS = 1550               # §3.6b: three detailed paragraphs per trend lift the SOP band to 1,300-1,700
+TARGET_WORDS = 1500               # §3.6b, inside the 1,300-1,700 band; one ~100-word paragraph per trend since 2026-11-19
 INTRO_SHARE, INTRO_CAP = 0.18, 0.20   # the intro budgets to ~18% of the target, hard-capped at 20%
 TRANSITION_SHARE = 0.075          # inside the 5-10% band
 MIN_OWN_INTRO_WORDS = 20          # one lead-in sentence carrying the report link, beside the retained paragraph
-_SECTION_WEIGHTS = {"report_context": 130, "trends": 450, "segmentation": 110, "subsegment": 190,
+_SECTION_WEIGHTS = {"report_context": 130, "trends": 390, "segmentation": 110, "subsegment": 210,
                     "country_us": 150, "key_players": 150, "conclusion": 100}
 _FACTS_FOR_FULL_BUDGET = {"report_context": 5, "trends": 7, "segmentation": 5, "subsegment": 4, "country_us": 4, "key_players": 4}
 _MIN_FACTOR = 0.45                # even a section with no facts keeps this share of its weight (explanation, not padding)
@@ -261,7 +262,8 @@ def build_inputs(
                 sections = {"country_us"}       # a U.S. finding belongs to the U.S. section and to no trend or other section
         items[e["id"]] = {
             "id": e["id"], "kind": "evidence", "tags": list(e.get("tags") or []), "text": e["fact"], "detail": e.get("detail", ""),
-            "source": e.get("source", ""), "historical": False, "sections": sections, "subsegment": sub_name,
+            "source": e.get("source", ""), "origin": e.get("origin", ""), "historical": False, "sections": sections,
+            "subsegment": sub_name,
         }
     longtails = [{"id": f"L{i}", **lt} for i, lt in enumerate(demand_result.get("long_tail") or [], 1)]
     us = any(_is_us_fact(i) for i in items.values())
@@ -421,11 +423,26 @@ def _organisations(item: dict) -> set[tuple[str, ...]]:
     return names
 
 
+def _event_months(item: dict) -> set[str]:
+    """The one month (YYYY-MM) a news item's event happened in: the first month-year its fact sentence states, else its
+    source label's publication month. The detail is never read for it: it often dates a second, different development
+    ('Acme also signed a partnership with Beta in May 2026'), and taking it merged two events of one company into one
+    (found live). A later article about an earlier launch still states the launch's own month ('launched Assessment
+    Builder in February 2026'), so the fact's month is the event's even when the label is months later."""
+    for hit in freshness.INLINE_EVENT_DATE_RE.finditer(item.get("fact") or item.get("text") or ""):
+        gd = hit.groupdict()
+        num = freshness._MONTHS.get((gd.get("month") or "").lower().rstrip("."))
+        if num:
+            return {f"{gd['year']}-{num:02d}"}
+    label = _event_month(item)
+    return {label} if label else set()
+
+
 def same_event(a: dict, b: dict) -> bool:
-    """Two news items report one event: the same named organisation (one name the start of the other: 'Acme' and 'Acme Corp') and
-    the same month. Two items with no month are never the same event."""
-    month = _event_month(a)
-    if not month or month != _event_month(b):
+    """Two news items report one event: the same named organisation (one name the start of the other: 'Acme' and 'Acme Corp')
+    and one month they both tie the development to — the month the item's own fact states, else its source label's. Two
+    items with no month in common are never the same event, and a month only in a detail is not the event's."""
+    if not (_event_months(a) & _event_months(b)):
         return False
     return any(x[:len(y)] == y or y[:len(x)] == x for x in _organisations(a) for y in _organisations(b))
 

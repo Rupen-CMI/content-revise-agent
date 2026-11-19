@@ -44,7 +44,10 @@ _RULES: dict[str, tuple[str, str, str]] = {
         "launched an AI agent in May 2026\"), give its month when the fact has one, and never name the outlet that reported it and never "
         "credit it to CMI. A statistic that a listed fact hands to a third party is stated plainly too, without the third party's name. "
         "A name is written only as the actor of a development a listed fact describes: a name is never carried over from another fact, and "
-        "a fact is never given an actor it does not list.")),
+        "a fact is never given an actor it does not list. The one exception is a fact marked \"source to name: <name>\" (only the trends "
+        "and sub-segment sections carry them): its figure is credited to exactly that name, a public regulatory or official-statistics body, with its year, in "
+        "your own phrasing; no other source is named for any fact, never an outlet, association, company or website, and a rival "
+        "research firm is never named.")),
     "figures": ("FACTS AND SOURCES", "Writing a figure", (
         "A figure is stated with its unit, its base year and what it measures; a sentence that gives a number says what the number "
         "measures. At most one fact goes in a sentence, and each fact goes in the sentence that makes the section's point. A fact marked "

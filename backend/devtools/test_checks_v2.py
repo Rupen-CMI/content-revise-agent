@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import checks  # noqa: E402
+import content_rules  # noqa: E402
 import planning  # noqa: E402
 import prompts  # noqa: E402
 
@@ -64,10 +65,9 @@ def pad(words_target: int, sentences: list[str]) -> str:
 
 
 def trend_block(n: int) -> list[str]:
-    """One trend: a sub-heading entry, then three paragraphs; the first carries a year (the dated development)."""
+    """One trend: a sub-heading entry, then one paragraph of about 100 words (the content team's spec) that carries a year."""
     return [f"### Trend {n} Is Raising Demand For Widget Services",
-            pad(40, [f"In 2026 a named study reported change {'ABC'[n - 1]} in widget demand."]),
-            filler(40), filler(40)]
+            pad(110, [f"In 2026 a named study reported change {'ABC'[n - 1]} in widget demand."])]
 
 
 def good_draft() -> list[dict]:
@@ -97,8 +97,10 @@ def good_draft() -> list[dict]:
             pad(50, ["Data Aggregation and Market Research applications follow the same split in that field."]),
         ]},
         {"heading": plan_sec["subsegment"]["heading"], "sop": ["subsegment"], "paragraphs": [
-            pad(75, [f"Cloud Based tools form one part of the {MARKET} worth a closer look."]),
-            pad(75, ["Data Aggregation services form the other part worth a closer look."]),
+            "### Cloud Based Tools Lead On Easy Deployment",
+            pad(95, [f"Cloud Based tools form one part of the {MARKET} worth a closer look."]),
+            "### Data Aggregation Grows With Research Demand",
+            pad(95, ["Data Aggregation services form the other part worth a closer look."]),
         ]},
         {"heading": plan_sec["country_us"]["heading"], "sop": ["country_us"], "paragraphs": [
             pad(70, [f"The U.S. leads the {MARKET}, and cloud based widget services by region is where that shows.",
@@ -184,7 +186,7 @@ check("evidence reuse: the same news item cited in a trend and in the key-player
 d = good_draft()
 trends_sec = next(s for s in d if s["sop"] == ["trends"])
 trends_sec["paragraphs"][2] = "Acme launched a new product. " + trends_sec["paragraphs"][2]
-trends_sec["paragraphs"][6] = "Acme launched a new product. " + trends_sec["paragraphs"][6]
+trends_sec["paragraphs"][4] = "Acme launched a new product. " + trends_sec["paragraphs"][4]
 res = run_v2(TITLE, d)
 check("evidence reuse: the same news item cited in two trend blocks fails the check",
       not by_name(res, "cited in one section").passed and "trend 1 and again in trend 2" in by_name(res, "cited in one section").detail,
@@ -425,26 +427,40 @@ check("faq: an unbacked figure in an answer fails", not by_name(run, "FAQ questi
 
 # ------------------------------------------------------------------ SOP specifics: trends, sub-segments, U.S.
 
-check("trends: the good draft's three sub-headed trends of three paragraphs pass",
+check("trends: the good draft's three sub-headed trends of one paragraph each pass",
       by_name(run_v2(TITLE, good_draft()), "Trends: three sub-headed").passed)
 
 d = good_draft()
 d[3]["paragraphs"].pop()
 run = run_v2(TITLE, d)
-check("trends: a trend with only two paragraphs fails", not by_name(run, "Trends: three sub-headed").passed,
+check("trends: a trend with no paragraph fails", not by_name(run, "Trends: three sub-headed").passed,
       by_name(run, "Trends: three sub-headed").detail)
 
 d = good_draft()
 d[3]["paragraphs"] = [p for p in d[3]["paragraphs"] if p != "### Trend 3 Is Raising Demand For Widget Services"]
 run = run_v2(TITLE, d)
-check("trends: a missing sub-heading fails (two trends, one of six paragraphs)", not by_name(run, "Trends: three sub-headed").passed,
+check("trends: a missing sub-heading fails (two trends, one of two paragraphs)", not by_name(run, "Trends: three sub-headed").passed,
       by_name(run, "Trends: three sub-headed").detail)
 
 d = good_draft()
-d[3]["paragraphs"][2] = filler(40)
+d[3]["paragraphs"][2] = filler(110)
 run = run_v2(TITLE, d)
 check("trends: a trend whose first paragraph has no figure or year passes (that rule left the SOP on 2026-11-18)",
       by_name(run, "Trends: three sub-headed").passed, by_name(run, "Trends: three sub-headed").detail)
+
+SUB_SHAPE = "Sub-segments: two, each under its own heading"
+SPEC_LEN = "Trend and sub-segment paragraphs about 100 words"
+check("sub-segments: the good draft's two sub-headed sub-segments of one paragraph each pass",
+      by_name(run_v2(TITLE, good_draft()), SUB_SHAPE).passed, by_name(run_v2(TITLE, good_draft()), SUB_SHAPE).detail)
+d = good_draft()
+d[5]["paragraphs"] = [p for p in d[5]["paragraphs"] if not p.startswith("### ")]
+check("sub-segments: paragraphs without their own headings fail", not by_name(run_v2(TITLE, d), SUB_SHAPE).passed)
+check("spec length: ~100-word trend and sub-segment paragraphs pass", by_name(run_v2(TITLE, good_draft()), SPEC_LEN).passed,
+      by_name(run_v2(TITLE, good_draft()), SPEC_LEN).detail)
+d = good_draft()
+d[3]["paragraphs"][2] = filler(40)
+check("spec length: a 40-word trend paragraph is noted (soft)", not by_name(run_v2(TITLE, d), SPEC_LEN).passed
+      and "40 words" in by_name(run_v2(TITLE, d), SPEC_LEN).detail, by_name(run_v2(TITLE, d), SPEC_LEN).detail)
 
 check("trends: the sub-headings are not counted as prose (word counts and sentence checks read the sections without them)",
       all(not p.startswith("### ") for s in checks.subheads.strip_subheads(good_draft()) for p in s["paragraphs"]))
@@ -961,6 +977,61 @@ for phrase, expect in [("CMI's report values the market at USD 80 billion.", Tru
                        ("Gartner reports that adoption rose in 2025.", False)]:
     hit = bool(checks._REPORT_CITED_RE.search(phrase))
     check(f"report cited: {phrase!r} -> {expect}", hit == expect)
+
+
+# ------------------------------------------------------------------ verbatim overlap: taxonomy masking
+
+_TAXONOMY = ["Aptitude Tests", "Personality Tests", "Skill Tests", "Behavioral Assessments",
+             "Direct Assessment", "Analog Assessment"]
+_REPORT_LINE = ("The report divides the market by assessment type: " + ", ".join(_TAXONOMY)
+                + " and Others; the split is the report's own.")
+_LIST_PARAGRAPH = ("Assessment Type spans " + ", ".join(_TAXONOMY)
+                   + " and Others, and Aptitude Tests lead that split in the article.")
+check("overlap: the report's own taxonomy list is required wording, not a copied line",
+      checks._verbatim_overlap([_LIST_PARAGRAPH], [("CMI report", _REPORT_LINE)],
+                               ignore_terms=_TAXONOMY)[0] == 0.0)
+check("overlap: without the taxonomy masked the same list would count as copied",
+      checks._verbatim_overlap([_LIST_PARAGRAPH], [("CMI report", _REPORT_LINE)])[0] > 0.0)
+
+_PROSE_COPY = ("Advancements in technology such as online platforms, remote assessment tools and data analytics have "
+               "transformed the global assessment services market.")
+check("overlap: copied prose still counts with a taxonomy supplied",
+      checks._verbatim_overlap([_PROSE_COPY], [("CMI report", _REPORT_LINE + " " + _PROSE_COPY)],
+                               ignore_terms=_TAXONOMY)[0] > 5.0)
+check("copied_runs: reports the copied run and nothing shorter",
+      checks.copied_runs(_PROSE_COPY, [("CMI report", _REPORT_LINE + " " + _PROSE_COPY)],
+                         ignore_terms=_TAXONOMY) == [" ".join(checks.re.findall(r"\w+", _PROSE_COPY.lower()))])
+
+
+# ------------------------------------------------------------------ repeated point: the sub-segment's own category name
+
+_SUB_SECTIONS = [
+    {"heading": "Segments", "sop": ["segmentation"],
+     "paragraphs": ["By mode, the report distinguishes online delivery from offline delivery, and online leads."]},
+    {"heading": "Sub-segments", "sop": ["subsegment"],
+     "paragraphs": ["Online delivery leads the mode split of Zzz Widget Services Market, at 55.9% in 2026, and the "
+                    "share reflects how clients prefer to reach providers."]},
+]
+check("repetition: a sub-segment naming its own category and split is not a repeated point",
+      content_rules.repeated_point_problems(
+          _SUB_SECTIONS, market_name="Zzz Widget Services Market", own_terms=["Online", "BFSI"]) == [])
+check("repetition: without the category exemption the same pair is flagged",
+      content_rules.repeated_point_problems(
+          _SUB_SECTIONS, market_name="Zzz Widget Services Market") != [])
+
+# a genuine repeat that happens to name the category: the category must not count as overlap, but must not shrink the
+# sentence below the min-stems gate either
+_CATEGORY_REPEAT = [
+    {"heading": "Segments", "sop": ["segmentation"],
+     "paragraphs": ["Online delivery expands through smartphone penetration and doorstep convenience."]},
+    {"heading": "Conclusion", "sop": ["conclusion"],
+     "paragraphs": ["Online delivery grows on smartphone penetration and doorstep convenience."]},
+]
+check("repetition: a real repeat that names the category is still flagged with own terms",
+      len(content_rules.repeated_point_problems(_CATEGORY_REPEAT, own_terms=["Online Delivery"])) == 1,
+      str(content_rules.repeated_point_problems(_CATEGORY_REPEAT, own_terms=["Online Delivery"])))
+check("repetition: the same pair is flagged without own terms",
+      len(content_rules.repeated_point_problems(_CATEGORY_REPEAT)) == 1)
 
 
 # ------------------------------------------------------------------ summary

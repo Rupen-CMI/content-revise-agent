@@ -1,5 +1,5 @@
-"""A trend left one paragraph short (a strip emptied one) gets its longest paragraph split at a sentence break, so every trend
-keeps three paragraphs; a trend that cannot be split is left for the check to report."""
+"""Each trend is ONE paragraph (the content team's spec, 2026-11-19). A trend the writer split into several paragraphs is joined
+back into one, every sentence kept in order; a trend already of one paragraph is left as written."""
 import logging
 import sys
 from pathlib import Path
@@ -23,21 +23,16 @@ def trend(heading, paras):
 
 
 three = ["One. Two.", "Three. Four.", "Five. Six."]
-short = ["AI shortens the interval between a blueprint and an item bank. That volume shifts the scarce resource to review. "
-         "Review capacity becomes the constraint.", "Providers that formalise review absorb machine-drafted items."]
-sec = {"sop": ["trends"], "heading": "h", "paragraphs": ["Lead-in."] + trend("A", three) + trend("B", three) + trend("C", short)}
+sec = {"sop": ["trends"], "heading": "h", "paragraphs": ["Lead-in."] + trend("A", three) + trend("B", ["Seven."]) + trend("C", three[:2])}
 out = writer.enforce_trend_shape([sec], logging.getLogger("t"))[0]
 lead, blocks = subheads.split_blocks(out["paragraphs"])
-check("a trend with two paragraphs is split back to three", [len(p) for _, p in blocks] == [3, 3, 3], str([len(p) for _, p in blocks]))
-check("the split keeps every sentence, in order",
-      " ".join(blocks[2][1]) == " ".join(short), str(blocks[2][1]))
-one = {"sop": ["trends"], "heading": "h", "paragraphs": ["Lead-in."] + trend("A", three) + trend("B", three) + trend("C", ["Only one."])}
-out = writer.enforce_trend_shape([one], logging.getLogger("t"))[0]
-check("a single one-sentence paragraph cannot be split and is left as written",
-      [len(p) for _, p in subheads.split_blocks(out["paragraphs"])[1]] == [3, 3, 1])
+check("every trend ends as one paragraph", [len(p) for _, p in blocks] == [1, 1, 1], str([len(p) for _, p in blocks]))
+check("the join keeps every sentence, in order", blocks[0][1] == ["One. Two. Three. Four. Five. Six."] and blocks[2][1] == ["One. Two. Three. Four."],
+      str(blocks))
+check("a trend already of one paragraph is left as written", blocks[1][1] == ["Seven."], str(blocks[1]))
 
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")
     sys.exit(1)
-print("all trend-split tests passed")
+print("all trend-join tests passed")

@@ -69,6 +69,34 @@ scr = hit("A new crawler product speeds up data extraction for AI teams on the w
 check("trusted source: the same host passes when a topic term is used",
       len(search.filter_hits([scr], mk, logger=LOG, topic_terms=mk_terms)) == 1)
 
+# Analyst recognitions and rankings are never market evidence: the vendor is being scored against a report's
+# criteria, not doing anything in the market. Recognised by title SHAPE, so no list of analyst firms is needed.
+ranking_titles = [
+    "UiPath Named a Leader in Everest Group's 2026 Agentic Process Automation PEAK Matrix Assessments",
+    "Acme Recognized as a Leader in the 2026 Gartner Magic Quadrant for Widget Platforms",
+    "Beta Positioned as a Leader in the Forrester Wave: Widget Services, Q1 2026",
+    "Gamma named a leader in the IDC MarketScape for widget testing",
+    "Delta recognised as a Leader in the 2026 widget evaluation",
+]
+for _t in ranking_titles:
+    check(f"ranking title: rejected ({_t[:45]})",
+          search.listing_page_reason(hit(_t, "https://www.theverge.com/r")) is not None,
+          str(search.listing_page_reason(hit(_t, "https://www.theverge.com/r"))))
+# ... while ordinary news that merely uses the word "leader" is untouched.
+ordinary_leader_titles = [
+    "Web scraping leader launches a free data API for researchers",
+    "Market leader acquires web scraping startup for its data teams",
+]
+for _t in ordinary_leader_titles:
+    check(f"ranking title: ordinary leader news kept ({_t[:45]})",
+          search.listing_page_reason(hit(_t, "https://www.techcrunch.com/o")) is None,
+          str(search.listing_page_reason(hit(_t, "https://www.techcrunch.com/o"))))
+ordinary_leader_hits = [hit(t, f"https://www.techcrunch.com/o{i}") for i, t in enumerate(ordinary_leader_titles)]
+check("ranking title: both ordinary leader stories still reach the kept pool",
+      {h.title for h in search.filter_hits(ordinary_leader_hits, mk, logger=LOG)}
+      == set(ordinary_leader_titles),
+      str([h.title for h in search.filter_hits(ordinary_leader_hits, mk, logger=LOG)]))
+
 # market sizing is the CMI report's alone
 import logging as _lg
 import feeds  # noqa: E402

@@ -463,6 +463,30 @@ check("name in quote: another category's initials do not match", not facts._name
 check("name in quote: initials spelling a common word name nothing", not facts._name_in_quote(
     "Television Home Entertainment", "the share of the market is 30%"))
 
+# live (Assessment Services): the page's prose says "the Online Assessment segment ... approximately 61%" for the category the
+# report lists as "Online Assessment Platforms"; the closing product-class word is dropped in prose, and the 61% was lost
+check("name in quote: a closing product-class word dropped by the report's prose", facts._name_in_quote(
+    "Online Assessment Platforms", "Based on the Delivery Mode, the Online Assessment segment is dominating, holding approximately 61% of the market share"))
+check("name in quote: a two-word name never loses a word", not facts._name_in_quote(
+    "Skill Tests", "the skill segment holds 20%"))
+check("name in quote: a class word dropped from another category's name names nothing",
+      not facts._name_in_quote("Online Assessment Platforms", "the In-person Assessment segment holds 39%"))
+ASSESS_PAGE = ("Based on the Delivery Mode, the Online Assessment segment is dominating, holding approximately 61% of the market share, "
+               "owing to their scalability. By delivery mode: Online Assessment Platforms; In-person Assessments. "
+               "Assessment services market is estimated to be valued at USD 13,238.1 Mn in 2026 and is expected to reach USD 32,720.7 Mn in 2033, "
+               "exhibiting a compound annual growth rate (CAGR) of 13.8% from 2026 to 2033.")
+_q61 = "Based on the Delivery Mode, the Online Assessment segment is dominating, holding approximately 61% of the market share, owing to their scalability."
+raw = {"size": {"value": "USD 13,238.1 Mn", "when": "2026", "quote": "Assessment services market is estimated to be valued at USD 13,238.1 Mn in 2026"},
+       "segments": [{"type": "By Delivery Mode", "items": [
+           {"name": "Online Assessment Platforms", "figure": "approximately 61%", "quote": _q61}, {"name": "In-person Assessments"}]}],
+       "dominant": [{"split": "By Delivery Mode", "name": "Online Assessment Platforms", "quote": _q61}]}
+fs_a = facts.validate_fact_sheet(raw, ASSESS_PAGE, "Assessment Services Market", LOG, TODAY)
+seg_a = ev_segment(fs_a, "By Delivery Mode")
+check("live: the 61% share survives as the category's figure", seg_a["figures"].get("Online Assessment Platforms", {}).get("amount") == 61.0, str(seg_a["figures"]))
+check("live: the leader claim survives", seg_a["dominant"] and seg_a["dominant"]["name"] == "Online Assessment Platforms", str(seg_a["dominant"]))
+check("live: the fact sheet carries a segment_item fact for 61% (REQUIRED to the writer)",
+      any(f["kind"] == "segment_item" and "61%" in f["text"] for f in facts.flatten_fact_sheet(fs_a)))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

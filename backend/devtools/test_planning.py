@@ -640,6 +640,24 @@ check("same event: another month, another organisation, or no month is not",
       not planning.same_event({**ev_a, "text": ev_a["fact"]}, {**ev_c, "text": ev_c["fact"]})
       and not planning.same_event({**ev_a, "text": ev_a["fact"]}, {**ev_d, "text": ev_d["fact"]})
       and not planning.same_event({**ev_a, "text": ev_a["fact"], "source": "Health Wire"}, {**ev_b, "text": ev_b["fact"], "source": "Trade Daily"}))
+ev_e = news("W7", "Hirevue launched Assessment Builder in February 2026 to make validated assessments available at scale.",
+            "TechTarget, 2026-05")
+ev_f = news("W8", "Hirevue launched Assessment Builder, a product for role-specific hiring tests.", "Yahoo Finance, 2026-02",
+            "Announced February 19, 2026 from Salt Lake City.")
+check("same event: an item's month is the one its fact states, else its source label's, and never its detail's",
+      planning._event_months(ev_e) == {"2026-02"} and planning._event_months(ev_f) == {"2026-02"},
+      f"{planning._event_months(ev_e)} {planning._event_months(ev_f)}")
+check("same event: a later article that states the launch's own month still reports the same event",
+      planning.same_event({**ev_f, "text": ev_f["fact"]}, {**ev_e, "text": ev_e["fact"]})
+      and [e["id"] for e in planning.dedupe_events([ev_f, ev_e], LOG)] == ["W8"])
+acme_a = news("W9", "Acme launched a widget suite in February 2026.", "Trade Daily, 2026-05",
+              "Acme also signed a partnership with Beta in May 2026.")
+acme_b = news("W10", "Acme signed a partnership with Beta.", "Tech Wire, 2026-05")
+check("same event: a detail's second month does not merge two events of one company",
+      not planning.same_event({**acme_a, "text": acme_a["fact"]}, {**acme_b, "text": acme_b["fact"]})
+      and not planning.same_event({**acme_b, "text": acme_b["fact"]}, {**acme_a, "text": acme_a["fact"]})
+      and len(planning.dedupe_events([acme_a, acme_b], LOG)) == 2,
+      f"{planning._event_months(acme_a)} {planning._event_months(acme_b)}")
 kept_ev = planning.dedupe_events([ev_a, ev_b, ev_c, ev_d], LOG)
 check("same event: of two items on one event only one is kept, the fuller one, and the rest are untouched, in order",
       [e["id"] for e in kept_ev] == ["W2", "W3", "W4"], str([e["id"] for e in kept_ev]))

@@ -155,9 +155,9 @@ check("sub-segments: the same sheet always gives the same pair", sections.choose
 
 # ------------------------------------------------------------------------------------------------ the search plan
 plan = pipeline.section_search_plan(FS, REPORT, FS["players"], picks)
-check("plan: trends are the top drivers then opportunities, one target each, as many as the sheet offers up to the trends allotment",
-      [t["kind"] for t in plan["trends"]] == ["drivers"] * 3 + ["opportunities"] * 2 + ["drivers"] + ["opportunities"]
-      and len(plan["trends"]) == 7 and len(plan["trends"]) <= sections.allot("trends"), str(plan["trends"]))
+check("plan: trends are the top drivers then opportunities, two queries (a statistic and an instance) per target, so half the trends allotment",
+      [t["kind"] for t in plan["trends"]] == ["drivers"] * 3 + ["opportunities"]
+      and len(plan["trends"]) == sections.allot("trends") // 2, str(plan["trends"]))
 check("plan: the sub-segment targets are the two fixed ones, with the report's own reason the category leads",
       [t["name"] for t in plan["subsegment"]] == ["Software", "Services"]
       and plan["subsegment"][0]["reason"] == "Banks want audited workflows" and plan["subsegment"][1]["reason"] == "",
@@ -666,7 +666,11 @@ check("select: a sub-segment that is not one of the two fixed is dropped, never 
 check("select: a leftover 'context' goes to the section its hit was found for (the general search is trends)",
       by_id["W8"]["section"] == "trends" and by_id["W10"]["section"] == "trends")
 check("select: an undated hit is never a trend (its only section was trends, so it is dropped)", "W6" not in by_id)
-check("select: a 'us|trends' string takes its first entry", by_id["W9"]["section"] == "us")
+us_first = {"evidence": [ev(9, "us|trends")]}
+us_pool = pool()
+us_pool[8].scope = "us"            # found by the U.S. search, so the trends rule below (see _return_trend_items) does not move it
+pipeline._assign_sections(us_first, us_pool, SUBS, LOG)
+check("select: a 'us|trends' string takes its first entry", us_first["evidence"] and us_first["evidence"][0]["section"] == "us", str(us_first))
 
 selected_log = _Capture()
 LOG.addHandler(selected_log)

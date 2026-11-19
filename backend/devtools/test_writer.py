@@ -87,7 +87,7 @@ inp_src.items["W2"]["source"] = "blog.apify.com, 2026-01"
 inp_src.items["W2"]["text"] = "66.2 percent of respondents plan to try AI tools."
 
 
-def src_strip(paragraphs, inp=inp_src, sop="trends"):
+def src_strip(paragraphs, inp=inp_src, sop="key_players"):
     return writer.strip_outside_sources([{"heading": "t", "sop": [sop], "paragraphs": list(paragraphs)}], inp, LOG)[0]["paragraphs"]
 
 
@@ -138,6 +138,21 @@ check("no source: a section's only evidence sentence is kept when it cannot be c
 linked = "Gartner said [[CMI_LINK:Zzz Widget Services Market]] demand rises."
 out = src_strip(["Acme launched a new product this year.", linked])
 check("no source: a sentence that holds a link is never removed", len(out) == 2 and "[[CMI_LINK:" in out[1], str(out))
+
+# the trends and sub-segment sections may credit a supporting figure to the public regulatory or statistics body that published
+# it (the content team's rule, 2026-11-20); every other outside name is cut there too
+for _sop in ("trends", "subsegment"):
+    out = src_strip(["Adoption reached 66.2% of hospitals in 2025, according to the U.S. Department of Health and Human Services."], sop=_sop)
+    check(f"named sources ({_sop}): a regulatory body credited for its figure stays named",
+          out == ["Adoption reached 66.2% of hospitals in 2025, according to the U.S. Department of Health and Human Services."], str(out))
+    out = src_strip(["Adoption reached 66.2% of hospitals in 2025, according to the American Hospital Association."], sop=_sop)
+    check(f"named sources ({_sop}): an association is cut", out == ["Adoption reached 66.2% of hospitals in 2025."], str(out))
+    out = src_strip(["Adoption reached 66.2% of firms in 2025, per MarTech Cube."], sop=_sop)
+    check(f"named sources ({_sop}): a publication credited for a figure is cut", out == ["Adoption reached 66.2% of firms in 2025."], str(out))
+    out = src_strip(["According to Grand View Research, adoption reached 66.2% of firms in 2025."], sop=_sop)
+    check(f"named sources ({_sop}): a rival research firm is still cut", out == ["Adoption reached 66.2% of firms in 2025."], str(out))
+    out = src_strip(["Adoption reached 66.2% of firms (Statista, 2026)."], sop=_sop)
+    check(f"named sources ({_sop}): a statistics portal is still cut", out == ["Adoption reached 66.2% of firms."], str(out))
 
 # the FAQ and the checks use the same patterns: a sentence the strip leaves is one the check would not report
 check("no source: a text with no attribution is returned unchanged",
@@ -496,8 +511,10 @@ check("prompt: the long-tail line carries the REQUIRED framing like the secondar
       str([l for l in text.splitlines() if "REQUIRED long-tail" in l]))
 check("prompt: a question heading is flagged to be answered directly", text.count("Answer it directly in the first one or two sentences") == 3)
 check("prompt: the report link token and the sponsor placeholder are present", f"[[CMI_LINK:{MARKET}]]" in text and prompts.SPONSOR_TOKEN in text)
-check("prompt: no outside source's name is printed for naming (a news item carries its month only)",
-      "News Site" not in text and "(source:" not in text and "NOT CMI" not in text, str([l for l in text.splitlines() if "News Site" in l]))
+_named_lines = [l for l in text.splitlines() if "News Site" in l]
+check("prompt: an outlet is never printed as a source to name, not even in the trends and sub-segment facts",
+      not any("source to name: News Site" in l for l in _named_lines) and "(source:" not in text and "NOT CMI" not in text,
+      str(_named_lines))
 inp.items["fs.size"]["source"] = "marketsite.example.com"
 text2 = writer.build_write_prompt(plan, inp, sponsor, report, "2026-10-23")
 check("prompt: a report-position figure from an outside source is stated plainly, with no source named and never CMI",
@@ -618,10 +635,10 @@ check("shapes: the segmentation shape never calls the division a split",
       "split" not in writer._SHAPES["segmentation"], writer._SHAPES["segmentation"])
 check("shapes: the segmentation lead-in must state how many segment types the report uses",
       "how many segment types" in writer._SHAPES["segmentation"], writer._SHAPES["segmentation"])
-check("shapes: the trends are a lead-in naming the market, then three sub-headed trends of three paragraphs",
-      'names the market by its full name' in writer._SHAPES["trends"] and "exactly 13" in writer._SHAPES["trends"]
-      and '"### "' in writer._SHAPES["trends"] and "three paragraphs" in writer._SHAPES["trends"]
-      and "commercial implication" in writer._SHAPES["trends"] and "mechanism" in writer._SHAPES["trends"],
+check("shapes: the trends are a lead-in naming the market, then three sub-headed trends of one ~100-word paragraph (driver, evidence, impact)",
+      'names the market by its full name' in writer._SHAPES["trends"] and "exactly 7" in writer._SHAPES["trends"]
+      and '"### "' in writer._SHAPES["trends"] and "ONE paragraph of 90 to 115 words" in writer._SHAPES["trends"]
+      and all(w in writer._SHAPES["trends"] for w in ("generic market driver", "Supporting evidence", "Market impact", "source to name", "naming no outlet")),
       writer._SHAPES["trends"])
 
 # A list-shaped section's REQUIRED secondary keyword must be covered in the lead-in sentence (the "\n- "
@@ -795,13 +812,13 @@ def _trend_section(n_trends, paras_each, lead=1):
 
 shaped = writer.enforce_trend_shape(_trend_section(5, 4, lead=2), LOG)[0]["paragraphs"]
 lead_, blocks_ = subheads.split_blocks(shaped)
-check("trend shape: five trends of four paragraphs and two lead-ins are cut to one lead-in and three trends of three",
-      len(lead_) == 1 and len(blocks_) == 3 and all(len(b[1]) == 3 for b in blocks_), str(shaped))
-check("trend shape: the first paragraphs of each trend are the ones kept",
-      blocks_[2][1] == ["Trend 3 paragraph 1.", "Trend 3 paragraph 2.", "Trend 3 paragraph 3."], str(blocks_[2]))
-exact = _trend_section(3, 3)
+check("trend shape: five trends of four paragraphs and two lead-ins become one lead-in and three trends of one paragraph",
+      len(lead_) == 1 and len(blocks_) == 3 and all(len(b[1]) == 1 for b in blocks_), str(shaped))
+check("trend shape: a trend's extra paragraphs are joined into its one paragraph, never dropped",
+      blocks_[2][1] == ["Trend 3 paragraph 1. Trend 3 paragraph 2. Trend 3 paragraph 3. Trend 3 paragraph 4."], str(blocks_[2]))
+exact = _trend_section(3, 1)
 check("trend shape: a section already in shape is left exactly as it is",
-      writer.enforce_trend_shape(exact, LOG)[0]["paragraphs"] == _trend_section(3, 3)[0]["paragraphs"])
+      writer.enforce_trend_shape(exact, LOG)[0]["paragraphs"] == _trend_section(3, 1)[0]["paragraphs"])
 short = writer.enforce_trend_shape(_trend_section(2, 2), LOG)[0]["paragraphs"]
 check("trend shape: a section with too little is not padded (the check reports it)", len(subheads.split_blocks(short)[1]) == 2)
 other = [{"heading": "x", "sop": ["conclusion"], "paragraphs": ["### not a trend", "text"]}]
@@ -883,10 +900,11 @@ check("shapes: segmentation no longer bans explaining: each leading category get
       seg_shape)
 check("shapes: segmentation still names the leader with its figure and keeps the earlier rules",
       "states that leading category with its figure" in seg_shape and "names the market in that same sentence" in seg_shape and "split" not in seg_shape)
-check("shapes: each sub-segment paragraph explains the growth drivers, demand pattern, adoption trend and why it dominates or grows",
-      all(w in sub_shape for w in ("growth drivers", "demand pattern", "adoption trend", "dominates or grows")), sub_shape)
-check("shapes: the sub-segment shape no longer says it stays short and adds no fact; it reasons from the market's own drivers",
-      "stays short" not in sub_shape and "own drivers that apply to it" in sub_shape, sub_shape)
+check("shapes: each sub-segment has a descriptive heading and one ~100-word paragraph: CMI share first, factors behind its dominance, a sourced statistic or instance",
+      all(w in sub_shape for w in ('"heading": "<heading>"', "descriptive heading", "90 to 115 words", "market share with its year",
+                                   "only from a CMI report fact", "key factors behind its dominance", "a source is named only when")), sub_shape)
+check("shapes: the sub-segment shape bans generic and repeated statements",
+      "No generic explanation" in sub_shape and "no statement repeated from another section" in sub_shape, sub_shape)
 
 # ------------------------------------------------------------------ the web search asks about segment demand, and SELECT counts it
 _sq = " ".join(prompts.SEARCH_QUERIES_USER.split())
@@ -897,6 +915,73 @@ _sel = " ".join(prompts.SELECT_USER.split())
 check("SELECT: test 4 counts a segment's demand as usable evidence", "a segment's demand (why a category is growing or being adopted)" in _sel)
 check("SELECT: a dated item is eligible for trends only when it shows a direction, not on date alone",
       "only when it shows a direction the market is moving in" in _sel and "never on its date alone" in _sel and "on date alone." not in _sel)
+
+# ------------------------------------------------------------------ the trends and sub-segment spec (2026-11-19)
+import pipeline  # noqa: E402
+
+_subs = pipeline._clean_sections([{"heading": "S", "sop": ["subsegment"], "paragraphs": [
+    {"segment": "By Type", "sub_segment": "Cloud", "heading": "Cloud Tools Lead on Easy Deployment", "paragraph": "Cloud leads."},
+    json.dumps({"segment": "By Type", "sub_segment": "On-premise", "heading": "### On-premise Holds Regulated Buyers", "paragraph": "It grows."}),
+]}])[0]["paragraphs"]
+check("spec: each sub-segment object's heading becomes a sub-heading before its paragraph (object or JSON text)",
+      _subs == ["### Cloud Tools Lead on Easy Deployment", "Cloud leads.", "### On-premise Holds Regulated Buyers", "It grows."], str(_subs))
+
+_ev = pipeline._parse_evidence("- (W3) [trends] Nurse vacancy rate was 7.2%. (source: Morningstar, Inc., 2026-10)\n"
+                               "    DETAIL: The rate covers full-time faculty.\n    ORIGIN: American Association of Colleges of Nursing")
+check("spec: the evidence block carries each item's ORIGIN back to the planner", _ev[0].get("origin") == "American Association of Colleges of Nursing"
+      and _ev[0]["detail"] == "The rate covers full-time faculty.", str(_ev))
+check("spec: a rival research firm or statistics portal is never an ORIGIN to credit",
+      not pipeline._origin_ok("Grand View Research") and not pipeline._origin_ok("Statista") and not pipeline._origin_ok("CMI")
+      and pipeline._origin_ok("U.S. Census Bureau"))
+_item = {"id": "W3", "kind": "evidence", "text": "Nurse vacancy rate was 7.2%.", "detail": "", "source": "Morningstar, Inc., 2026-10",
+         "origin": "American Association of Colleges of Nursing", "historical": False, "tags": ["trends"]}
+check("spec: an association's figure names no source, even in the trends", "no publication is named" in writer._fact_text(_item, True))
+_reg = {**_item, "origin": "U.S. Bureau of Labor Statistics"}
+check("spec: a regulatory body's figure is credited to it in the trends", "source to name: U.S. Bureau of Labor Statistics" in writer._fact_text(_reg, True))
+check("spec: outside the trends and sub-segments the same fact names no source", "no publication is named" in writer._fact_text(_reg, False))
+check("spec: an instance (no figure) names no source, even from a regulator",
+      "no publication is named" in writer._fact_text({**_reg, "text": "The regulator approved remote testing in March 2026."}, True))
+check("spec: the outlet is never the source to name", "Morningstar" not in writer._fact_text({**_item, "origin": ""}, True))
+
+# ---- the U.S. ceiling is enforced after the write (the check is a hard 100-200 words)
+
+_FIG_SENT = "The United States held 31.2% of the global market in 2026, and buyers there expect remote delivery."
+_PLAIN_SENT = "Providers can position secure delivery and reporting to serve both commercial and public buyers."
+_OVER_US = {"heading": "U.S.", "sop": ["country_us"],
+            "paragraphs": [" ".join([_FIG_SENT] + [_PLAIN_SENT] * 11), " ".join([_PLAIN_SENT] * 3)]}
+_UNDER_US = {"heading": "U.S.", "sop": ["country_us"], "paragraphs": [" ".join([_PLAIN_SENT] * 6)]}
+_OTHER = {"heading": "Trends", "sop": ["trends"], "paragraphs": [" ".join([_PLAIN_SENT] * 20)]}
+_w = lambda s: sum(len(p.split()) for p in s["paragraphs"])
+_before = [_w(_OVER_US), _w(_UNDER_US), _w(_OTHER)]
+_fitted = writer.clamp_section_words([_OVER_US, _UNDER_US, _OTHER], "country_us", 200, 100, LOG)
+check("U.S. ceiling: an over-long section is trimmed to 200 words or fewer", _w(_OVER_US) <= 200)
+check("U.S. ceiling: the trim keeps the section above its floor", _w(_OVER_US) >= 100)
+check("U.S. ceiling: a figure sentence is not what gets cut", _FIG_SENT in " ".join(_OVER_US["paragraphs"]))
+check("U.S. ceiling: a section already under the ceiling is untouched", _w(_UNDER_US) == _before[1])
+check("U.S. ceiling: another section is untouched", _w(_OTHER) == _before[2])
+check("U.S. ceiling: no paragraph is left empty", all(p.strip() for p in _OVER_US["paragraphs"]))
+
+# every remaining sentence states a figure: the trim must stop, not fall back to the last sentence
+_FIG_ONLY_SENT = "The United States held 31.2% of the global market in 2026, and buyers there expect remote delivery."
+_FIG_ONLY_US = {"heading": "U.S.", "sop": ["country_us"], "paragraphs": [
+    " ".join(["Demand in the United States rose across commercial and public buyers."] + [_FIG_ONLY_SENT] * 12)]}
+_before_fig_only = _w(_FIG_ONLY_US)
+writer.clamp_section_words([_FIG_ONLY_US], "country_us", 200, 100, LOG)
+check("U.S. ceiling: when only figure sentences are left the section stays over the ceiling rather than losing one",
+      _w(_FIG_ONLY_US) == _before_fig_only > 200 and _FIG_ONLY_SENT in " ".join(_FIG_ONLY_US["paragraphs"]),
+      f"{_before_fig_only} -> {_w(_FIG_ONLY_US)}")
+
+# a sentence carrying a link token is never the sentence the trim takes away
+_LONG_PLAIN_SENT = ("Providers across the United States can position secure delivery and reporting for commercial buyers, "
+                    "public agencies, universities and hospital networks that need dependable capacity, clear pricing and "
+                    "support that scales with seasonal demand.")
+_LINK_SENT = ("The report [[CMI_LINK:Widget Services Market]] covers the United States in its own chapter and names the "
+              "buyers it serves, the channels they use and the support they expect.")
+_LINK_US = {"heading": "U.S.", "sop": ["country_us"], "paragraphs": [" ".join([_LONG_PLAIN_SENT] * 6 + [_LINK_SENT])]}
+writer.clamp_section_words([_LINK_US], "country_us", 200, 100, LOG)
+check("U.S. ceiling: a sentence carrying a link token is not cut, a plain one is",
+      "[[CMI_LINK:Widget Services Market]]" in " ".join(_LINK_US["paragraphs"]) and _w(_LINK_US) <= 200,
+      str(_LINK_US["paragraphs"]))
 
 print()
 if FAILURES:

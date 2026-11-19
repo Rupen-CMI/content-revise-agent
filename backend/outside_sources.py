@@ -39,6 +39,7 @@ _LEAD_WORDS = (r"(?i:according to|as per|as reported by|as reported in|as cited 
                r"based on (?:data|figures|estimates|numbers|findings) from)")
 _TRAIL_WORDS = (r"(?i:according to|as per|as reported by|as reported in|as cited by|as published by|per|citing|"
                 r"based on (?:data|figures|estimates) from)")
+# a frame's name may follow an article: "according to the U.S. Census Bureau"
 _ANY_FRAME_WORDS = r"(?i:according to|as reported by|as reported in|as per|as cited by|as published by|as estimated by)"
 
 # A subject that is only a common noun ("Researchers found that ...", "Analysts said ..."): a capitalised sentence opener, not a source.
@@ -240,21 +241,21 @@ _compile = re.compile
 # tier 2: subject-verb / possessive forms, flagged for a research-firm shape or when the name is not an allowed actor and the clause
 # is not about the speaker itself.
 _PATTERNS: list[tuple[re.Pattern, int, str]] = [
-    (_compile(rf"^\s*{_LEAD_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*[,:]\s+"), 1, "lead"),
-    (_compile(rf"\s*,?\s*{_TRAIL_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?{_END}"), 1, "trail"),
+    (_compile(rf"^\s*{_LEAD_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*[,:]\s+"), 1, "lead"),
+    (_compile(rf"\s*,?\s*{_TRAIL_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?{_END}"), 1, "trail"),
     (_compile(rf"^\s*(?:[A-Z][A-Za-z.]+['’]s\s+)?(?P<name>{_ORG})\s+{_VERBS}\s+"
               rf"(?P<when>(?:in|on|during|earlier in|late in|early in)\s+(?:[A-Z][a-z]+\s+)?(?:\d{{1,2}},?\s+)?\d{{4}})\s+that\s+"), 2, "leadwhen"),
     (_compile(rf"^\s*(?:[A-Z][A-Za-z.]+['’]s\s+)?(?P<name>{_ORG})\s+{_VERBS}\s+that\s+"), 2, "lead"),
     (_compile(rf"\s*,\s*(?P<name>{_ORG})\s+{_VERBS}(?:\s+(?:in|on|this|last|earlier)\s+[A-Za-z]+(?:\s+\d{{4}})?)?{_END}"), 2, "trail"),
-    (_compile(rf",\s*{_TRAIL_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*,"), 1, "mid"),
+    (_compile(rf",\s*{_TRAIL_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*,"), 1, "mid"),
     (_compile(rf",\s*(?P<name>{_ORG})\s+{_VERBS}\s*,"), 2, "mid"),
     (_compile(rf"\s*\(\s*(?P<name>{_ORG}),?\s*(?:19|20)\d\d\s*\)"), 1, "paren"),
     (_compile(rf"\s*\(\s*(?i:source|sources|via)\s*:\s*(?P<name>{_ORG})[^)]*\)"), 1, "paren"),
-    (_compile(rf"\s*\(\s*{_TRAIL_WORDS}\s+(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*\)"), 1, "paren"),
+    (_compile(rf"\s*\(\s*{_TRAIL_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*\)"), 1, "paren"),
     (_compile(rf"\b(?i:reports?|stud(?:y|ies)|surveys?|analysis|research|polls?|forecasts?|estimates?|index|ranking|whitepaper|data|figures)"
-              rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by|cited by|quoted by|reported by|covered by)\s+(?P<name>{_ORG}))"), 1, "byfrom"),
-    (_compile(rf"\b{_ANY_FRAME_WORDS}\s+(?P<name>{_ORG})"), 1, "nonsep"),
-    (_compile(rf"\bper\s+(?P<name>{_ORG}){_POSS}(?=\s*(?:[,.;:!?)]|$))"), 1, "nonsep"),
+              rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by|cited by|quoted by|reported by|covered by)\s+(?:(?i:the)\s+)?(?P<name>{_ORG}))"), 1, "byfrom"),
+    (_compile(rf"\b{_ANY_FRAME_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG})"), 1, "nonsep"),
+    (_compile(rf"\bper\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?=\s*(?:[,.;:!?)]|$))"), 1, "nonsep"),
     (_compile(rf"(?P<name>{_ORG})['’]s\s+(?:\w+\s+){{0,2}}?(?i:report|study|survey|analysis|data|research|estimate|forecast|figures|index|"
               rf"ranking|poll|findings|projection)s?\b"), 2, "nonsep"),
     (_compile(rf"(?P<name>{_ORG})\s+(?i:report|study|survey|analysis|estimates?|forecasts?|projections?)\b"), 2, "nonsep_firm"),
@@ -328,22 +329,32 @@ def _scan(sentence: str, allowed: Allowed, srcs: tuple | list) -> list[_Hit]:
     return hits
 
 
-def attributing_names(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list = ()) -> list[str]:
+def _scan_named(sentence: str, allowed: Allowed, srcs: tuple | list, regulatory_ok: bool) -> list[_Hit]:
+    """_scan, or with `regulatory_ok` (the trends and sub-segment sections, which may credit a supporting figure to the public
+    regulatory or statistics body that published it, the content team's rule of 2026-11-20) every hit except such a body."""
+    hits = _scan(sentence, allowed, srcs)
+    if regulatory_ok:
+        hits = [h for h in hits if not regulatory_body(h.name)]
+    return hits
+
+
+def attributing_names(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list = (), regulatory_ok: bool = False) -> list[str]:
     """The outside-source names a sentence carries, for the check (in order, without repeats)."""
     out: list[str] = []
-    for h in _scan(sentence, allowed, srcs):
+    for h in _scan_named(sentence, allowed, srcs, regulatory_ok):
         if h.name not in out:
             out.append(h.name)
     return out
 
 
-def clean_sentence(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list = (), keep: bool = False) -> tuple[str, bool, list[str]]:
+def clean_sentence(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list = (), keep: bool = False,
+                   regulatory_ok: bool = False) -> tuple[str, bool, list[str]]:
     """(text, dropped, names): the sentence without its separable attribution clauses (a leading "According to X, ", a trailing
     ", per X", a mid-sentence ", X reported,", "(X, 2026)", "a survey by X"), and `dropped` True when a citation remains that cannot be cut
     out cleanly or what is left is no sentence any more. `keep` (a sentence that carries a link) never reports `dropped`."""
     text, names = sentence.strip(), []
     for _ in range(6):
-        sep = next((h for h in _scan(text, allowed, srcs) if h.mode in ("lead", "trail", "mid", "paren", "byfrom")), None)
+        sep = next((h for h in _scan_named(text, allowed, srcs, regulatory_ok) if h.mode in ("lead", "trail", "mid", "paren", "byfrom")), None)
         if sep is None:
             break
         names.append(sep.name)
@@ -351,7 +362,7 @@ def clean_sentence(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list =
         if sep.mode in ("trail", "mid") and not re.search(r"[.!?][\"')\]]*$", text.rstrip()):
             text = text.rstrip() + "."
         text = re.sub(r"\s+([,.;])", r"\1", text).strip()
-    rest = _scan(text, allowed, srcs)
+    rest = _scan_named(text, allowed, srcs, regulatory_ok)
     names += [h.name for h in rest]
     dropped = bool(rest) or (bool(names) and len(re.findall(r"[A-Za-z0-9]+", text)) < 4)
     return text, (dropped and not keep), names
@@ -396,6 +407,63 @@ def attributes_to_outside(text: str) -> list[str]:
             # shape marks a statistic borrowed from someone else.
             if not firm_shaped(h.name) and not (digit and h.tier == 1):
                 continue
+            # A figure an official or institutional body publishes (a government department or agency, a regulator, an industry
+            # association, a university or institute) is the credible statistic the trends and sub-segment sections are built on
+            # (the content team's spec, 2026-11-19): "according to the American Association of Colleges of Nursing, 7.2% ..." stays.
+            # Only a rival research firm, a statistics portal or an unknown relayer is a borrowed statistic.
+            if official_body(h.name):
+                continue
             if h.name not in out:
                 out.append(h.name)
     return out
+
+
+def rival_brand(name: str) -> bool:
+    """The name is a rival research firm's or statistics portal's own brand ("Statista", "Technavio", "IMARC Group"): its letters
+    are the first label of one of the research-firm hosts (external_reports.RESEARCH_HOSTS), which firm_shaped misses because
+    the name carries no Research/Insights suffix."""
+    import external_reports     # lazy: this module stays importable without the pipeline
+    letters = re.sub(r"[^a-z]", "", (name or "").lower())
+    labels = {re.sub(r"[^a-z]", "", h.split(".")[0]) for h in external_reports.RESEARCH_HOSTS}
+    return bool(letters) and any(letters == lab or (len(lab) >= 6 and letters.startswith(lab)) for lab in labels)
+
+
+def official_body(name: str) -> bool:
+    """A public body or institution by the shape of its name (a department, agency, ministry, regulator, association, council,
+    university, institute ...), never a research firm's or a statistics portal's."""
+    n = _trim_name(name or "")
+    return bool(n) and bool(_INSTITUTION_RE.search(n) or _OFFICIAL_RE.search(n)) and not firm_shaped(n)
+
+
+def regulatory_body(name: str) -> bool:
+    """A public regulatory, governmental or official-statistics body ("U.S. Department of Education", "Federal Communications
+    Commission", "Eurostat", "World Health Organization", "FDA"): the only outside source the trends and sub-segment sections
+    may name, and only for a supporting figure it published. An association, a university, a company, a news outlet, a research
+    firm or a statistics portal is not one."""
+    n = _trim_name(name or "")
+    if not n or firm_shaped(n) or rival_brand(n) or _COMPANY_SUFFIX_RE.search(n) or _NOT_REGULATORY_RE.search(n):
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", n)
+    return bool(_REGULATORY_RE.search(n)) or letters.upper() in _REGULATORY_ACRONYMS or letters.lower() in _REGULATORY_NAMES
+
+
+_REGULATORY_RE = re.compile(r"\b(?:department|ministry|agency|commission|bureau|authority|administration|regulator|regulatory|"
+                            r"government|parliament|congress|census|statistics|statistical office|office (?:of|for)|federal reserve|"
+                            r"central bank|reserve bank|national institutes? of|centers? for disease|united nations|world bank|"
+                            r"world health organi[sz]ation|international (?:monetary fund|energy agency|labou?r organi[sz]ation|"
+                            r"telecommunication union)|european (?:union|commission|central bank|parliament))\b", re.I)
+_NOT_REGULATORY_RE = re.compile(r"\b(?:association|society|federation|foundation|council|alliance|consortium|university|college|"
+                                r"school|academy|news|times|journal|magazine|media|post|herald|tribune)\b", re.I)
+_COMPANY_SUFFIX_RE = re.compile(r"\b(?:inc|corp|corporation|ltd|limited|llc|plc|gmbh|co|company|group|holdings|technologies|solutions)\b\.?",
+                                re.I)
+_REGULATORY_ACRONYMS = frozenset("""
+FDA EPA FCC SEC FTC CDC NIH NHTSA DOE DOT USDA BLS EIA NCES CMS FAA FERC NRC OSHA HHS USPTO NIST NSF ONS IEA OECD WHO IMF ILO ITU
+EMA ECB RBI SEBI TRAI CPCB MHRA CQC OFCOM OFGEM FCA NHS ABS ACMA ASIC CRTC CMA MCA UGC AICTE NCERT CBSE UIDAI NITI
+""".split())
+_REGULATORY_NAMES = frozenset({"eurostat", "ofcom", "ofgem", "statcan", "statisticscanada", "nitiaayog"})
+
+
+# Official bodies whose names carry none of _INSTITUTION_RE's words ("Census Bureau" does; "U.S. Energy Information Administration"
+# does; "Federal Reserve", "National Institutes of Health", "European Commission" and "Centers for Medicare" need these).
+_OFFICIAL_RE = re.compile(r"\b(?:federal|national|government|regulator|regulatory|centers? for|institutes?|organi[sz]ation|"
+                          r"union|parliament|congress|senate|ministry|statistics|census|reserve)\b", re.I)

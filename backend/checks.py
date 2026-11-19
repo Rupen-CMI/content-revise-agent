@@ -657,8 +657,51 @@ def _longest_shared_run(a: str, b: str, n: int = 8) -> int:
     return sum(1 for i in range(len(words_a) - n + 1) if tuple(words_a[i:i + n]) in grams_b)
 
 
+def _mask_unavoidable(text: str, report_name: str, ignore_terms=()) -> str:
+    """Blank what the article is REQUIRED to say verbatim before an n-gram comparison: the report's own
+    name (the CMI link anchor) and the report's taxonomy terms (a segment list must call its categories
+    by the report's names). Replacing each with a non-word separator keeps the surrounding prose
+    comparable while a list of category names can no longer count as a copied line."""
+    if report_name:
+        text = re.sub(re.escape(report_name), " | ", text, flags=re.IGNORECASE)
+    for term in sorted({str(t).strip() for t in ignore_terms if str(t).strip()}, key=len, reverse=True):
+        text = re.sub(r"(?<!\w)" + re.escape(term) + r"(?!\w)", " | ", text, flags=re.IGNORECASE)
+    return text
+
+
+def _source_grams(
+    sources: list[tuple[str, str]], report_name: str, ignore_terms, n: int,
+) -> dict[str, set[tuple[str, ...]]]:
+    grams: dict[str, set[tuple[str, ...]]] = {}
+    for label, text in sources:
+        words = re.findall(r"\w+", _mask_unavoidable(text, report_name, ignore_terms).lower())
+        grams[label] = {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+    return grams
+
+
+def copied_runs(
+    text: str, sources: list[tuple[str, str]], report_name: str = "", ignore_terms=(), n: int = 10,
+) -> list[str]:
+    """The maximal runs of >= n consecutive words in `text` that also appear verbatim in a source."""
+    grams_by_label = _source_grams(sources, report_name, ignore_terms, n)
+    words = re.findall(r"\w+", _mask_unavoidable(text, report_name, ignore_terms).lower())
+    runs: list[str] = []
+    i = 0
+    while i <= len(words) - n:
+        if any(tuple(words[i:i + n]) in grams for grams in grams_by_label.values()):
+            j = i
+            while j <= len(words) - n and any(tuple(words[j:j + n]) in grams for grams in grams_by_label.values()):
+                j += 1
+            runs.append(" ".join(words[i:j + n - 1]))
+            i = j
+        else:
+            i += 1
+    return runs
+
+
 def _verbatim_overlap(
     paragraphs: list[str], sources: list[tuple[str, str]], report_name: str = "", n: int = 10,
+    ignore_terms=(),
 ) -> tuple[float, list[str]]:
     """Originality check against one or more source texts (the original guest article, the
     CMI report text). Returns (overlap_pct, example_snippets): overlap_pct is the percentage
@@ -669,15 +712,11 @@ def _verbatim_overlap(
     "reused a figure") actually looks like. report_name is stripped from both the draft
     paragraph and the source text before comparing: the report's own name is REQUIRED to
     appear verbatim as the CMI_LINK anchor text (see the "CMI link anchor names the confirmed
-    report" check above), so that one unavoidable, intentional overlap must not count here."""
+    report" check above), so that one unavoidable, intentional overlap must not count here.
+    `ignore_terms` are the report's own taxonomy terms (segment and category names), which the
+    segmentation section must list as the report names them; they are masked the same way."""
 
-    def _strip_name(text: str) -> str:
-        return re.sub(re.escape(report_name), " ", text, flags=re.IGNORECASE) if report_name else text
-
-    source_grams: dict[str, set[tuple[str, ...]]] = {}
-    for label, text in sources:
-        words = re.findall(r"\w+", _strip_name(text).lower())
-        source_grams[label] = {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+    source_grams = _source_grams(sources, report_name, ignore_terms, n)
 
     total_words = 0
     covered_words = 0
@@ -686,7 +725,7 @@ def _verbatim_overlap(
         own = p.replace(SPONSOR_TOKEN, " ")
         if not own.strip():
             continue
-        words = re.findall(r"\w+", _strip_name(own).lower())
+        words = re.findall(r"\w+", _mask_unavoidable(own, report_name, ignore_terms).lower())
         total_words += len(words)
         covered = [False] * len(words)
         matched_labels: set[str] = set()
@@ -1329,13 +1368,17 @@ def v2_outside_source_problems(sections: list[dict], inp, faq: list[dict] = ()) 
     allowed = outside_sources.allowed_names(inp)
     srcs = outside_sources.source_names(inp, allowed)
     out: list[str] = []
-    drafts = [(str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")), p)
+    # the trends and sub-segment sections may credit a supporting figure to the public regulatory or statistics body that
+    # published it (the content team's rule, 2026-11-20): there every other outside name is still a problem
+    named = {"trends", "subsegment"}
+    drafts = [(str((s.get("heading") or "").strip() or (s["sop"][0] if s.get("sop") else "intro")), p,
+               bool(s.get("sop")) and s["sop"][0] in named)
               for s in sections for p in s["paragraphs"]]
-    drafts += [(f"FAQ: {str(qa.get('question', ''))[:50]}", str(qa.get("answer") or "")) for qa in faq]
-    for label, p in drafts:
+    drafts += [(f"FAQ: {str(qa.get('question', ''))[:50]}", str(qa.get("answer") or ""), False) for qa in faq]
+    for label, p, regulatory_ok in drafts:
         for line in _sponsor_replacement(p, " ").split("\n"):
             for sentence in sentsplit.split(line):
-                names = outside_sources.attributing_names(sentence, allowed, srcs)
+                names = outside_sources.attributing_names(sentence, allowed, srcs, regulatory_ok=regulatory_ok)
                 if names:
                     out.append(f"{label}: names an outside source ({', '.join(names)}): {sentence.strip()[:100]!r}")
     return out
@@ -1523,8 +1566,9 @@ def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
 
 
 def v2_trend_shape_problems(sections: list[dict]) -> list[str]:
-    """The trends section is a lead-in paragraph, then three trends, each a sub-heading followed by three paragraphs. Reads the
-    sections WITH their sub-headings. (A trend need not open with a figure or a year: dropped from the SOP 2026-11-18.)"""
+    """The trends section is a lead-in paragraph, then three trends, each a sub-heading followed by one paragraph (the content
+    team's spec, 2026-11-19). Reads the sections WITH their sub-headings. (A trend need not open with a figure or a year: dropped
+    from the SOP 2026-11-18.)"""
     sec = next((s for s in sections if "trends" in (s.get("sop") or [])), None)
     if sec is None:
         return ["there is no trends section"]
@@ -1537,6 +1581,42 @@ def v2_trend_shape_problems(sections: list[dict]) -> list[str]:
     for i, (heading, paras) in enumerate(blocks, 1):
         if len(paras) != subheads.PARAGRAPHS_PER_TREND:
             out.append(f"trend {i} ({heading[:50]!r}) has {len(paras)} paragraph(s), not {subheads.PARAGRAPHS_PER_TREND}")
+    return out
+
+
+SPEC_PARAGRAPH_WORDS = (70, 140)     # "approximately 100 words" per trend and per sub-segment, with room either side
+
+
+def spec_paragraph_length_notes(sections: list[dict]) -> list[str]:
+    """Soft notes: a trend's paragraph or a sub-segment's paragraph far from the spec's approximately 100 words. Reads the
+    sections WITH their sub-headings."""
+    lo, hi = SPEC_PARAGRAPH_WORDS
+    out: list[str] = []
+    for s in sections:
+        sop = (s.get("sop") or [""])[0]
+        if sop not in ("trends", "subsegment"):
+            continue
+        _, blocks = subheads.split_blocks(s.get("paragraphs") or [])
+        for heading, paras in blocks:
+            words = sum(len(p.split()) for p in paras)
+            if not lo <= words <= hi:
+                out.append(f"{sop} {heading[:50]!r}: {words} words (about 100 expected)")
+    return out
+
+
+def v2_subsegment_shape_problems(sections: list[dict]) -> list[str]:
+    """The sub-segment section is two sub-segments, each under its own descriptive sub-heading with one paragraph (the content
+    team's spec, 2026-11-19). Reads the sections WITH their sub-headings."""
+    sec = next((s for s in sections if "subsegment" in (s.get("sop") or [])), None)
+    if sec is None:
+        return ["there is no sub-segment section"]
+    _, blocks = subheads.split_blocks(sec.get("paragraphs") or [])
+    out: list[str] = []
+    if len(blocks) != 2:
+        out.append(f"the sub-segment section has {len(blocks)} sub-headed sub-segment(s), not 2")
+    for heading, paras in blocks:
+        if len(paras) != 1:
+            out.append(f"sub-segment {heading[:50]!r} has {len(paras)} paragraph(s), not 1")
     return out
 
 
@@ -1913,7 +1993,11 @@ def run_checks_v2(
     sub_paragraphs = sum(len(s["paragraphs"]) for s in sections if "subsegment" in s["sop"])
     results.append(CheckResult("Two sub-segment analyses", sub_paragraphs >= 2, f"found {sub_paragraphs} sub-segment paragraph(s)"))
     trend_problems = v2_trend_shape_problems(raw_sections)
-    results.append(CheckResult("Trends: three sub-headed trends, three paragraphs each", not trend_problems, "; ".join(trend_problems)))
+    results.append(CheckResult("Trends: three sub-headed trends, one paragraph each", not trend_problems, "; ".join(trend_problems)))
+    sub_shape = v2_subsegment_shape_problems(raw_sections)
+    results.append(CheckResult("Sub-segments: two, each under its own heading with one paragraph", not sub_shape, "; ".join(sub_shape)))
+    spec_notes = spec_paragraph_length_notes(raw_sections)
+    results.append(CheckResult("Trend and sub-segment paragraphs about 100 words (soft)", not spec_notes, "; ".join(spec_notes)))
     figure_problems = v2_report_figure_problems(sections, inp)
     results.append(CheckResult("Report figures stated: market size, forecast, growth rate and every segment figure",
                                not figure_problems, "; ".join(figure_problems[:8])))
@@ -1944,7 +2028,9 @@ def run_checks_v2(
     results.append(CheckResult(
         "Text reads whole: no cut-off sentence, fragment, process wording or unresolved opening reference",
         not whole, "; ".join(whole[:4]) + (f" (+{len(whole) - 4} more)" if len(whole) > 4 else "") if whole else ""))
-    repeated = content_rules.repeated_point_problems(sections, market_name=market_name)
+    repeated = content_rules.repeated_point_problems(
+        sections, market_name=market_name,
+        own_terms=[s.get("name", "") for s in (getattr(inp, "subsegments", None) or [])])
     results.append(CheckResult(
         "No point is made twice across sections",
         not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
@@ -1965,8 +2051,11 @@ def run_checks_v2(
 
     # ---- kept: verbatim overlap with the report stays below 5%
     if report_text:
+        # The segmentation section must list each split's categories by the report's own names, so the
+        # report's taxonomy terms are masked: a segment list is required wording, not a copied line.
+        taxonomy = [n for seg in (getattr(inp, "segments", None) or []) for n in (seg.get("items") or [])]
         overlap_pct, overlap_examples = _verbatim_overlap(
-            paragraphs, [("CMI report", report_text)], report_name=report_name)
+            paragraphs, [("CMI report", report_text)], report_name=report_name, ignore_terms=taxonomy)
         results.append(CheckResult(
             "Verbatim overlap with source material is below 5%",
             overlap_pct <= 5.0,

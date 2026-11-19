@@ -271,6 +271,11 @@ _GNEWS_RSS_URL = "https://news.google.com/rss/search"
 _GNEWS_ARTICLE_URL = "https://news.google.com/rss/articles/{gid}?hl=en-US&gl=US&ceid=US:en"
 _GNEWS_BATCH_URL = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
 _GNEWS_PARAMS = {"hl": "en-US", "gl": "US", "ceid": "US:en"}
+# Google News RSS has no date limit of its own, while every news window in this pipeline is one year
+# (search._MAX_NEWS_AGE). Measured live: 50-55% of a raw Google News batch was older than that window and
+# was thrown away by filter_hits AFTER being fetched and decoded. Google's own `when:` operator cuts them
+# at the source, at no extra request cost. A planned query that sets its own range keeps it.
+_GNEWS_WHEN = "when:1y"
 _GNEWS_QUERY_DELAY_S = 1.5       # base gap between Google News queries (+ up to _BING_JITTER_S)
 _GNEWS_RETRY_WAIT_S = 5.0
 _GNEWS_RETRIES = 1
@@ -309,6 +314,14 @@ def _strip_publisher(title: str, source: str) -> str:
         if title.lower().endswith(suffix.lower()):
             return title[:-len(suffix)].rstrip()
     return title
+
+
+def _gnews_query(query: str) -> str:
+    """The query as actually sent to Google News RSS: the pipeline's one-year window as Google's own `when:`
+    operator, appended unless the query already sets a range ("when:6m", "when:30d", ...). Used for every
+    Google News query — market news, the U.S./state searches and claim backing all share this client."""
+    query = query.strip()
+    return query if not query or "when:" in query.lower() else f"{query} {_GNEWS_WHEN}"
 
 
 def _gnews_hit(e) -> search.SearchHit | None:
@@ -407,10 +420,13 @@ class _GoogleNews:
         if cached is not None:
             self._logger.info(f"[cache] gnews {query!r}: {len(cached)} cached result(s)")
             return cached
+        # Every Google News query carries the one-year window (see _GNEWS_WHEN); the cache key and the logs
+        # keep the planned query so a hit still points at the query that found it.
+        sent = _gnews_query(query)
         for attempt in range(_GNEWS_RETRIES + 1):
             try:
                 with _gnews_turn():
-                    r = self._client.get(_GNEWS_RSS_URL, params={"q": query, **_GNEWS_PARAMS})
+                    r = self._client.get(_GNEWS_RSS_URL, params={"q": sent, **_GNEWS_PARAMS})
                 if r.status_code == 200:
                     hits = [h for e in _parse_feed(r.content).entries if (h := _gnews_hit(e))]
                     search.cache_store("gnews", query, hits)
@@ -636,6 +652,7 @@ def gather(
                                   on_batch=(lambda batch: on_hits(earlier + batch)) if on_hits else None)
         logger.info(f"[timing] Bing queries: {bing.queries} in {time.monotonic() - bing_started:.1f}s")
         bing_hits += _us_gnews_hits(keyword_queries, query_sections, logger)
+        bing_hits += _section_gnews_hits(keyword_queries, query_sections, market_name, key_players, topic_terms, logger)
         rss_hits = rss_future.result()
         for h in rss_hits:
             h.add_sections(general)
@@ -704,6 +721,40 @@ def _us_gnews_hits(queries: list[str], query_sections: dict[str, list[str]] | No
         return resolve_hits(hits[:resolve], logger)
     except Exception:
         logger.warning("[gnews] the U.S. queries failed", exc_info=True)
+        return []
+
+
+_SECTION_GNEWS = ("trends", "subsegment")   # the sections whose statistics and instances Bing News answers thinly
+_SECTION_GNEWS_RESOLVE = 16                 # on-topic Google News hits whose links are decoded, across those sections
+
+
+def _section_gnews_hits(
+    queries: list[str], query_sections: dict[str, list[str]] | None, market_name: str, key_players: list[str],
+    topic_terms: list[str], logger: logging.Logger,
+) -> list[search.SearchHit]:
+    """The trends and sub-segment queries on Google News as well, the way the U.S. queries already run there. Measured live
+    (2026-11-19): with queries anchored on the market's own product plus a statistic or instance word, Bing News answered 15 of
+    35 queries for an assessment-services market with nothing, while Google News returned dozens per query, among them the
+    market's real launches and programmes. Only the hits the full relevance filter (search.filter_hits) would keep get their
+    links decoded, at most _SECTION_GNEWS_RESOLVE of them, so the noise costs nothing. Best-effort: a failure here must not lose
+    the Bing and feed hits."""
+    qs = [q for q in queries if set((query_sections or {}).get(q.lower()) or ()) & set(_SECTION_GNEWS)]
+    if not qs:
+        return []
+    try:
+        with httpx.Client(headers=_HEADERS, timeout=_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
+            gnews = _GoogleNews(client, logger)
+            hits: list[search.SearchHit] = []
+            for q in qs:
+                for h in gnews.search(q):
+                    h.add_sections(query_sections[q.lower()])
+                    hits.append(h)
+        kept = search.filter_hits(hits, [market_name], limit=_SECTION_GNEWS_RESOLVE, key_players=list(key_players),
+                                  topic_terms=list(topic_terms))
+        logger.info(f"[gnews] trends/sub-segment queries: {len(hits)} raw hit(s) from {len(qs)} queries, {len(kept)} on topic to read")
+        return resolve_hits(kept, logger)
+    except Exception:
+        logger.warning("[gnews] the trends/sub-segment queries failed", exc_info=True)
         return []
 
 

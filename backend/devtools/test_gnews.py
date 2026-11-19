@@ -90,6 +90,48 @@ out = feeds.resolve_hits([h0, h1, plain], LOG)
 feeds._decode_gnews = orig
 check("resolve: decoded kept, undecodable dropped, others pass through", [h.url for h in out] == [REAL, "https://example.com/a"], str([h.url for h in out]))
 
+# --- the one-year window: every Google News query carries Google's `when:1y` operator ---
+# RSS has no date limit, but search._MAX_NEWS_AGE is 365 days, so older entries used to be fetched and then thrown
+# away by filter_hits. A planned query that sets its own range keeps it.
+check("gnews: query gains when:1y",
+      feeds._gnews_query("assessment services market") == "assessment services market when:1y",
+      feeds._gnews_query("assessment services market"))
+check("gnews: a query with its own range is left alone",
+      feeds._gnews_query("widget market when:6m") == "widget market when:6m",
+      feeds._gnews_query("widget market when:6m"))
+check("gnews: empty query untouched", feeds._gnews_query("  ") == "", repr(feeds._gnews_query("  ")))
+
+
+class RSSResponse:
+    status_code = 200
+    content = RSS.encode()
+
+
+class RSSClient:
+    def __init__(self):
+        self.params = []
+
+    def get(self, url, params=None, **kw):
+        self.params.append((url, dict(params or {})))
+        return RSSResponse()
+
+
+feeds._gnews_last_end = 0.0
+rss_client = RSSClient()
+_orig_lookup, _orig_store = feeds.search.cache_lookup, feeds.search.cache_store
+feeds.search.cache_lookup, feeds.search.cache_store = (lambda *a: None), (lambda *a: None)
+try:
+    sent_hits = feeds._GoogleNews(rss_client, LOG)._get("assessment services market")
+finally:
+    feeds.search.cache_lookup, feeds.search.cache_store = _orig_lookup, _orig_store
+req_url, req_params = rss_client.params[0]
+check("gnews: the RSS request itself carries when:1y with the locale params",
+      req_params.get("q") == "assessment services market when:1y"
+      and req_params.get("hl") == "en-US" and req_params.get("gl") == "US" and req_params.get("ceid") == "US:en",
+      str(req_params))
+check("gnews: the windowed request still parses its hits",
+      sent_hits is not None and len(sent_hits) == 2, str(sent_hits))
+
 # --- DDGS fail-fast
 search._ddgs_disabled_until = 0.0
 check("ddgs: available at first", search.ddgs_available())

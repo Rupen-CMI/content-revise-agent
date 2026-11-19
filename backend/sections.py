@@ -56,6 +56,12 @@ def allot(section: str) -> int:
     return _BUDGETS["natural" if natural_style() else "terse"][section]
 
 
+def _trend_targets() -> int:
+    """How many drivers/opportunities the trends queries are written for: one query each in the terse style, two each (a
+    statistic and an instance) in the natural style."""
+    return allot("trends") // 2 if natural_style() else allot("trends")
+
+
 def subsegment_words() -> tuple[str, ...]:
     """The words the code-built sub-segment queries end in, one per allotted query."""
     return _SUBSEGMENT_WORDS["natural" if natural_style() else "terse"]
@@ -213,7 +219,9 @@ def section_search_plan(fs: dict, report, key_players=(), subsegments: list[dict
     opportunities = [e for e in fs.get("opportunities") or [] if e.get("text")]
     ordered = [("drivers", e) for e in drivers[:3]] + [("opportunities", e) for e in opportunities[:2]]
     spare = [("drivers", e) for e in drivers[3:]] + [("opportunities", e) for e in opportunities[2:]]
-    ordered = (ordered + spare)[:allot("trends")]
+    # natural style: two queries per target (a statistic and a real-world instance, the two kinds of backing a trend needs),
+    # so half as many targets as queries; queries spread over seven or eight drivers paraphrased the weaker ones three times
+    ordered = (ordered + spare)[:_trend_targets()]
     picks = subsegments if subsegments is not None else choose_subsegments(fs)
     subs = [{"split": p["split"], "name": p["name"], "basis": p.get("basis", ""), "text": f"{p['name']} ({p['split']})"} for p in picks]
     for t in subs:
@@ -247,10 +255,15 @@ def format_targets(plan: dict) -> str:
         us_lines = lines("us", "(no U.S. statements: ask what is happening with the market in the United States)")
         player_lines = lines("key_players", "(no known players: ask about the market's leading companies)")
         return "\n".join([
-            f"TRENDS ({allot('trends')} queries, one per target; each target is a driver or opportunity the news should show happening):",
-            lines("trends", "(no targets: ask what is changing in the market itself)"),
-            f"SUB-SEGMENTS ({allot('subsegment')} queries for EACH sub-segment below, returned under the \"subsegment\" key keyed "
-            f"by the sub-segment's name; the reason is the report's own statement of why the category leads):",
+            f"TRENDS ({allot('trends')} queries: TWO per target, one STATISTIC query and one INSTANCE query, see EVIDENCE KINDS "
+            f"below). Each target is a growth driver or opportunity from the CMI report. The article opens each trend with the "
+            f"driver and backs it with a statistic or a real-world instance about THIS market, so the queries look for that "
+            f"backing: the market's own product, service or technology that the driver acts on, never the driver's cause alone:",
+            lines("trends", "(no targets: choose the market's own main products, services or technologies yourself, one per "
+                            "target, as many targets as the query count allows, and write the two queries for each)"),
+            f"SUB-SEGMENTS ({allot('subsegment')} queries for EACH sub-segment below, half STATISTIC queries and half INSTANCE "
+            f"queries, returned under the \"subsegment\" key keyed by the sub-segment's name; the reason is the report's own "
+            f"statement of why the category leads, and the queries look for figures and events that show it):",
             sub_lines,
             f"U.S. ({allot('us')} queries; the report's own U.S. statements below are the seeds — the news you look for shows "
             f"them happening; name the U.S. naturally in every query: \"US\", \"American\", a U.S. state or agency where it fits):",

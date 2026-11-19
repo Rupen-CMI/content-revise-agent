@@ -309,7 +309,25 @@ news. No market-size wording ("market size", "share", "CAGR", "forecast") in a q
 own job, and the wording only invites those pages.
 - No years ("2025", "2026") and no explainer words ("what is", "guide", "overview", "trends", "benefits") in the query \
 text — a literal year acts as a filter that just as often excludes fresh coverage, and explainer words invite glossary \
-and how-to pages, which are not evidence that anything actually happened."""
+and how-to pages, which are not evidence that anything actually happened.
+
+ANCHORING (trends and sub-segment queries). Every trends and sub-segment query names the market's own product, service, \
+technology or category: the thing this market sells or does, in the words coverage uses for it. A query built from a \
+driver's cause alone (a social problem, a buyer group's situation, a broad industry's mood) finds news about that cause, \
+not about this market. Test each query before you keep it: would a headline that matches every word of it be news about THIS \
+market? If it could just as well be about the wider industry or a neighbouring market, rewrite it around the market's own \
+product.
+
+EVIDENCE KINDS (trends and sub-segments). The article backs each trend and each sub-segment with one of two kinds of \
+evidence, and each query looks for one kind:
+- STATISTIC query: a measured figure about the market's product or category (adoption, usage, uptake, volume, spending, \
+production, enrolment, installations, sales) as government bodies, regulators, industry associations, research institutions \
+and official statistics publish it, and as news reports it. The query names the product or category plus one figure word \
+(survey, data, percent, rate, rises, record, figures) or the kind of body that publishes the figure (association, agency, \
+ministry, department, regulator). Never "statistics" or "facts" (those words return list pages that copy figures without a \
+source), and never a rival research firm or its report.
+- INSTANCE query: a real-world event that shows the driver at work in this market (a launch, contract, rollout, programme, \
+regulation taking effect, investment, partnership), with the product or category plus one news word."""
 
 # The per-section intro and the Return shape differ by style: in the natural style the model writes the U.S. and
 # key-player queries too (the code-built shapes stand in when it returns none for a section); in the terse style it does
@@ -330,8 +348,9 @@ per sub-segment keyed by the sub-segment's name exactly as its block prints it."
 _INTRO_NATURAL = """The article's sections each need their own recent, real news, and you write the queries for every one of them: the \
 trends, the two fixed sub-segments, the U.S., the key players and the market as a whole. For EACH section below write the \
 queries named for it, built from that section's TARGETS: the targets say what the CMI report states there, so the news you \
-look for is news that shows it happening. A target is never text to paste into a query: turn it into the everyday words a \
-journalist's headline or a person's news search would use.
+look for is news that shows it happening in this market. A target is never text to paste into a query, nor a topic to search \
+in its own right: find the market's own product, service or technology it acts on, and write that in the everyday words a \
+journalist's headline or a person's news search would use (see ANCHORING and EVIDENCE KINDS below).
 
 The two fixed sub-segments listed under SUB-SEGMENTS are already chosen (the CMI report's own leading categories), and their \
 queries are written here too, per sub-segment: for EACH one write exactly the number of queries its block names, each naming \
@@ -536,7 +555,7 @@ claim's own specific point. A report claim with no result that genuinely earns o
 still has the report's own statement to work from, just without extra outside corroboration.
 
 Return JSON:
-{{"evidence": [{{"id": "<W-number>", "fact": "<one factual sentence>", "detail": "<one or two sentences of specifics from the result text, or an empty string>", "use_for": ["<one or more of: trends, us, players, context>"]}}],
+{{"evidence": [{{"id": "<W-number>", "fact": "<one factual sentence>", "detail": "<one or two sentences of specifics from the result text, or an empty string>", "origin": "<who published the figure or made the move, as the result's own text names it: the government body, regulator, association, institution or company; the publication's name only when the result names no one else>", "use_for": ["<one or more of: trends, us, players, context>"]}}],
   "claim_backing": [{{"claim_id": "<C-number>", "id": "<P-number>", "stance": "<supports|qualifies|contradicts>", "fact": "<one factual sentence stating only what that source says>"}}],
   "question_backing": [{{"question_id": "<Q-number>", "id": "<PQ-number>", "fact": "<one factual sentence stating only what that source says>"}}],
   "report_claim_backing": [{{"claim_id": "<RC-number>", "id": "<PR-number>", "fact": "<one factual sentence stating only what that source says>"}}]}}"""
@@ -548,8 +567,12 @@ SELECT_SECTION_RULES = """
 SECTIONS (replaces everything said above about use_for with several entries and about "context": there is no "context"). The \
 results above are grouped by the section whose search found them ("also found for" names other sections whose queries found the \
 same page). Assign each selected result to EXACTLY ONE section: use_for is a list with ONE entry, one of:
-- "trends": a DATED finding showing a direction the market is moving in (a shift in technology or product, buyer demand and \
-adoption, investment or competitive moves); the three trends differ, so the trends results span different directions.
+- "trends": a DATED finding that backs a growth driver of THIS market with a measured figure or a real-world instance: a statistic \
+about the market's own product, service or technology (adoption, usage, volume, spending, production, installations) published \
+by a government body, regulator, industry association, research institution or official statistics, or reported by news; or a \
+concrete event in this market (a launch, contract, rollout, programme, regulation taking effect, investment). The finding is about \
+this market itself, not the broader industry it sits in or a neighbouring market: news that only shares a word or a buyer group \
+with the market is left out. The three trends differ, so the trends results span different drivers.
 {sub_segment_lines}
 - "us": a finding specifically about the U.S. market.
 - "players": a company's own move in the market (a launch, a partnership, an acquisition, an integration, an expansion); never a \
@@ -1611,7 +1634,7 @@ You are planning, not writing. A reader should finish the article knowing the ma
 THE ARTICLE'S SHAPE (fixed, you do not change it)
 An opening from the guest article's subject, a short transition into the market, then seven market sections in this order, then an FAQ that code builds from the questions you do not use as headings:
 1. report_context: the market's size and where it is heading.
-2. trends: what is changing the market, as three distinct trends, each examined in depth: what is happening, how it changes demand in this market and what it means commercially.
+2. trends: three distinct trends, each one growth driver of the market (a different driver each, no shared underlying factor), backed by a statistic or a real-world instance specific to this market, and what it changes in demand, adoption, production or consumption.
 3. segmentation: how the market divides and why the leading category in each split leads.
 4. subsegment: the top two sub-segments of one segment split, each looked at in detail (a second split only when the report states no second category for the first).
 5. country_us: the United States and only the United States. Another region or country never appears in it; the leading region belongs to report_context. A fact about one U.S. state belongs here: the section names the state and presents it as part of the U.S. market, never as the whole country.
@@ -1623,7 +1646,7 @@ HOW TO PLAN
 2. Question headings. Pick exactly 2 or 3 questions to be section headings. Choose the ones whose answers your facts make strongest and most specific, each for a different section (the one its entry says it can head). A question heading is answered directly in the first sentences of its section. When a question about the market's size or growth is among them and your facts answer it, that question is the first heading chosen: it heads the section that opens the article with the market's figures.
 3. Other headings. A section that is not headed by a question gets a short topic phrase (about three to eight words) naming what the section covers, phrased for this market: how big the market is and how fast it is growing (the first section); what trend is changing it (the second); how the market divides and why the leading category of each split leads, one segment split at a time (the third); one sub-segment within a split, looked at closely (the fourth); the leading region, or the United States (the fifth); the companies that lead the market (the sixth); and what it all means and the outlook (the last). The heading names the market in its full form or its short form as well. It names the topic, never the findings: it is not a sentence, not a question, not a label naming the stage of the report it sits in, and it holds no figure, no claim (such as a share or a ranking) and no pile of keywords.
 4. Facts. Four parts: what to assign, what never repeats, what is required, and what is specific to a section.
-   4a. Assigning. Give each section its strongest facts, about three to five, using only the ids listed above. A trends section carries up to nine: name three distinct trends and give each its own entry in "trend_groups", two or three facts each: a report driver or opportunity where one fits, plus at least one dated, named piece of news evidence where the evidence list has one. A news item serves the one trend it illustrates best, and the three trends differ from one another. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. A section with no good fact gets none and stays short: do not stretch a fact to fill it. Report facts are CMI's; news evidence is stated as the development it reports, with its acting company named and no outlet named. A fact marked as historical is presented with its year, never as current.
+   4a. Assigning. Give each section its strongest facts, about three to five, using only the ids listed above. A trends section carries up to nine: name three distinct trends and give each its own entry in "trend_groups", two or three facts each: the report driver or opportunity the trend opens with, plus the dated news evidence that backs it with a statistic or a real-world instance about this market where the evidence list has one. A trend is built around its driver, so a news item goes to the one trend whose driver it backs, and the three trends rest on different drivers. A news item about the wider industry rather than this market backs no trend. Choose the facts that make the section's point. Use the strongest news evidence you have: an article that uses only a few of many strong facts looks thin, so leave out only what fits no section, and never pile weak facts into a section. A section with no good fact gets none and stays short: do not stretch a fact to fill it. Report facts are CMI's; news evidence is stated as the development it reports, with its acting company named and no outlet named. A fact marked as historical is presented with its year, never as current.
    4b. No repeats. A fact appears in one section only, so a figure is stated once. This is about each piece of evidence, not about each source: one source article or one report can supply several separate facts, and each of those facts is assigned to exactly one section; the same fact is never assigned to two sections, and two facts that make the same point count as one (assign only the stronger).
    4c. Required. The report's main figures are not optional: the market size, forecast and growth rate and the leading and fastest-growing regions go to report_context, every segment split goes to segmentation, and so does the leading category of a split with its stated share, except for the two sub-segments, whose figures go to subsegment. Code adds any of these you leave out, so plan each section's point around them.
    4d. Per section.
@@ -1848,3 +1871,4 @@ CANVAS_RULE_PARAGRAPH = ('Return "replacement": the whole paragraph that contain
                          'The part\'s other paragraphs stay as they are below and after it: never copy their sentences into this one.')
 CANVAS_RULE_SECTION = ('Return "replacement": every paragraph of the part above, rewritten as the instruction asks, separated by one blank line. '
                        'A line that starts with "### " is a sub-heading and comes back exactly as it is, in its place.')
+

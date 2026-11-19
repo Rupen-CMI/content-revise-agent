@@ -23,6 +23,7 @@ import search
 import sections
 import sentsplit
 import sources
+import subheads
 import us_search
 from sections import section_search_plan  # noqa: F401  (the Evidence step's section search plan lives in sections.py)
 from checks import (
@@ -1652,8 +1653,11 @@ def _section_rules(subsegments: list[dict]) -> str:
     mins = sections.MINIMUMS
     names = "; ".join(f'"{s["name"]}"' for s in subsegments)
     sub_lines = (
-        "".join(f'- "subsegment:{s["name"]}": a finding about that sub-segment itself (its products, adoption, demand or '
-                f'investment); write the tag with the name exactly as given.\n' for s in subsegments).rstrip("\n")
+        "".join(f'- "subsegment:{s["name"]}": a finding about that sub-segment itself, not the market at large: a statistic on its '
+                f'adoption, usage, volume, spending or production (from a government body, regulator, industry association, research '
+                f'institution or official statistics, or reported by news) or a concrete event that shows why it leads or grows (a '
+                f'launch, contract, rollout, investment); write the tag with the name exactly as given.\n'
+                for s in subsegments).rstrip("\n")
         if subsegments else '- (the report names no sub-segment: there is no "subsegment" tag)')
     text = prompts.SELECT_SECTION_RULES.format(
         sub_segment_lines=sub_lines, min_trends=mins["trends"], min_sub=mins["subsegment"], min_us=mins["us"],
@@ -1717,7 +1721,31 @@ def _assign_sections(selection: dict, hits: list[search.SearchHit], subsegments:
         tag = sections.evidence_tag(section, name)
         e["section"], e["subsegment"], e["use_for_all"], e["use_for"] = section, name, [tag], tag
         kept.append(e)
+    _return_trend_items(kept, hits, logger)
     selection["evidence"] = kept
+
+
+def _return_trend_items(kept: list[dict], hits: list[search.SearchHit], logger: logging.Logger) -> None:
+    """A dated item the TRENDS search found and the U.S. search did not, which the model filed under "us" only because the event
+    happens in the U.S. (a U.S. university's rollout, a U.S. agency's programme), goes back to "trends" while trends is below
+    its minimum: the U.S. section is the U.S. search's, and a location is not what makes an item a U.S. finding (live 2026-11-19:
+    the Assessment run's trend candidate went to "us" and Trends was left with 0 items). Items the U.S. search found, and items
+    once trends has its minimum, stay where the model put them."""
+    def found_by(e: dict, section: str) -> bool:
+        hit = _hit_of(e, hits)
+        return hit is not None and section in (hit.sections or [])
+    trends = sum(1 for e in kept if e.get("section") == "trends")
+    for e in kept:
+        if trends >= sections.MINIMUMS["trends"]:
+            break
+        hit = _hit_of(e, hits)
+        if e.get("section") != "us" or hit is None or hit.date is None or hit.scope == "us" \
+                or not found_by(e, "trends") or found_by(e, "us"):
+            continue
+        e["section"], e["subsegment"], e["use_for_all"], e["use_for"] = "trends", "", ["trends"], "trends"
+        trends += 1
+        logger.info(f"[select] {e.get('id')} was filed under the U.S. section, but the trends search found it and trends is "
+                    f"short; it goes back to trends")
 
 
 def _merge_same_events(selection: dict, hits: list[search.SearchHit], logger: logging.Logger) -> None:
@@ -2336,7 +2364,11 @@ _NON_EVENT_RE = re.compile(
     r"|\bdermatologists?\b|\bestheticians?\b|\bguidance states\b"
     # an author's book, an announced webinar or eBook
     r"|\bpublished (?:her|his|their|its|a|an) (?:[\w-]+ ){0,4}?(?:book|guide|e-?book|webinar)\b"
-    r"|\bannounced (?:a|an|its) (?:[\w-]+ ){0,3}?(?:webinar|e-?book|whitepaper|white paper|guide)\b",
+    r"|\bannounced (?:a|an|its) (?:[\w-]+ ){0,3}?(?:webinar|e-?book|whitepaper|white paper|guide)\b"
+    # a publication's or organisation's description of itself, not something that happened ("MultiLingual reports on the people and
+    # technology driving the language industry through its magazine, podcasts and online news"; live 2026-11-19, used as a trend)
+    r"|\b(?:reports?|reporting|covers?|coverage|focus(?:es)?|writes?|news(?: and analysis)?)\s+(?:on|of|about)\s+(?:the\s+)?(?:people|technology|news|trends|industry|developments|stories|latest)\b"
+    r"|\b(?:through|via|across|in)\s+(?:its|their)\s+(?:[\w-]+\s+){0,2}?(?:magazines?|podcasts?|newsletters?|websites?|online news|publications?|channels)\b",
     re.IGNORECASE,
 )
 
@@ -2582,6 +2614,9 @@ def run_build_evidence(
         line = f"- ({evidence_id}) [{', '.join(tags)}] {e.get('fact', '')} (source: {h.source or h.host}, {date})"
         if str(e.get("detail") or "").strip():
             line += f"\n    DETAIL: {str(e['detail']).strip()}"
+        if _origin_ok(e.get("origin")):
+            # who published the figure or made the move, as the result names it: the trends and sub-segment sections name it
+            line += f"\n    ORIGIN: {' '.join(str(e['origin']).split())}"
         head = tags[0].partition(":")[0]
         grouped[head if head in grouped else "context"].append(line)
     for key, label in _EVIDENCE_GROUPS:
@@ -2613,7 +2648,17 @@ def _parse_evidence(evidence: str) -> list[dict]:
                           "fact": m.group(3).strip(), "detail": "", "source": m.group(4).strip()})
         elif items and line.strip().startswith("DETAIL:"):
             items[-1]["detail"] = line.strip()[len("DETAIL:"):].strip()
+        elif items and line.strip().startswith("ORIGIN:"):
+            items[-1]["origin"] = line.strip()[len("ORIGIN:"):].strip()
     return items
+
+
+def _origin_ok(origin) -> bool:
+    """A usable ORIGIN: a short name, never CMI and never a rival research firm or statistics portal (a figure such a firm
+    publishes is dropped at SELECT, so its name has nothing to credit)."""
+    name = " ".join(str(origin or "").split())
+    return (bool(name) and len(name) <= 120 and not re.search(r"\b(?:CMI|Coherent Market Insights)\b", name)
+            and not outside_sources.firm_shaped(name) and not outside_sources.rival_brand(name))
 
 
 _QUESTION_ASSIGNMENT_RE = re.compile(r'^\* (Q\d+) \[replaces the (\w+) heading\] "(.+?)"', re.MULTILINE)
@@ -3229,7 +3274,8 @@ def _write_problems(
     # Only the CMI report is a copy risk (CMI repeating its own text); the publisher's article is edited, so its wording
     # may be reused.
     sources = [("CMI report", report_text)] if report_text else []
-    pct, examples = _verbatim_overlap(paragraphs, sources, report_name=report.name) if sources else (0.0, [])
+    taxonomy = getattr(report, "segment_terms", ()) or ()
+    pct, examples = _verbatim_overlap(paragraphs, sources, report_name=report.name, ignore_terms=taxonomy) if sources else (0.0, [])
     if pct > 5.0:
         problems.append(
             f"{pct:.0f}% of the words are copied in runs of 10 or more words from the original article or the CMI "
@@ -3315,15 +3361,33 @@ def _paragraph_text(entry) -> str:
     return str(entry)
 
 
+def _entry_heading(entry) -> str:
+    """The "heading" of a paragraphs entry given as an object (or as JSON text of one), else ''."""
+    if isinstance(entry, str) and entry.lstrip()[:1] == "{":
+        try:
+            entry = json.loads(entry)
+        except ValueError:
+            return ""
+    if isinstance(entry, dict):
+        return " ".join(str(entry.get("heading") or "").split()).lstrip("#").strip()
+    return ""
+
+
 def _clean_sections(raw_sections, force_untagged: bool = False) -> list[dict]:
     out = []
     for s in raw_sections or []:
         if not isinstance(s, dict):
             continue
-        paragraphs = [
-            _plain(q) for p in s.get("paragraphs") or [] if _paragraph_text(p).strip()
-            for q in _split_fused_paragraphs(_paragraph_text(p))
-        ]
+        paragraphs = []
+        for p in s.get("paragraphs") or []:
+            if not _paragraph_text(p).strip():
+                continue
+            # a sub-segment analysis arrives as {"segment", "sub_segment", "heading", "paragraph"}: its descriptive heading becomes
+            # a sub-heading entry (subheads), the way each trend carries its own
+            heading = _entry_heading(p)
+            if heading:
+                paragraphs.append(subheads.make_subhead(_plain(heading)))
+            paragraphs += [_plain(q) for q in _split_fused_paragraphs(_paragraph_text(p))]
         if not paragraphs:  # a section with no text is dropped
             continue
         out.append({

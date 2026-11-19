@@ -460,11 +460,18 @@ def _name_variants(name: str) -> list[list[str]]:
     if inner:
         out.append(_flex_tokens(re.sub(r"\([^)]*\)", " ", name)))
         out.append(_flex_tokens(" ".join(inner)))
+    # the report's prose often drops the category's closing product-class word ("Online Assessment Platforms" is "the Online
+    # Assessment segment"): two or more leading words name it when the name ends in such a word (found live: its 61% share was dropped)
+    out += [v[:-1] for v in list(out) if len(v) >= 3 and v[-1] in _CLASS_WORDS]
     # a run of three or more words written as its initials ("CHO cells"); initials that spell a common word name nothing
     out += [v[:i] + [ini] + v[j:] for v in list(out) for i in range(len(v)) for j in range(i + 3, len(v) + 1)
             if (ini := "".join(w[0] for w in v[i:j])) not in _INITIALS_NOT_NAMES]
     return [v for v in out if v]
 
+
+# a category name's closing word that only says what kind of thing it is (flex tokens: plurals already stripped)
+_CLASS_WORDS = {"platform", "solution", "service", "tool", "system", "software", "product", "technology", "method", "channel",
+                "application", "device", "equipment", "type", "model", "segment"}
 
 _INITIALS_NOT_NAMES = {"and", "the", "for", "are", "was", "has", "had", "its", "all", "any", "can", "per", "via", "not", "but",
                        "our", "who", "how", "new", "one", "two", "use", "set", "end", "top", "low", "high", "from", "with",

@@ -1,4 +1,4 @@
-"""Sub-headings inside a market section (the three trends each carry one).
+"""Sub-headings inside a market section (the three trends each carry one, and so does each of the two sub-segments).
 
 A section is `{heading, sop, paragraphs}` and has one heading. A trend's own heading travels inside `paragraphs` as an
 entry that starts with SUBHEAD_PREFIX, so every step that only moves or rewrites paragraph strings keeps it in place.
@@ -9,7 +9,7 @@ No imports: checks, docx_io, recheck and writer all use this module.
 """
 SUBHEAD_PREFIX = "### "
 TRENDS_PER_SECTION = 3
-PARAGRAPHS_PER_TREND = 3
+PARAGRAPHS_PER_TREND = 1   # the content team's trends spec (2026-11-19): one paragraph of about 100 words per trend
 
 
 def is_subhead(paragraph) -> bool:

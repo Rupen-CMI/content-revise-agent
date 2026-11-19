@@ -103,9 +103,11 @@ def report_page_reason(hit: "SearchHit") -> str | None:
 
 
 def listing_page_reason(hit: "SearchHit") -> str | None:
-    """Why this hit is a directory, review aggregator, listicle, guide or webinar page (so not evidence), or None."""
+    """Why this hit is a directory, review aggregator, listicle, ranking, guide or webinar page (so not evidence), or None."""
     if sources.is_listing(hit.host):
         return "a directory or review listing site"
+    if _RANKING_TITLE_RE.search(hit.title):
+        return "an analyst recognition or ranking title"
     return "a listicle, ranking, guide or webinar title" if _LISTING_TITLE_RE.search(hit.title) else None
 
 
@@ -135,6 +137,22 @@ _LISTING_TITLE_RE = re.compile(
     r"|\bhow to\b|\bguide to\b|\bwhat (?:is|are)\b|\bultimate guide\b|\beverything you need to know\b"
     r"|\bvs\b|\bcomparisons?\b|\balternatives?\b|^\s*reviews?:|\(\d{4}\s*review\)"
     r"|\bwebinars?\b|\be-?books?\b|\bwhite ?papers?\b",
+    re.IGNORECASE,
+)
+# Analyst recognitions and resemblance rankings are never market evidence: a vendor's "named a Leader",
+# "recognized as a Leader" or "positioned as a Leader", or the analyst-firm product itself ("PEAK Matrix",
+# "Magic Quadrant", "MarketScape", "Forrester Wave"), scores the vendor against a report's criteria — no
+# development happened in the market. Recognised by SHAPE, not by a list of firms: new analyst houses and new
+# report brands appear constantly, while the phrasing ("named a ... Leader", "positioned as a Leader") is fixed.
+# Confirmed live: "UiPath Named a Leader in Everest Group's 2026 Agentic Process Automation PEAK Matrix
+# Assessments" was kept for an assessment-services market on the word "Assessments" in its own title, which the
+# single-word gate now treats as a market signal (see filter_hits). The patterns pin the ranking phrasing or the
+# report brand, so ordinary news is untouched: "Wiz launches new cloud leader for security teams" and
+# "Acme, a market leader, acquires Beta" carry neither.
+_RANKING_TITLE_RE = re.compile(
+    r"\bnamed\s+(?:an?\s+|the\s+)?(?:leader|visionary|challenger|niche player)\b"
+    r"|\b(?:recogni[sz]ed|positioned|rated|ranked|cited)\s+as\s+(?:an?\s+|the\s+)?(?:leader|visionary|challenger)\b"
+    r"|\b(?:peak matrix|magic quadrant|marketscape|forrester wave)\b",
     re.IGNORECASE,
 )
 
@@ -700,6 +718,16 @@ def _head_matched(head: str, hit_tokens: set[str]) -> bool:
     return head in _TECH_HEAD_SYNONYMS and bool(_TECH_HEAD_SYNONYMS & hit_tokens)
 
 
+def _title_has_market_word(head: str, title_tokens: set[str]) -> bool:
+    """The market's identity word is in the HEADLINE itself — whole word, plural, short compound built on it, or a
+    category synonym of a software head. A snippet-only match does not count (the title, not the snippet, is what the
+    publisher wrote as the story). Google News hits carry no snippet at all (feeds._gnews_hit blanks it), so for a
+    one-word market the title is often the ONLY market signal a hit has; requiring a topic term or the full phrase on
+    top of it dropped five on-market assessment headlines in a replay while the SAME rule was still needed to drop
+    "Trump Has Grown Angrier With Vance Since Midterms, Report Says", whose only 'assessment' was in its snippet."""
+    return _head_matched(head, title_tokens) or _word_plural_or_compound(head, title_tokens)
+
+
 # A key player whose name is also an ordinary English word — a weekday or month ("Monday",
 # "March") or a common noun ("Apple", "Square", "Target", "Box", "Slack", "Zoom", "Notion") —
 # matched case-insensitively keeps every headline that merely mentions the word: one real run kept
@@ -815,8 +843,14 @@ def _player_patterns(
         product = r"\s+(?i:(?:" + "|".join(re.escape(w) for w in words) + r")\b)"
     marker = r"(?:\.com|['’]s|" + corp + (f"|{product}" if product else "") + ")"
     out: list[tuple[str, re.Pattern]] = []
+    market_word_norms = {str(w).lower().rstrip("s") for w in market_words}
     for player in key_players:
         for variant in player_name_variants(player):
+            # A single-word variant that is the market's own word ("Assessment" out of "Open
+            # Assessment Technologies" for an assessment-services market) names the player in every
+            # headline carrying that word, so it must not count as a player signal on its own.
+            if len(variant.split()) == 1 and variant.lower().rstrip("s") in market_word_norms:
+                continue
             if variant.lower().endswith(".com"):  # the domain IS the marker: nothing may follow it
                 rx = re.compile(r"\b" + re.escape(variant), re.IGNORECASE)
             elif variant.lower() in _COMMON_PLAYER_WORDS:
@@ -939,15 +973,32 @@ def filter_hits(
         matched_tokens = tokens & _content_tokens(text)
         matched_phrase = next((p for p in full_phrases if p in text), None)
         hit_tokens = _content_tokens(text)
-        token_ok = any(
-            _head_matched(head, hit_tokens) and all(_word_or_compound(t, hit_tokens) for t in required)
-            for _, (head, required, _, _) in gates
-        )
-        named_player = next((p for p, rx in player_res if rx.search(text)), None)
+        title_tokens = _content_tokens(hit.title)
         # Each DISTINCT topic term the hit uses (a two-word term carries an exact and a proximity
         # pattern — see compile_topic_terms — so the terms are counted, not the patterns).
         matched_topic_terms = {t for t, rx in topic_res if rx.search(text)}
         topic_hit = next(iter(matched_topic_terms), None)
+        token_ok = any(
+            # Modifier gate (non_head non-empty): unchanged — market head plus its required modifiers.
+            (non_head and _head_matched(head, hit_tokens)
+             and all(_word_or_compound(t, hit_tokens) for t in required))
+            # Single-word gate (no modifiers): the market's identity is one word.
+            or (not non_head and (
+                # In the HEADLINE it is a market signal by itself, whole word, plural or compound. Google News
+                # hits carry no snippet (feeds._gnews_hit blanks it), so demanding a topic term or the full
+                # phrase on top dropped on-market headlines such as "Maryland selects Pearson to deliver new
+                # statewide assessment system" and "CodeSignal Launches Agentic Coding Assessments for Hiring"
+                # (a replay: 318 raw -> 2 kept).
+                _title_has_market_word(head, title_tokens)
+                # Found only in the SNIPPET, it still needs the second signal once a topic vocabulary exists:
+                # "Trump Has Grown Angrier With Vance Since Midterms, Report Says" (forbes.com) was kept on the
+                # 'assessment' of "an assessment of the vice president" in its snippet.
+                or (_head_matched(head, hit_tokens)
+                    and (not topic_res or topic_hit is not None or matched_phrase is not None))
+            ))
+            for _, (head, required, _, non_head) in gates
+        )
+        named_player = next((p for p, rx in player_res if rx.search(text)), None)
         # With a topic vocabulary, one market-identity word is not enough on its own either: a market named by a
         # generic word plus a specific one ("web" + "scraping") would otherwise pass every story that merely
         # contains the generic word ("web shells", "web apps"). The item must also use the market's head noun
@@ -960,8 +1011,17 @@ def filter_hits(
         # run), so a derived word is no longer a match. SELECT still judges relevance afterwards.
         trusted_ok = hit.is_news and sources.is_trusted(hit.host) and any(
             any(_word_plural_or_compound(t, hit_tokens) for t in (required or [head]))
-            and (not topic_res or topic_hit is not None or _head_matched(head, hit_tokens))
-            for _, (head, required, _, _) in gates
+            and (
+                # Modifier gate: keep today's behaviour (head match still suffices).
+                (non_head and (not topic_res or topic_hit is not None or _head_matched(head, hit_tokens)))
+                # Single-word gate: same split as token_ok above. The word only in the snippet still needs the
+                # second signal ("Trump Has Grown Angrier With Vance Since Midterms, Report Says" on forbes.com,
+                # 'assessment' only in its snippet); the word in the HEADLINE is a market signal on its own,
+                # because a Google News hit has no snippet to fall back on.
+                or (not non_head and (not topic_res or topic_hit is not None or matched_phrase is not None
+                                      or _title_has_market_word(head, title_tokens)))
+            )
+            for _, (head, required, _, non_head) in gates
         )
         # A key-player name alone never keeps a hit: with the old rule any dated news on a trusted
         # host that merely named the player passed — "Microsoft" carried every Patch Tuesday story
