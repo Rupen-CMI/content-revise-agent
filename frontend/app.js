@@ -209,12 +209,14 @@ function sponsorCandidatesFrom(article) {
 // Builds an Error carrying the backend's structured failure info (error_code/message/technical)
 // when present, so showError() can render a plain-language banner instead of raw JSON/exc text.
 async function _apiError(resp) {
+  // the body is read ONCE: most errors are plain text, and a failed resp.json() has already used the body up
+  const raw = await resp.text().catch(() => "");
   let detail;
   try {
-    const body = await resp.json();
+    const body = JSON.parse(raw);
     detail = body.detail ?? body;
   } catch {
-    detail = await resp.text().catch(() => resp.statusText);
+    detail = raw || resp.statusText;
   }
   const err = new Error(typeof detail === "string" ? detail : detail.message || resp.statusText);
   if (detail && typeof detail === "object") {
