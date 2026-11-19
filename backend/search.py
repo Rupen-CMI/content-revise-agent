@@ -524,7 +524,10 @@ def run_text_searches(queries: list[str], logger: logging.Logger = _null_logger)
 
 
 def _content_tokens(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _STOPWORDS}
+    """The text's content words, plus each short word joined to its neighbour ('healthcare_it', see _identity_words),
+    so a market named with a short word can be matched by the pair."""
+    words = {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _STOPWORDS}
+    return words | _short_word_pairs(text)
 
 
 def gate_terms(phrases: list[str]) -> tuple[set[str], list[str]]:
@@ -569,7 +572,46 @@ def _ordered_market_tokens(phrase: str) -> list[str]:
         words.pop(0)
     while words and words[-1] in ("market", "markets"):
         words.pop()
-    return [w for w in words if len(w) > 2 and w not in _STOPWORDS]
+    return [w for w in _identity_words(" ".join(words)) if len(w) > 2]
+
+
+# Region letters ("US Healthcare IT", "UK fintech") qualify where a market is, not which market it is.
+_REGION_LETTERS = frozenset({"us", "uk", "eu"})
+
+
+def _identity_words(text: str) -> list[str]:
+    """The words of `text` that can identify a market, in order: stopwords dropped, and a short word ('it', 'ai', '5g',
+    'ev') joined to the word before it, or after it when it comes first ('healthcare_it', 'ai_healthcare'). On its own a
+    short word is a pronoun or a letter pair any text carries, so dropping it turned the Healthcare IT Market into the
+    healthcare market; joined, it names the market only where the text writes the pair (_short_word_pairs)."""
+    words = _plain_words(text)
+    out: list[str] = []
+    for i, w in enumerate(words):
+        if len(w) > 2:
+            tok = w
+        elif i:
+            tok = words[i - 1] + "_" + w
+        else:
+            tok = w + "_" + words[i + 1] if len(words) > 1 else w
+        if tok not in out:
+            out.append(tok)
+    return out
+
+
+def _plain_words(text: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _STOPWORDS and w not in _REGION_LETTERS]
+
+
+def _short_word_pairs(text: str) -> set[str]:
+    """Every short word of the text joined to the word before it and to the word after it, so whichever way a market name
+    joins its short word (_identity_words) the text's pair is there when the text writes the name."""
+    words = _plain_words(text)
+    out: set[str] = set()
+    for i, w in enumerate(words):
+        if len(w) <= 2:
+            out |= {words[i - 1] + "_" + w} if i else set()
+            out |= {w + "_" + words[i + 1]} if i + 1 < len(words) else set()
+    return out
 
 
 @lru_cache(maxsize=1)

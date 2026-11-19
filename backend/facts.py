@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 import feeds
 import freshness
 import llm
+import market_names
 import polarity
 import prompts
 import reports
@@ -148,7 +149,47 @@ def _stem(word: str) -> str:
 
 
 def _core_tokens(market_name: str) -> list[str]:
+    """The market's longer words, stemmed: enough to tell that text is ABOUT the market's subject, never that it names the
+    market itself (a short word such as 'IT', 'AI' or '5G' is not among them). That second question is names_market's."""
     return [_stem(w) for w in re.findall(r"[a-z0-9]+", _market_core(market_name)) if len(w) > 2]
+
+
+# Words that join a market's name ("AI in Healthcare", "Food and Beverage") and say nothing about which market it is.
+_NAME_FILLER = frozenset({"a", "an", "and", "by", "for", "in", "of", "on", "the", "to", "with"})
+
+
+def _names_form(text: str, low_text_words: set[str], form: str) -> bool:
+    words = re.findall(r"[A-Za-z0-9]+", re.sub(r"\s+markets?\s*$", "", form.strip(), flags=re.I))
+    words = words[1:] if words and words[0].lower() == "global" else words
+    meaningful = [i for i, w in enumerate(words) if w.lower() not in _NAME_FILLER]
+    if not meaningful:
+        return False
+    low = text.lower()
+    for i in meaningful:
+        w = words[i].lower()
+        if len(w) > 2:
+            if _stem(w) not in low_text_words:
+                return False
+            continue
+        # A short word ('IT', 'AI', 'EV', '5G') is also an everyday word or a letter pair inside any text, so it counts only
+        # beside its neighbour in the name ('healthcare IT', 'AI in') or written as the name writes it, in capitals.
+        beside = [rf"\b{re.escape(words[i - 1].lower())}\w*[\s-]+{re.escape(w)}\b"] if i > 0 else []
+        beside += [rf"\b{re.escape(w)}[\s-]+{re.escape(words[i + 1].lower())}"] if i + 1 < len(words) else []
+        beside += [r"\b" + re.escape(w) + r"[\s-]+markets?\b"] if i + 1 == len(words) else []
+        if not any(re.search(rx, low) for rx in beside) and not (
+                words[i].isupper() and re.search(rf"\b{re.escape(words[i])}\b", text)):
+            return False
+    return True
+
+
+def names_market(text: str, market_name: str) -> bool:
+    """Does the text name THIS market, not merely its subject? Every meaningful word of some equivalent form of the name
+    (market_names.market_name_forms) must be there: the long words anywhere (stemmed), a short word ('IT', 'AI', '5G') only
+    beside its neighbour in the name or in capitals. 'Healthcare market' does not name the Healthcare IT Market; 'healthcare
+    IT spending' and 'the market for healthcare IT' do. Filler words ('in', 'and') are never required."""
+    text = text or ""
+    text_words = {_stem(w) for w in re.findall(r"[a-z0-9]+", text.lower())}
+    return any(_names_form(text, text_words, f) for f in market_names.market_name_forms(market_name))
 
 
 def _quote_ok(quote: str, source_norm: str) -> bool:
@@ -239,7 +280,7 @@ def _extend_quote(quote: str, source_text: str) -> str:
 
 
 def _headline_entry(
-    raw, key: str, source_norm: str, core_tokens: list[str], strict_scope: bool, label: str, logger: logging.Logger,
+    raw, key: str, source_norm: str, market_name: str, strict_scope: bool, label: str, logger: logging.Logger,
     source_text: str = "",
 ) -> dict | None:
     """A size / forecast / CAGR entry survives only if its quote is real, carries every number of its value, and
@@ -267,7 +308,7 @@ def _headline_entry(
     def in_scope(text: str) -> bool:
         qn = set(_norm(text).split())
         if strict_scope:
-            return bool(core_tokens) and all(any(w == t or _stem(w) == t for w in qn) for t in core_tokens)
+            return names_market(text, market_name)
         # The CMI report page is about this market, so its own sentence only has to read as a figure for a market
         # (a country's industry or a survey has no "market" in it) rather than repeat the full name.
         return "market" in qn or "markets" in qn
@@ -342,11 +383,10 @@ def validate_fact_sheet(
     today = today or date.today()
     raw = raw if isinstance(raw, dict) else {}
     source_norm = _norm(report_text)
-    core = _core_tokens(market_name)
     fs = _empty_fact_sheet()
     table = {} if outside else table_headline(report_text, logger)
     for key in HEADLINE_KEYS:
-        entry = _headline_entry(raw.get(key), key, source_norm, core, bool(outside), "report", logger, report_text)
+        entry = _headline_entry(raw.get(key), key, source_norm, market_name, bool(outside), "report", logger, report_text)
         if key in table:
             if entry and _numbers(entry["value"]) != _numbers(table[key]["value"]):
                 logger.info(f"[facts] report {key}: the model read {entry['value']!r} but the coverage table says "
@@ -626,10 +666,16 @@ def run_fact_sheet(market_name: str, report: reports.Report, logger: logging.Log
 # ------------------------------------------------------------------------------------------ figure gap fill
 
 def figure_gap_queries(market_name: str) -> list[str]:
-    """Plain-keyword queries for pages that state the market's size and growth. No quotes and no year: the engines
-    that serve sizing pages answer plain keywords best, and a year in the query acts as a filter, not a hint."""
-    core = _market_core(market_name)
-    return [f"{core} market size and forecast", f"{core} market CAGR USD"]
+    """Queries for pages that state the market's size and growth: the first holds the market's name as one quoted phrase,
+    so the engine cannot drop or loosen a word of it ('it' in 'healthcare it market' is read as filler, which turns the
+    search into one for the healthcare market); the second is plain keywords, which the sizing pages answer best. No
+    year: a year in the query acts as a filter, not a hint."""
+    return [f"{market_phrase(market_name)} size and forecast", f"{_market_core(market_name)} market CAGR USD"]
+
+
+def market_phrase(market_name: str) -> str:
+    """The market's name as one quoted search phrase ('"healthcare it market"')."""
+    return f'"{_market_core(market_name)} market"'
 
 
 def _excluded(host: str, exclude_hosts) -> bool:
@@ -665,7 +711,8 @@ def filter_figure_hits(
         if per_site.get(site, 0) >= _FIGURE_PER_HOST:
             continue
         per_site[site] = per_site.get(site, 0) + 1
-        if have == len(core) or (acronym and acronym in words):
+        # the whole name, as names_market reads it ('healthcare' alone is only part of the Healthcare IT Market)
+        if names_market(f"{h.title} {h.snippet}", market_name) or (acronym and acronym in words):
             kept.append(h)
             if len(kept) >= limit:
                 break
@@ -768,10 +815,9 @@ def apply_figure_source(
             logger.info(f"[figures] rejected: {hit.host} is dated {hit.date:%Y-%m-%d}, too old for a headline figure")
             return fs
     source_norm = _norm(_page_text(hit))
-    core = _core_tokens(market_name)
     accepted: dict[str, dict] = {}
     for key in missing:
-        entry = _headline_entry(source.get(key), key, source_norm, core, True, f"outside page {hit.host}", logger, _page_text(hit))
+        entry = _headline_entry(source.get(key), key, source_norm, market_name, True, f"outside page {hit.host}", logger, _page_text(hit))
         if not entry:
             continue
         if not _figure_year_ok(entry, today):

@@ -162,12 +162,14 @@ def rank_candidates(hits, per_market: int, market: str = "") -> list:
 
 
 def search_queries(market_name: str) -> tuple[list[str], list[str]]:
-    """(news-style, web-style) queries for pages that state the market's size, growth, segments and players."""
-    core = _market_core(market_name)
+    """(news-style, web-style) queries for pages that state the market's size, growth, segments and players. The name is
+    one quoted phrase (facts.market_phrase), so the engines cannot drop or loosen a word of it; the last query is the
+    plain name, for the pages that word it differently."""
+    core, name = _market_core(market_name), facts.market_phrase(market_name)
     return (
-        [f"{core} market report size CAGR"],
-        [f"{core} market size share forecast", f"{core} market CAGR segments key players",
-         f"{core} market report press release", f"{core} market"],
+        [f"{name} report size CAGR"],
+        [f"{name} size share forecast", f"{name} CAGR segments key players",
+         f"{name} report press release", f"{core} market"],
     )
 
 
@@ -249,12 +251,9 @@ def check_url(url: str, market_name: str, logger: logging.Logger, cmi: bool = Fa
     text = read_page(url, logger)
     if not text:
         return {"ok": False, "message": "The page could not be read (it may be paywalled, blocked or down). Try another link.", "title": ""}
-    core = facts._core_tokens(market_name)
-    words = {facts._stem(w) for w in re.findall(r"[a-z0-9]+", text.lower())}
-    missing = [t for t in core if t not in words]
     title = text.strip().split("\n", 1)[0][:120]
-    if missing:
-        return {"ok": False, "title": title, "message": f"The page was read but does not mention {', '.join(missing)}. It may be about a different market."}
+    if market_name.strip() and not facts.names_market(text, market_name):
+        return {"ok": False, "title": title, "message": f"The page was read but does not name the {market_name}. It may be about a different market."}
     if not re.search(r"\d", text) or "market" not in text.lower():
         return {"ok": False, "title": title, "message": "The page was read but carries no market figures."}
     return {"ok": True, "title": title, "message": "Readable and about this market. Its figures will be used, adjusted by a few percent."}
