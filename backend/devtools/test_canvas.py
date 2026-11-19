@@ -436,6 +436,31 @@ except canvas.CanvasError as e:
     _msg = e.detail
 check("length: the 422 says it could not be made shorter", "shorter" in _msg, _msg)
 
+# ------------------------------------------------------------------ live-test regressions (2026-11-19 browser retest)
+_LONG = ("Schools and employers buy secure test delivery from specialist providers. "
+         "That demand keeps rising as hiring and certification move online. "
+         "Providers answer with remote proctoring and faster scoring for every buyer.")
+run = make_run()
+run.sections[2]["paragraphs"][1] = _LONG
+_lw = _LONG.split()
+# the marks stop mid-sentence; the answer is the whole first sentence (it runs into the words after the marks)
+out = suggest(run, T, " ".join(_lw[:4]), instruction="Make this more formal.",
+              answers=[{"replacement": "Educational institutions and employers procure " + " ".join(_lw[4:10]), "note": ""}])
+_new = run.canvas["pending"][out["suggestion_id"]]["new"]
+check("echo: a mid-sentence selection answered with its whole sentence widens over the repeated words; the rest of the paragraph stays",
+      _new == ["Educational institutions and employers procure " + " ".join(_lw[4:])], str(_new))
+
+run = make_run()
+run.sections[2]["paragraphs"][1] = _LONG
+# the answer repeats words from after the marks in its middle, not at its edge: refused and asked again
+out = suggest(run, T, " ".join(_lw[4:7]), instruction="make it clearer",
+              answers=[{"replacement": "secure " + " ".join(_lw[7:13]) + " today", "note": ""},
+                       {"replacement": "secure online test delivery", "note": ""}])
+_new = run.canvas["pending"][out["suggestion_id"]]["new"]
+check("echo: a short answer repeating words from beside the marks (not at its edge) is asked again, never used as the paragraph",
+      "outside the marks" in CALLS[-1]["user"] and _new == [" ".join(_lw[:4] + ["secure", "online", "test", "delivery"] + _lw[7:])],
+      str(_new))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {FAILURES}")

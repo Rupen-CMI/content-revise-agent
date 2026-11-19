@@ -489,6 +489,28 @@ def _echoes_context(replacement: str, sel: RawSelection) -> bool:
     return any(len(side) >= 5 and " ".join(side) in text for side in (before, after))
 
 
+def _tok(word: str) -> str:
+    return word.lower().rstrip(".,")
+
+
+def _absorb_context(replacement: str, sel: RawSelection) -> RawSelection:
+    """The selection widened over the words just outside it that the answer repeats at its own edges (a selection that stops mid-
+    sentence comes back as the whole sentence: "…valued at USD 13 Mn" -> "…valued at USD 13 Mn in 2026."), so the splice does not
+    repeat them. Three or more words must line up (or every word to the paragraph's start or end); fewer leave the selection as it is."""
+    reply = [_tok(w) for w in _WORD_RE.findall(replacement)]
+    before = list(_WORD_RE.finditer(sel.raw[:sel.r_start]))
+    after = list(_WORD_RE.finditer(sel.raw, sel.r_end))
+    k_before = max((k for k in range(1, min(len(reply), len(before)) + 1)
+                    if (k >= 3 or k == len(before)) and reply[:k] == [_tok(m.group(0)) for m in before[-k:]]), default=0)
+    k_after = max((k for k in range(1, min(len(reply), len(after)) + 1)
+                   if (k >= 3 or k == len(after)) and reply[-k:] == [_tok(m.group(0)) for m in after[:k]]), default=0)
+    if not (k_before or k_after):
+        return sel
+    r_start = before[-k_before].start() if k_before else sel.r_start
+    r_end = after[k_after - 1].end() if k_after else sel.r_end
+    return RawSelection(sel.target, sel.raw, sel.display, sel.d_start, sel.d_end, r_start, r_end, sel.atoms)
+
+
 def _length_problem(instruction: str, old: str, new: str) -> str:
     """A shorten-style instruction that came back no shorter (or an expand-style one no longer) is refused with the reason."""
     n_old, n_new = len(_WORD_RE.findall(old)), len(_WORD_RE.findall(new))
@@ -537,17 +559,30 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
     problem = ""
     for attempt in range(2):
         replacement, model_note = _ask(run, sel, instruction, scope, retry_text, problem, logger)
-        whole = scope == "selection" and _echoes_context(replacement, sel)
+        cut = sel
+        whole = False
+        if scope == "selection" and _echoes_context(replacement, sel):
+            # the answer repeats words around the marks: when they sit at its edges (the marks stopped mid-sentence and the whole
+            # sentence came back) the marks widen over them; an answer about as long as the paragraph stands as the paragraph
+            cut = _absorb_context(replacement, sel)
+            if _echoes_context(replacement, cut):
+                cut = sel
+                if len(_WORD_RE.findall(replacement)) >= 0.6 * len(_WORD_RE.findall(sel.raw)):
+                    logger.info("[canvas] the words-scope answer is the whole paragraph; it is used as the paragraph")
+                    whole = True
+                else:
+                    problem = "your text repeats words from outside the marks; return only the new text for the words between the marks"
+                    logger.info(f"[canvas] suggestion refused ({problem})" + (": retrying once" if attempt == 0 else ""))
+                    continue
+            elif cut is not sel:
+                logger.info("[canvas] the words-scope answer covers words beside the marks; the marks widen over them")
         if whole:
-            # the answer is the whole paragraph, not the marked words: it stands as the paragraph (spliced into the gap it would
-            # repeat the paragraph's own text around itself)
-            logger.info("[canvas] the words-scope answer repeats the surrounding paragraph; it is used as the whole paragraph")
             new_paras = _paragraphs_from(replacement, "paragraph")
         else:
-            new_paras = [splice(sel, replacement)] if scope == "selection" else _paragraphs_from(replacement, scope)
+            new_paras = [splice(cut, replacement)] if scope == "selection" else _paragraphs_from(replacement, scope)
         if scope == "selection" and not whole:
-            problem = check_suggestion(old_text, replacement, instruction) or ""
-            problem = problem or _length_problem(instruction, old_text, replacement)
+            problem = check_suggestion(cut.selected_raw, replacement, instruction) or ""
+            problem = problem or _length_problem(instruction, cut.selected_raw, replacement)
         elif scope == "selection":
             problem = (check_suggestion(sel.raw, "\n\n".join(new_paras), instruction)
                        or _length_problem(instruction, sel.raw, "\n\n".join(new_paras)) if new_paras else "no text came back")

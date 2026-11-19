@@ -78,7 +78,8 @@ export function wordDiff(before, after) {
   };
   let i = 0, j = 0;
   while (i < n && j < m) {
-    if (key(a[i]) === key(b[j])) { push("same", b[j]); i++; j++; }
+    // the new text's last word has no space after it; the old one's keeps it apart from the deleted words that follow
+    if (key(a[i]) === key(b[j])) { push("same", /\s$/.test(b[j]) ? b[j] : a[i]); i++; j++; }
     else if (L[i + 1][j] >= L[i][j + 1]) push("del", a[i++]);
     else push("ins", b[j++]);
   }
