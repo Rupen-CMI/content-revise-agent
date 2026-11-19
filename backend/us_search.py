@@ -9,6 +9,7 @@ that does not loses the "us" section, and is dropped when it had no other.
 import re
 
 import search
+import us_states
 
 _US_TEXT_RE = re.compile(r"\bU\.S\.|\bUS\b|\bUSA\b|(?i:united states)|\bAmerican\b")
 
@@ -27,7 +28,9 @@ def us_news_queries(core: str) -> list[str]:
 
 
 def names_the_us(hit: search.SearchHit) -> bool:
-    return bool(_US_TEXT_RE.search(f"{hit.title} {hit.snippet} {hit.excerpt}"))
+    # a page about one U.S. state (Texas, California, ...) is a U.S. page too
+    text = f"{hit.title} {hit.snippet} {hit.excerpt}"
+    return bool(_US_TEXT_RE.search(text) or us_states.STATE_RE.search(text))
 
 
 def mark_us_hits(hits: list[search.SearchHit]) -> list[search.SearchHit]:

@@ -1228,8 +1228,8 @@ def _build_reports(
                             "and let the agent find a report."]))
         if chosen_report:
             raise ReportUnusable(" ".join(
-                warnings + ["No figures were taken from the report you chose. Choose another report from the list, or "
-                            "paste a report link of your own."]))
+                warnings + ["No figures were taken from the report you chose. Choose another report from the list, "
+                            "paste a report link of your own, or build your own fact sheet."]))
         # No usable report anywhere: before giving up, search the web for the market's own size, forecast and
         # CAGR (one outside page, the same strict checks, varied 3-5%). Only when even that finds nothing does
         # the step fail.

@@ -291,8 +291,17 @@ raw = good_plan()
 raw["sections"][5]["facts"] = []
 raw["sections"][4]["facts"] = []
 p = plan_of(raw)
-check("lengths: a section without facts is short; the U.S. section is handed every U.S. fact there is, then the report's own (one U.S. fact is thin)",
-      S(p, "key_players")["length"] == "short" and S(p, "country_us")["facts"][0] == "fs.us.0" and S(p, "country_us")["length"] == "us_from_report",
+check("lengths: a section without facts is short; with one U.S. fact (thin) and a North America fact, the U.S. section is a "
+      "North America analysis with its own heading",
+      S(p, "key_players")["length"] == "short" and S(p, "country_us")["facts"][0] == "fs.us.0"
+      and "fs.regions.leader" in S(p, "country_us")["facts"] and S(p, "country_us")["length"] == "na_analysis"
+      and S(p, "country_us")["heading"].startswith("North America") and not S(p, "country_us")["msq"],
+      str((S(p, "country_us")["facts"], S(p, "country_us")["length"], S(p, "country_us")["heading"])))
+no_na = make_inputs()
+del no_na.items["fs.regions.leader"]
+p = plan_of(raw, no_na)
+check("lengths: thin U.S. facts and no North America fact -> the U.S. section is written from the report's own facts",
+      S(p, "country_us")["facts"][0] == "fs.us.0" and S(p, "country_us")["length"] == "us_from_report",
       str((S(p, "country_us")["facts"], S(p, "country_us")["length"])))
 raw = good_plan()
 raw["sections"][4]["facts"] = ["fs.regions.leader"]

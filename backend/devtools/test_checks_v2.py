@@ -443,8 +443,8 @@ check("trends: a missing sub-heading fails (two trends, one of six paragraphs)",
 d = good_draft()
 d[3]["paragraphs"][2] = filler(40)
 run = run_v2(TITLE, d)
-check("trends: a trend whose first paragraph has no figure or year fails", not by_name(run, "Trends: three sub-headed").passed,
-      by_name(run, "Trends: three sub-headed").detail)
+check("trends: a trend whose first paragraph has no figure or year passes (that rule left the SOP on 2026-11-18)",
+      by_name(run, "Trends: three sub-headed").passed, by_name(run, "Trends: three sub-headed").detail)
 
 check("trends: the sub-headings are not counted as prose (word counts and sentence checks read the sections without them)",
       all(not p.startswith("### ") for s in checks.subheads.strip_subheads(good_draft()) for p in s["paragraphs"]))

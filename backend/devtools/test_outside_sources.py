@@ -50,6 +50,12 @@ check("lead: '<name> found that ...' leaves the statistic plain", clean("Statist
 check("mid: 'a report cited by <outlet>' drops the outlet, keeps the finding",
       clean("A report cited by Chief Marketer in May 2026 found that 60 percent of consumers enjoy receiving mail.")[0]
       == "A report in May 2026 found that 60 percent of consumers enjoy receiving mail.")
+check("lead: '<place>'s <body> said in <Month Year> that X' becomes 'In <Month Year>, X' (the date stays)",
+      clean("England's Office for Students said in November 2026 that universities must ensure assessments measure what "
+            "students know.")[0] == "In November 2026, universities must ensure assessments measure what students know.")
+check("an institution whose name holds 'Research' is no research firm: the actor of its own news stays",
+      clean("The Australian Council for Educational Research won the Best International Implementation Award in June 2026.")[0]
+      == "The Australian Council for Educational Research won the Best International Implementation Award in June 2026.")
 check("trail: ', according to <outlet>' is cut", clean("Sales rose 5% in 2025, according to Statista.")[0] == "Sales rose 5% in 2025.")
 check("trail: ', per <outlet>' is cut", clean("Sales rose 5% in 2025, per MarTech Cube.")[0] == "Sales rose 5% in 2025.")
 check("trail: ', <outlet> reported' is cut", clean("Sales rose 5% in 2025, Gartner reported.")[0] == "Sales rose 5% in 2025.")

@@ -517,7 +517,8 @@ def _stems(text: str) -> set[str]:
     return {w[:5] for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 5 and w not in _FEATURE_STOP}
 
 
-def feature_problems(raw_sections: list[dict], clients: list[Client], market_name: str = "", subject: str = "") -> list[str]:
+def feature_problems(raw_sections: list[dict], clients: list[Client], market_name: str = "", subject: str = "",
+                     points: list[str] | tuple = ()) -> list[str]:
     """The post must not describe what a client sells. A paragraph that carries a client's link and repeats three or more
     content words that only the client's own page uses (its offer and its kind of business) is describing the client's offer,
     not the market. Words that the guest article's own paragraph used, its subject (the opening is about it), the linked words
@@ -528,7 +529,9 @@ def feature_problems(raw_sections: list[dict], clients: list[Client], market_nam
         page = _stems(" ".join([b.get("offer") or "", b.get("category") or ""]))
         if not page:
             continue
-        allowed = _stems(c.paragraph.text) | _stems(" ".join(l["anchor"] for l in c.links)) | _stems(market_name) | _stems(subject)
+        # the guest article's own points are its topic's words ("converts visitors", "marketing budget"), which the opening is about
+        allowed = (_stems(c.paragraph.text) | _stems(" ".join(l["anchor"] for l in c.links)) | _stems(market_name) | _stems(subject)
+                   | _stems(" ".join(points)))
         # One opening paragraph can carry several clients' links: another client's linked words and its own paragraph are as much the
         # post's own as this client's, so words only they bring ("digital marketing agency") are not this client's offer.
         for other in clients:
