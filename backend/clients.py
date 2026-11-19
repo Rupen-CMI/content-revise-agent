@@ -71,7 +71,7 @@ def build_clients(article: SourceArticle, indexes: list[int], max_clients: int |
         para = next((p for p in article.paragraphs if p.index == idx), None)
         if para is None:
             raise ValueError("A selected paragraph was not found in the article.")
-        outside = [l for l in para.links if l.is_external]
+        outside = [l for l in para.links if l.is_client_link]
         if not outside:
             raise ValueError("A selected paragraph has no outside link — pick the paragraphs with the paid backlinks.")
         for link in outside:

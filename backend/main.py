@@ -654,7 +654,7 @@ def _reports_step(step: str):
 # ---------------------------------------------------------------- serialization (frontend shapes; camelCase where the UI expects it)
 
 def _link_dict(link: Link) -> dict:
-    return {"anchor": link.anchor, "url": link.url, "isExternal": link.is_external}
+    return {"anchor": link.anchor, "url": link.url, "isExternal": link.is_external, "isClientLink": link.is_client_link}
 
 
 def _paragraph_dict(p: Paragraph) -> dict:

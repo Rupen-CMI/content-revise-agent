@@ -19,6 +19,14 @@ log = logging.getLogger(__name__)
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 
+# An image credit under a picture ("Source: Pexels", "Photo by Jane Doe on Unsplash", "Image courtesy of ...") or a link to a stock
+# photo library: it credits a picture and is never a client's paid backlink.
+_CREDIT_ANCHOR_RE = re.compile(r"^\W*(?:(?:image|photo|picture|pic|img|graphic|illustration|source|credit|credits|courtesy)\s*(?::|-|–|—|by|credit|source|courtesy|via)"
+                               r"|photo\s+by|image\s+by|via\s+\w|courtesy\s+of)", re.I)
+_STOCK_PHOTO_HOSTS = ("pexels.com", "unsplash.com", "pixabay.com", "shutterstock.com", "istockphoto.com", "gettyimages.com",
+                      "freepik.com", "stock.adobe.com", "depositphotos.com", "dreamstime.com", "123rf.com", "canva.com", "flickr.com")
+
+
 @dataclass
 class Link:
     anchor: str
@@ -27,6 +35,17 @@ class Link:
     @property
     def is_external(self) -> bool:
         return bool(urlparse(self.url).netloc) and not is_cmi_url(self.url)
+
+    @property
+    def is_image_credit(self) -> bool:
+        host = urlparse(self.url).netloc.lower().removeprefix("www.")
+        return bool(_CREDIT_ANCHOR_RE.search(self.anchor or "")) or any(host == h or host.endswith("." + h) for h in _STOCK_PHOTO_HOSTS)
+
+    @property
+    def is_client_link(self) -> bool:
+        """Can be a client's paid backlink: an outside link with words to click (a blank anchor wraps a picture or a space) that is
+        not an image credit."""
+        return self.is_external and bool((self.anchor or "").strip()) and not self.is_image_credit
 
 
 @dataclass
@@ -49,8 +68,8 @@ class SourceArticle:
         return "\n\n".join(p.text for p in self.paragraphs)
 
     def sponsor_candidates(self) -> list[Paragraph]:
-        """Paragraphs carrying at least one non-CMI link; the paid backlink is one of these."""
-        return [p for p in self.paragraphs if any(link.is_external for link in p.links)]
+        """Paragraphs carrying at least one link that can be a client's paid backlink (see Link.is_client_link)."""
+        return [p for p in self.paragraphs if any(link.is_client_link for link in p.links)]
 
 
 def read_docx(file: str | BinaryIO) -> SourceArticle:

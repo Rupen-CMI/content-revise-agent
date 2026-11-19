@@ -418,6 +418,29 @@ for bad in ('{"a": 1} and then some text', '{"a": 1}{"b": 2}', '{"a": 1'):
     except Exception:
         check(f"json: {bad!r} is still refused", True)
 
+# ---- image credits and blank anchors are never client backlinks (2026-11-19: "Source: Pexels" became a client)
+PEX = Link("Source: Pexels", "https://www.pexels.com/photo/vital-signs-monitor-11198232/")
+ITH_BLANK = Link(" ", "https://slponline.ithaca.edu/blog/slp")
+ITH = Link("Masters in Speech-Language Pathology salary", "https://slponline.ithaca.edu/blog/slp")
+credit_art = article(Paragraph(0, "Source: Pexels", [PEX]),
+                    Paragraph(1, "Students review  program costs and compare a Masters in Speech-Language Pathology salary first.", [ITH_BLANK, ITH]))
+check("credit: an image-credit caption paragraph is not a client candidate; the real client paragraph is",
+      [p.index for p in credit_art.sponsor_candidates()] == [1])
+try:
+    clients.build_clients(credit_art, [0])
+    check("credit: choosing the image-credit paragraph is refused", False)
+except ValueError:
+    check("credit: choosing the image-credit paragraph is refused", True)
+cl, _ = clients.build_clients(credit_art, [1])
+check("credit: a blank-anchor link is not one of the client's links", [l["anchor"] for l in cl[0].links] == [ITH.anchor], str(cl[0].links))
+for anchor, url in [("Photo by Jane Doe on Unsplash", "https://unsplash.com/@jane"), ("Image: Freepik", "https://www.freepik.com/x"),
+                    ("Image courtesy of Acme", "https://acme.example.com/"), ("Credit: Acme Labs", "https://acme.example.com/"),
+                    ("Pexels", "https://www.pexels.com/photo/1/")]:
+    check(f"credit: {anchor!r} is an image credit, not a client link", not Link(anchor, url).is_client_link)
+for anchor in ["source code review tools", "image recognition software", "credit card processing", "photography courses",
+               "Aldwych Writing Studio"]:
+    check(f"credit: {anchor!r} stays a client link", Link(anchor, "https://acme.example.com/").is_client_link)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

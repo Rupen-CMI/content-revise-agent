@@ -68,7 +68,7 @@ overlay.addEventListener("click", closeSidebar);
 
 // ---------------------------------------------------------------- app state
 const state = {
-  article: null,        // { title, paragraphs: [{index, text, links: [{anchor, url, isExternal}]}] }
+  article: null,        // { title, paragraphs: [{index, text, links: [{anchor, url, isExternal, isClientLink}]}] }
   filename: null,
   sponsorIdx: 0,
   clientPicks: {},          // host -> {on, paraIdx}: the clients the editor ticked and the paragraph chosen for each
@@ -204,8 +204,14 @@ async function resumeRunIfAny() {
   }
 }
 
+// A link that can be a client's paid backlink (the server's Link.is_client_link: outside, has words, not an image credit);
+// an article saved before the flag existed falls back to any outside link.
+function isClientLink(l) {
+  return l.isClientLink ?? l.isExternal;
+}
+
 function sponsorCandidatesFrom(article) {
-  return article.paragraphs.filter((p) => p.links.some((l) => l.isExternal));
+  return article.paragraphs.filter((p) => p.links.some(isClientLink));
 }
 
 // Builds an Error carrying the backend's structured failure info (error_code/message/technical)
@@ -428,7 +434,7 @@ function resetForNewUpload() {
 // ---------------------------------------------------------------- client paragraph picker
 function sponsorCandidates() {
   if (!state.article) return [];
-  return state.article.paragraphs.filter((p) => p.links.some((l) => l.isExternal));
+  return state.article.paragraphs.filter((p) => p.links.some(isClientLink));
 }
 
 // The client's own domain: 'shop.acme.com' and 'www.acme.com' are one client, 'acme.co.uk' keeps three labels (as clients.py does).
@@ -446,7 +452,7 @@ function registrableHost(url) {
 function clientGroups() {
   const groups = new Map();
   for (const p of sponsorCandidates()) {
-    for (const l of p.links.filter((x) => x.isExternal)) {
+    for (const l of p.links.filter(isClientLink)) {
       const host = registrableHost(l.url);
       if (!groups.has(host)) groups.set(host, { host, anchors: [], paragraphs: [] });
       const g = groups.get(host);
@@ -601,7 +607,7 @@ function renderParagraphWithLinks(p) {
   for (const l of links) {
     if (l.start < cursor) continue; // overlapping/duplicate anchor match — skip, keep it safe
     html += escapeHtml(p.text.slice(cursor, l.start));
-    const cls = l.isExternal ? "sponsor-link" : "";
+    const cls = isClientLink(l) ? "sponsor-link" : "";
     html += `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener" class="${cls}">${escapeHtml(l.anchor)}</a>`;
     cursor = l.start + l.anchor.length;
   }
