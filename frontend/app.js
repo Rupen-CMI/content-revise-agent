@@ -1522,6 +1522,17 @@ function renderReportsPickers() {
   updateReportsControls();
 }
 
+// What a found report covers, from its title: the market it names (flagged when that is not the picked market), or a note
+// that the title names no market at all (never the picked market's name, which would read as if the page covered it).
+function foundMarketCaption(r) {
+  if (r.covers) {
+    return `<span class="found-market">${escapeHtml(r.covers)}</span>`
+      + (r.exact === false ? `<span class="found-market related">related market, not ${escapeHtml(r.market)}</span>` : "");
+  }
+  if (r.exact === false) return `<span class="found-market related">title names no market</span>`;
+  return r.market ? `<span class="found-market">${escapeHtml(r.market)}</span>` : "";
+}
+
 // The competitor reports /step2/find_reports found for the picked market, as radio rows: the editor chooses exactly ONE.
 function renderFoundReports() {
   const run = state.run;
@@ -1542,7 +1553,7 @@ function renderFoundReports() {
     label.className = "market-option" + (on ? " selected" : "");
     label.innerHTML = `<input type="radio" name="found-pick" value="${escapeHtml(r.url)}" ${on ? "checked" : ""}>
       <span class="market-name"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.title || r.host)}">${escapeHtml(clip(r.title || r.host, 110))}</a>
-      <span class="option-caption"><span class="host-chip">${escapeHtml(r.host)}</span>${r.covers || r.market ? `<span class="found-market">${escapeHtml(r.covers || r.market)}</span>` : ""}${r.exact === false ? `<span class="found-market related">related market, not ${escapeHtml(r.market)}</span>` : ""}${r.snippet ? escapeHtml(clip(r.snippet, 150)) : ""}</span></span>`;
+      <span class="option-caption"><span class="host-chip">${escapeHtml(r.host)}</span>${foundMarketCaption(r)}${r.snippet ? escapeHtml(clip(r.snippet, 150)) : ""}</span></span>`;
     label.querySelector("input").addEventListener("change", () => {
       run.foundPick = r.url;
       list.querySelectorAll(".market-option").forEach((el) => el.classList.remove("selected"));
