@@ -270,6 +270,11 @@ _META_RE = re.compile(
     r"|\b(?:we|i)\s+(?:could|can|did|were|was)\s*(?:not|n['’]t)\s+(?:able\s+to\s+)?(?:find|locate|verify|identify)\b"
     r"|\b(?:could|can)\s*(?:not|n['’]t)\s+be\s+(?:found|located|verified)\b"
     r"|\b(?:data|figures?|statistics|numbers|facts?|information|details?)\b[^.;]{0,40}\b(?:(?:is|are|was|were)\s+(?:not|n['’]t)\s+available|unavailable|not\s+(?:yet\s+)?(?:published|disclosed))\b"
+    # the post explaining a figure it does not have (canvas, live 2026-11-19): "No figure for the number of U.S. patients ... appears in
+    # the evidence available for this section, so the trend is set out qualitatively"
+    r"|\bno\s+(?:figure|data|statistic|number|estimate)s?\b[^.;]{0,80}?\b(?:appears?|is\s+(?:given|stated|available|listed|provided)|exists?)\b"
+    r"|\b(?:in|from|among)\s+the\s+(?:evidence|facts?|sources?|data)\s+(?:available|provided|listed|supplied|given|at\s+hand)\b"
+    r"|\b(?:set\s+out|described|treated|kept|presented)\s+qualitatively\b"
     # the post describing the company list instead of the companies: "X and Y are the key players named in the ... market", "identifies as leading",
     # "the market's own account"
     r"|\bkey\s+players\s+(?:named|identified|listed)\s+(?:in|for|by)\b|\bidentif(?:y|ies|ied)\s+as\s+(?:the\s+)?(?:leading|key|major)\b"

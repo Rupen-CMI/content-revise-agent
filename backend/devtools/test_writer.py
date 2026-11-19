@@ -43,6 +43,11 @@ check("stripper: bullet lines keep their shape and an emptied bullet is dropped"
 check("stripper: a paragraph that was only process language is dropped", len(paras) == 3 and paras[2].startswith("Cloud tools"), str(paras))
 check("stripper: a section left empty is dropped",
       writer.strip_meta_sentences([{"heading": "", "sop": [], "paragraphs": ["The facts say nothing."]}], LOG) == [])
+_tele = writer.strip_meta_sentences([{"heading": "", "sop": [], "paragraphs": [
+    "Telehealth reshapes care. No figure for the number of United States patients who used telehealth in 2026 appears in the evidence "
+    "available for this section, so the trend is set out qualitatively. Wearables support monitoring."]}], LOG)[0]["paragraphs"][0]
+check("stripper: a sentence explaining a figure the post does not have is removed (canvas, 2026-11-19)",
+      _tele == "Telehealth reshapes care. Wearables support monitoring.", _tele)
 check("stripper: ordinary market sentences about reports and facts are kept",
       writer.strip_meta_sentences([{"heading": "", "sop": [], "paragraphs": ["Analysts report that three facts of life shape demand, and the report names six vendors."]}], LOG)[0]["paragraphs"][0].startswith("Analysts"))
 

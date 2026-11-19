@@ -472,7 +472,17 @@ def _ask(run, sel, instruction, scope, retry_text, problem, logger) -> tuple[str
     if not isinstance(raw, dict) or not isinstance(raw.get("replacement"), str):
         raise CanvasError(422, "The writing model returned no usable text. Please try again.")
     text = raw["replacement"].replace(SEL_OPEN, "").replace(SEL_CLOSE, "")
-    return text, str(raw.get("note") or "").strip()
+    return text, _clean_note(str(raw.get("note") or ""))
+
+
+# a fact id the editor never sees: fs.drivers.2, fs.us.3, W45 (alone, in a list or in brackets)
+_NOTE_ID_RE = re.compile(r"\s*\((?:\s*(?:fs(?:\.[\w-]+)+|W\d+)\s*[,;]?)+\)|\b(?:fs(?:\.[\w-]+)+|W\d+)\b")
+
+
+def _clean_note(note: str) -> str:
+    """The model's note for the editor without the plan's fact ids (they mean nothing on the page)."""
+    note = _NOTE_ID_RE.sub("", note)
+    return re.sub(r"\s+([,.;:])", r"", re.sub(r"\s{2,}", " ", note)).strip()
 
 
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'%.,-]*")

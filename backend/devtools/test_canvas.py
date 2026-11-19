@@ -461,6 +461,9 @@ check("echo: a short answer repeating words from beside the marks (not at its ed
       "outside the marks" in CALLS[-1]["user"] and _new == [" ".join(_lw[:4] + ["secure", "online", "test", "delivery"] + _lw[7:])],
       str(_new))
 
+_n = canvas._clean_note("No listed fact gives it: the telehealth facts (fs.drivers.2, fs.us.3) give no count, and W45 is dated July 2026.")
+check("note: the plan's fact ids are taken out of the note the editor reads", "fs." not in _n and "W45" not in _n and "facts give" in _n, _n)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {FAILURES}")

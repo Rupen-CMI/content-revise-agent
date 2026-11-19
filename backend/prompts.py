@@ -1824,13 +1824,13 @@ WHAT YOU RETURN
 {retry}
 RULES FOR THIS REDRAFT
 1. Link markers: a marker is text in double square brackets ([[CMI_LINK:...]], [[CLIENT_LINK:L1|...]], [[SPONSOR_PARAGRAPH]]). Every marker inside the part you rewrite comes back once, unchanged, character for character, and you add no marker of your own. A [[CMI_LINK:...]] marker is dropped only if the editor's instruction explicitly asks for the link to be removed.
-2. Figures: a figure appears only if a fact listed above states it (exactly as the fact gives it) or the editor's instruction itself gives it. Never invent, round or estimate a figure, and never add a company detail, date or claim that no listed fact supports. If the instruction asks for something the facts cannot support, leave it out and say so in "note".
+2. Figures: a figure appears only if a fact listed above states it (exactly as the fact gives it) or the editor's instruction itself gives it. Never invent, round or estimate a figure, and never add a company detail, date or claim that no listed fact supports. If the instruction asks for something the facts cannot support, leave it out and say so in "note". The text you return never mentions the facts, the evidence, a missing figure or what you could not do: that goes in "note" only, and when nothing supportable can be added you return the marked text unchanged.
 3. No outside source is named: no publication, research firm, data provider or consultancy. CMI's own analysis may be credited in the wording the draft already uses (for example "A CMI analyst judges"). The client whose paragraph the opening restates is never named or promoted; its link words stay exactly as they are.
 4. The rewritten text must read whole inside its surroundings: match the neighbouring sentences in tense, spelling variety and register, keep the sentence order logical, and leave no dangling reference to a sentence you removed.
 5. Write the "replacement" text only: no quotation marks around it, no explanation, no ⟦SEL⟧ tags.
 {rules}
 Return JSON in exactly this shape:
-{{"replacement": "<the text as described under WHAT YOU RETURN>", "note": "<what you could not do and why, or an empty string>"}}"""
+{{"replacement": "<the text as described under WHAT YOU RETURN>", "note": "<what you could not do and why, in one or two plain sentences for the editor (no fact ids), or an empty string>"}}"""
 
 CANVAS_RULE_SELECTION = ('Return "replacement": the text that takes the place of EXACTLY the words between ⟦SEL⟧ and ⟦/SEL⟧ and nothing else. '
                          'The words around the marks stay as they are, so your text must join them into correct, complete sentences.')
