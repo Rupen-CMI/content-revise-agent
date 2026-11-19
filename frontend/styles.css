@@ -401,6 +401,9 @@ button.menu-toggle {
 .url-check-result.ok { color: var(--success); }
 .url-check-result.fail { color: var(--danger); }
 .url-check-result .spin { color: inherit; }
+.find-status { display: inline-flex; align-items: center; gap: 8px; }
+.find-status[hidden] { display: none; }
+.find-status svg { width: 16px; height: 16px; }
 
 /* ---------- Step 2: report-source warnings (amber) ---------- */
 .warning-box {

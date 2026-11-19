@@ -1329,7 +1329,7 @@ function updateReportsControls() {
   document.getElementById("reports-own-btn").disabled = busy;
   document.getElementById("reports-own-hint").textContent = hasMarket
     ? `Starts as ${run.pickedMarkets[0]}; you can rename it in the sheet.` : "You name the market in the sheet.";
-  document.getElementById("reports-find-status").textContent = run.finding ? "Searching for competitor reports…" : "";
+  document.getElementById("reports-find-spinner").hidden = !run.finding;
   // the hint beside "Fetch selected report" speaks of the list only; a bad pasted link is reported in its own row
   const hints = {
     cmi: (run.cmiUrl || "").trim() ? "A link is pasted below: Fetch link reads it instead."
