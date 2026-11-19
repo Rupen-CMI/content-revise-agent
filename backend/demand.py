@@ -66,6 +66,31 @@ def _names_market(qwords: set[str], market_name: str) -> bool:
     return False
 
 
+# A search phrase the model passed off as a question ("US e commerce analytics market") is rebuilt as a real question of its
+# kind; {m} is the market's own name in lower case ("the e-commerce analytics market").
+_QUESTION_START_RE = re.compile(
+    r"^(?:what|how|who|which|why|where|when|is|are|does|do|can|will|should)\b", re.I)
+_QUESTION_FOR_KIND = {
+    "size": "How big is the {m}?", "growth": "What is the growth rate of the {m}?",
+    "trends": "What are the latest trends in the {m}?", "drivers": "What is driving the {m}?",
+    "technology_impact": "How is technology changing the {m}?", "segments": "What are the main segments of the {m}?",
+    "region": "Which region leads the {m}?", "us": "How is the {m} performing in the US?",
+    "players": "Who are the key players in the {m}?", "outlook": "What is the outlook for the {m}?",
+    "opportunities": "What are the opportunities in the {m}?",
+}
+
+
+def _as_question(q: str, kind: str, market_name: str) -> str:
+    """The question as a heading can print it: a search phrase (no question word first) becomes its kind's question about the
+    market, and a hyphenated word of the market's name that a search wrote with a space ("e commerce") gets its hyphen back."""
+    market = " ".join(market_name.split())
+    if not _QUESTION_START_RE.match(q):
+        return _QUESTION_FOR_KIND[kind].format(m=market.lower())
+    for word in re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)+", market):
+        q = re.sub(r"\b" + r"[\s-]".join(map(re.escape, word.split("-"))) + r"\b", word.lower(), q, flags=re.I)
+    return q
+
+
 def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[dict]:
     """MSQs that survive: a known kind of need, a real market-shaped question that names the market, not a definition,
     4-16 words, and not the same need as an earlier question reworded. Ordered by kind, ids Q1..Qn."""
@@ -79,8 +104,9 @@ def normalize_questions(raw, market_name: str, logger: logging.Logger) -> list[d
         if kind not in INTENT_SECTION or not q:
             logger.info(f"[demand] dropped question (unknown kind {kind!r} or empty): {item}")
             continue
+        q = _as_question(q[:-1] if q.endswith("?") else q.rstrip(".!"), kind, market_name)
         if not q.endswith("?"):
-            q = q.rstrip(".!") + "?"
+            q += "?"
         q = q[0].upper() + q[1:]
         q = re.sub(r"\bai\b", "AI", q)
         # a search-style phrase arrives in lower case ("in the united states?"); a heading and an FAQ question print it as written

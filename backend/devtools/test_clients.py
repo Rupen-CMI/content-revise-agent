@@ -360,6 +360,9 @@ subj_draft = [{"heading": "", "sop": [], "paragraphs": ["Graduate students draft
 check("offer check: words the guest article's own subject uses are not a leak",
       clients.feature_problems(subj_draft, [SUB], "", "Drafting and editing for graduate students") == [])
 check("offer check: without that subject the same words are flagged", len(clients.feature_problems(subj_draft, [SUB], "", "")) == 1)
+check("offer check: words the guest article's own points use are the post's own (the article is about them)",
+      clients.feature_problems(subj_draft, [SUB], "", "", ["Drafting and editing help graduate students finish theses."]) == [],
+      str(clients.feature_problems(subj_draft, [SUB], "", "", ["Drafting and editing help graduate students finish theses."])))
 
 # two clients in one opening paragraph: the other client's linked words are not this client's offer
 OTHER = dataclasses.replace(c_one[0], host="other.example",
