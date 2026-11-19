@@ -1803,6 +1803,9 @@ THE MARKET: {market_name}
 TODAY'S DATE: {today}
 Sections, in order: {headings}
 
+THE WHOLE ARTICLE AS IT STANDS (read-only; it shows what every section already says, so you can tell which facts and evidence are already used and where):
+{article}
+
 THE PART THE EDITOR IS WORKING ON ({section_label}). {selection_note}
 {section_text}
 
@@ -1828,6 +1831,7 @@ RULES FOR THIS REDRAFT
 3. No outside source is named: no publication, research firm, data provider or consultancy. CMI's own analysis may be credited in the wording the draft already uses (for example "A CMI analyst judges"). The client whose paragraph the opening restates is never named or promoted; its link words stay exactly as they are.
 4. The rewritten text must read whole inside its surroundings: match the neighbouring sentences in tense, spelling variety and register, keep the sentence order logical, and leave no dangling reference to a sentence you removed.
 5. Write the "replacement" text only: no quotation marks around it, no explanation, no ⟦SEL⟧ tags.
+6. An open request ("add anything missed", "add more data", "back this up", "beef it up", "anything else from the research?") means: compare the facts and evidence listed above with THE WHOLE ARTICLE, and work in the ones the article does not yet state anywhere that belong to this part's subject. THIS SECTION'S FACTS are the plan's first choice, not a limit: an item from either list fits wherever its subject belongs (a company's acquisition, partnership or launch belongs with the companies; a U.S. development with the United States; a product or segment development with its segment). Never restate a fact, figure or development that another section already gives. Keep every fact and evidence sentence already in the part unless the instruction asks to cut it. When nothing unused fits this part, return the text unchanged and say in "note" what is already covered.
 {rules}
 Return JSON in exactly this shape:
 {{"replacement": "<the text as described under WHAT YOU RETURN>", "note": "<what you could not do and why, in one or two plain sentences for the editor (no fact ids), or an empty string>"}}"""
@@ -1835,6 +1839,7 @@ Return JSON in exactly this shape:
 CANVAS_RULE_SELECTION = ('Return "replacement": the text that takes the place of EXACTLY the words between ⟦SEL⟧ and ⟦/SEL⟧ and nothing else. '
                          'The words around the marks stay as they are, so your text must join them into correct, complete sentences.')
 CANVAS_RULE_PARAGRAPH = ('Return "replacement": the whole paragraph that contains the marks, rewritten as one paragraph, as the instruction asks. '
-                         'The marks only show where the editor was looking; the paragraph as a whole is yours to redraft.')
+                         'The marks only show where the editor was looking; the paragraph as a whole is yours to redraft. '
+                         'The part\'s other paragraphs stay as they are below and after it: never copy their sentences into this one.')
 CANVAS_RULE_SECTION = ('Return "replacement": every paragraph of the part above, rewritten as the instruction asks, separated by one blank line. '
                        'A line that starts with "### " is a sub-heading and comes back exactly as it is, in its place.')

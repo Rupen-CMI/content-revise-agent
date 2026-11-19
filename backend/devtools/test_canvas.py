@@ -461,6 +461,24 @@ check("echo: a short answer repeating words from beside the marks (not at its ed
       "outside the marks" in CALLS[-1]["user"] and _new == [" ".join(_lw[:4] + ["secure", "online", "test", "delivery"] + _lw[7:])],
       str(_new))
 
+run = make_run()
+run.sections[2]["paragraphs"][1] = _LONG
+_other = "Regional testing networks expand secure remote proctoring capacity across schools, colleges and professional certification bodies."
+run.sections[2]["paragraphs"].append(_other)
+try:
+    suggest(run, T, " ".join(_lw[:4]), instruction="back this up", scope="paragraph",
+            answers=[{"replacement": _LONG + " " + _other, "note": ""}])
+    _msg = "no error"
+except canvas.CanvasError as e:
+    _msg = f"{e.status} {e.detail}"
+check("copies: a suggestion that only copies another paragraph's sentence gives a 422 saying the article already says it",
+      _msg.startswith("422") and "already says it" in _msg, _msg)
+out = suggest(run, T, " ".join(_lw[:4]), instruction="back this up", scope="paragraph",
+              answers=[{"replacement": _LONG + " Buyers now expect integrated scoring dashboards. " + _other, "note": ""}])
+_new = run.canvas["pending"][out["suggestion_id"]]["new"]
+check("copies: the copied sentence goes, the genuinely new one stays",
+      _other not in _new[0] and "integrated scoring dashboards" in _new[0] and "already says it" in out["note"], str(_new))
+
 _n = canvas._clean_note("No listed fact gives it: the telehealth facts (fs.drivers.2, fs.us.3) give no count, and W45 is dated July 2026.")
 check("note: the plan's fact ids are taken out of the note the editor reads", "fs." not in _n and "W45" not in _n and "facts give" in _n, _n)
 

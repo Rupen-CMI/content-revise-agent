@@ -258,6 +258,23 @@ def _other_facts(run, shown: str) -> str:
     return "\n".join(rows) or "- (none)"
 
 
+def _whole_article(run, si: int) -> str:
+    """Every section as the reader sees it (links as their words), so the model can tell what the article already states and where;
+    the section being edited is named only, since it is printed in full below with the marks."""
+    out = []
+    for i, s in enumerate(run.sections):
+        head = s.get("heading") or ("(the opening)" if not s.get("sop") else "(the transition)")
+        if i == si:
+            out.append(f"## {head}\n(the part being edited, shown in full below)")
+            continue
+        report_url = _report_url(run)
+        paras = [display_map(p, run.sponsor, report_url)[0] for p in s["paragraphs"]]
+        out.append(f"## {head}\n" + "\n".join(paras))
+    if run.faq:
+        out.append("## FAQ\n" + "\n".join(f'Q: {f.get("question", "")} A: {f.get("answer", "")}' for f in run.faq))
+    return "\n\n".join(out)
+
+
 def _raw_with_selection(sel: RawSelection) -> str:
     return sel.raw[:sel.r_start] + SEL_OPEN + sel.selected_raw + SEL_CLOSE + sel.raw[sel.r_end:]
 
@@ -301,7 +318,7 @@ def build_prompt(run, sel: RawSelection, instruction: str, scope: str, retry_rep
         only=("credit", "figures", "positive", "opinion", "voice", "grammar", "continuity", "active", "filler", "sentences"))
     return prompts.CANVAS_USER.format(
         title=run.title, market_name=inp.market_name if inp is not None else run.report.name, today=date.today().isoformat(),
-        headings=headings, section_label=label, selection_note=selection_note, section_text=section_text, neighbours=neighbours,
+        headings=headings, article=_whole_article(run, si if target["kind"] == "body" else -1), section_label=label, selection_note=selection_note, section_text=section_text, neighbours=neighbours,
         block=shown, other_facts=_other_facts(run, shown),
         points="\n".join(f'[{p["id"]}] {p["text"]}' for p in (inp.points if inp is not None else [])) or "- (none)",
         client=client, instruction=instruction.strip(),
@@ -394,7 +411,63 @@ def guard(run, si: int, j0: int, j1: int, new_paras: list[str], extra_numbers: s
             else:
                 notes.append("Cut an outside source's name from a sentence.")
     final = [p if m is None else (state[i] or "").strip() for i, (m, p) in enumerate(zip(marks, new_paras))]
+    final, copied = _drop_copies(run, si if faq_index is None else -1, j0, j1, faq_index, final)
+    notes += [f'Dropped "{_cut(x)}": the article already says it.' for x in copied]
     return [p for p in final if p], notes
+
+
+_COPY_STOP = set("the a an of and or in on to for with by at as is are was were that this these its it from into than which who their be "
+                 "has have had will can".split())
+_COPY_SHARE = 0.8     # copied sentences measured 0.97-1.0 of their words in the original; two different sentences of one draft <= 0.67
+_COPY_MIN_WORDS = 8
+
+
+def _content_words(sentence: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", sentence.lower()) if w not in _COPY_STOP and len(w) > 2}
+
+
+def _drop_copies(run, si: int, j0: int, j1: int, faq_index: int | None, paras: list[str]) -> tuple[list[str], list[str]]:
+    """A suggestion's sentence that restates one the article already has outside the changed paragraphs goes (live: "back this up" on a
+    sub-segment paragraph copied the next paragraph's four sentences into it). The strips only catch news evidence repeated across
+    sections; this catches any sentence, also inside the same section. A sentence carrying a link marker is never dropped, and only
+    sentences the suggestion adds are checked (the part's own sentences stay)."""
+    # a body edit is held against the body and a FAQ answer against the other answers: the FAQ restates the body's points by design
+    elsewhere, own = [], set()
+    if faq_index is None:
+        for i, s in enumerate(run.sections):
+            for j, p in enumerate(s["paragraphs"]):
+                if not (i == si and j0 <= j <= j1):
+                    elsewhere += [w for w in map(_content_words, _sentences(p)) if w]
+                else:
+                    own.update(_sentences(p))
+    else:
+        for k, qa in enumerate(run.faq or []):
+            answer = _sentences(str(qa.get("answer") or ""))
+            if k == faq_index:
+                own.update(answer)
+            else:
+                elsewhere += [w for w in map(_content_words, answer) if w]
+    out, copied = [], []
+    for p in paras:
+        if subheads.is_subhead(p):
+            out.append(p)
+            continue
+        lines = []
+        for line in p.split("\n"):
+            keep = []
+            for x in _SPLIT.split(line):
+                if not x.strip():
+                    continue
+                w = _content_words(x)
+                if (len(w) >= _COPY_MIN_WORDS and "[[" not in x and " ".join(x.split()) not in own
+                        and any(len(w & o) / len(w) >= _COPY_SHARE for o in elsewhere)):
+                    copied.append(x)
+                    continue
+                keep.append(x)
+            if keep:
+                lines.append(" ".join(keep))
+        out.append("\n".join(lines))
+    return out, copied
 
 
 # ------------------------------------------------------------------------------------------------ the editor state on the run
@@ -626,6 +699,8 @@ def suggest(run, target: dict, start: int, end: int, quote: str, instruction: st
         new_paras = [_norm(new_paras[0])]
     old_check = _norm("\n\n".join(old_paras))
     if _norm("\n\n".join(new_paras)) == old_check:
+        if dropped:
+            raise CanvasError(422, "Nothing new is left to suggest: " + " ".join(dropped) + " Try a different instruction.")
         raise CanvasError(422, "The suggestion changed nothing" + (f" ({model_note})" if model_note else "") + ". Try a different instruction.")
     bad = check_suggestion("\n\n".join(old_paras), "\n\n".join(new_paras), instruction)
     if bad:
