@@ -284,7 +284,7 @@ _PATTERNS: list[tuple[re.Pattern, int, str]] = [
     (_compile(rf"^\s*(?i:in)\s+(?:the\s+)?(?:journal|magazine|newspaper|publication|proceedings|pages)\s+(?:of\s+)?"
               rf"(?P<name>{_ORG})\s*,\s*"), 1, "lead"),
     (_compile(rf"\b(?i:reports?|stud(?:y|ies)|surveys?|analysis|research|polls?|forecasts?|estimates?|index|ranking|whitepaper|data|figures)"
-              rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by|cited by|quoted by|reported by|covered by)\s+(?:(?i:the)\s+)?(?P<name>{_ORG}))"), 1, "byfrom"),
+              rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by|cited by|quoted by|reported by|covered by|commissioned by|sponsored by|funded by|carried out by|run by|led by|done by|issued by)\s+(?:(?i:the)\s+)?(?P<name>{_ORG}))"), 1, "byfrom"),
     # "the findings were published in Nature": the venue goes, the clause and its date stay
     (_compile(rf"\b(?i:was|were|is|are|has been|have been|had been)\s+(?:published|printed|carried|reported|featured)\s+"
               rf"(?P<span>in\s+(?:(?:a|an|the)\s+)?{_VENUE}(?P<name>{_ORG}))"), 2, "pubin"),

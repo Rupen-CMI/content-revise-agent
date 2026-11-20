@@ -305,6 +305,11 @@ check("points: a point that cites an outside source loses the clause, one that c
       texts == ["Turning a messy online page into plain readable text helps real shoppers.",
                 "Turning a messy online page into plain readable text helps real shoppers find what they want."], str(texts))
 
+# live 2026-11-20 (EV): "a survey commissioned by Tibber" named a company as the survey's source
+check("commissioned: a commissioning company is cut, the figure stays",
+      osrc.clean_sentence("In November 2026, a representative survey commissioned by Tibber found that 84% of owners charge at home.")[:2]
+      == ("In November 2026, a representative survey found that 84% of owners charge at home.", False))
+
 # a place before a speech verb is where something happened, never a source ("A study in China found ...")
 for _s in ("A study in China found that adoption rose 12%.", "India said exports rose 12%.", "Adoption rose 12%, Germany reported."):
     check(f"places: {_s!r} keeps its place and is not cut", osrc.clean_sentence(_s)[:2] == (_s, False), str(osrc.clean_sentence(_s)))
