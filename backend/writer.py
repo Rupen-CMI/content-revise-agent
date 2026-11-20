@@ -96,7 +96,7 @@ def _shape_text(key: str, linked: bool) -> str:
     return text
 
 
-def _fact_text(item: dict, name_source: bool = False, required: bool | None = None) -> str:
+def _fact_text(item: dict, name_source: bool = False, required: bool | None = None, must_state: bool = False) -> str:
     """One fact line for the prompt. CMI is the only source the post names, except in the trends and sub-segment sections
     (`name_source`, the content team's rule of 2026-11-20): there a supporting figure published by a public regulatory or
     official-statistics body (its ORIGIN as SELECT read it from the page) is credited to that body; nothing else is. Elsewhere a
@@ -112,6 +112,8 @@ def _fact_text(item: dict, name_source: bool = False, required: bool | None = No
         when = 'news from ' + month if month else 'undated news'
         named = _source_to_name(item) if name_source else ""
         credit = f"source to name: {named}" if named else "no publication is named"
+        if must_state:      # the one news item a trend or a sub-segment stands on is stated, never left to the writer's taste
+            note += " [REQUIRED: state this development or figure in its trend / sub-segment, without naming its source]"
         line = f"- [{item['id']}] {item['text']} ({when}; {credit}){note}"
         if item.get("detail"):
             line += f"\n    detail: {_trim_detail(item['detail'])}"
@@ -181,14 +183,22 @@ def _section_block(i: int, s: dict, inp: planning.PlanInputs, points: dict[str, 
                     "With no fact listed, reason qualitatively from the market itself and add no figure.")
     named = s["sop"] in _NAMED_SOURCE_SECTIONS
     required_ids = _analysed_segment_items(inp, s) if s["sop"] == "subsegment" else set()
-    facts_rows = [_fact_text(inp.items[f], named, f in required_ids) for f in s["facts"]]
+    stated: set[str] = set()      # the first news item of each sub-segment is stated, like each trend's first (see the trends rows below)
+    if s["sop"] == "subsegment":
+        picks = s.get("sub_segments") or []
+        for v in picks:
+            first = next((f for f in s["facts"] if inp.items[f]["kind"] == "evidence" and planning._about_subsegment(inp.items[f], v, picks)), None)
+            if first:
+                stated.add(first)
+    facts_rows = [_fact_text(inp.items[f], named, f in required_ids, must_state=f in stated) for f in s["facts"]]
     if s["length"] in ("us_from_report", "na_analysis"):     # a headline figure here is the market's own, so the section is never obliged to state it
         facts_rows = [r.replace(" [REQUIRED: state this figure in the section]", "") for r in facts_rows]
     if s["sop"] == "trends" and s.get("trend_groups"):
         parts = []
         for n, g in enumerate(s["trend_groups"], 1):
             name = g["trend"] or "(the planner gave this trend no name: name it from its facts)"
-            body = "\n".join(_fact_text(inp.items[f], True) for f in g["facts"]) or "- (no listed fact: state the driver in general terms and its impact on this market, adding no figure, example or source)"
+            first_news = next((f for f in g["facts"] if inp.items[f]["kind"] == "evidence"), None)
+            body = "\n".join(_fact_text(inp.items[f], True, must_state=(f == first_news)) for f in g["facts"]) or "- (no listed fact: state the driver in general terms and its impact on this market, adding no figure, example or source)"
             # A trend whose facts are all the report's own (no news item survived SELECT for it) is
             # told so on its own trend line: built from the report driver, not padded with a generic
             # definition of the technology.

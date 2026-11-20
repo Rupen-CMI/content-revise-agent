@@ -46,7 +46,7 @@ _BODY_CHARS = 12000
 # are reported.
 # The section search runs the Bing budget sections.keyword_query_budget allots per section (see sections.py); every section keeps
 # up to this many hits of its own in the shortlist.
-_SECTION_HIT_FLOOR = 8
+_SECTION_HIT_FLOOR = 12
 
 
 def _log_query_yields(
@@ -2346,7 +2346,11 @@ _NON_EVENT_RE = re.compile(
     # a publication's or organisation's description of itself, not something that happened ("MultiLingual reports on the people and
     # technology driving the language industry through its magazine, podcasts and online news"; live 2026-11-19, used as a trend)
     r"|\b(?:reports?|reporting|covers?|coverage|focus(?:es)?|writes?|news(?: and analysis)?)\s+(?:on|of|about)\s+(?:the\s+)?(?:people|technology|news|trends|industry|developments|stories|latest)\b"
-    r"|\b(?:through|via|across|in)\s+(?:its|their)\s+(?:[\w-]+\s+){0,2}?(?:magazines?|podcasts?|newsletters?|websites?|online news|publications?|channels)\b",
+    r"|\b(?:through|via|across|in)\s+(?:its|their)\s+(?:[\w-]+\s+){0,2}?(?:magazines?|podcasts?|newsletters?|websites?|online news|publications?|channels)\b"
+    # a person's preference or routine, an endorsement, a recommendation (prompts.EVIDENCE_DEFINITION: not evidence)
+    r"|\b(?:credits?|swears?\s+by|raves?\s+about|endorses?|endorsed|recommends?|recommended)\b[^.;]{0,60}\b(?:routine|favou?rites?|regimen|brand|line|products?)\b"
+    r"|\b(?:line|brand|products?|one|ones|choice|pick)s?\s+(?:that\s+)?(?:they|she|he|users|experts|surgeons|doctors|dermatologists|consumers)\s+(?:recommend|prefer|trust|love|favou?r)\b"
+    r"|\b(?:routine|favou?rite|top pick|best-?selling pick|editor'?s pick)s?\b",
     re.IGNORECASE,
 )
 
@@ -2636,7 +2640,7 @@ def _origin_ok(origin) -> bool:
     publishes is dropped at SELECT, so its name has nothing to credit)."""
     name = " ".join(str(origin or "").split())
     return (bool(name) and len(name) <= 120 and not re.search(r"\b(?:CMI|Coherent Market Insights)\b", name)
-            and not outside_sources.firm_shaped(name) and not outside_sources.rival_brand(name))
+            and not outside_sources.mentions_rival(name))
 
 
 _QUESTION_ASSIGNMENT_RE = re.compile(r'^\* (Q\d+) \[replaces the (\w+) heading\] "(.+?)"', re.MULTILINE)

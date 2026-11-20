@@ -714,7 +714,8 @@ def _about_subsegment(item: dict, pick: dict, picks: list[dict]) -> bool:
     """A news item is about this sub-segment: SELECT tagged it for it, or (an item with no sub-segment of its own, a company's
     news) its words name this one of the picks most."""
     if item.get("subsegment"):
-        return facts._norm(item["subsegment"]) == facts._norm(pick["name"])
+        # tolerant of case, "&" against "and" and a plural: SELECT tags with a fixed name, but another path may spell it its own way
+        return ev_sections.match_subsegment(item["subsegment"], picks) == pick["name"]
     return ev_sections.match_subsegment(item.get("text", ""), picks) == pick["name"]
 
 
@@ -760,7 +761,11 @@ def _trend_groups(raw_groups, kept: list[str], inp: PlanInputs, repair, spare=No
         for g in sorted((g for g in groups if not any(is_news(f) for f in g["facts"]) and len(g["facts"]) < _TREND_FACTS_MAX),
                         key=lambda g: len(g["facts"])):
             text = f"{g['trend']} " + " ".join(inp.items[f].get("text", "") for f in g["facts"])
-            pick = _best_overlap(inp, spare(), text)
+            free = spare()
+            # the news that shares the most words with the trend, else the first free one: SELECT already tagged every spare item a
+            # trends fact (dated, about this market), so a trend with no word in common with it still takes it, and the writer is not
+            # left to reason from the driver alone while eligible news sits unused
+            pick = _best_overlap(inp, free, text) or (free[0] if free else None)
             if pick:
                 claim(pick)
                 g["facts"].append(pick)

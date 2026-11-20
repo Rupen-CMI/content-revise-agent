@@ -725,7 +725,98 @@ def _us_gnews_hits(queries: list[str], query_sections: dict[str, list[str]] | No
 
 
 _SECTION_GNEWS = ("trends", "subsegment")   # the sections whose statistics and instances Bing News answers thinly
-_SECTION_GNEWS_RESOLVE = 16                 # on-topic Google News hits whose links are decoded, across those sections
+# Read budget for those sections' Google News hits. Measured live (2026-11-20): 601 raw hits from 16 queries, all of them on topic,
+# were cut by ONE global top-16 (ranked by matched market words, then date) to about one page per query, some queries none. Now each
+# query keeps its own best hits: up to _SECTION_GNEWS_PER_QUERY of them, and when the queries together want more than
+# _SECTION_GNEWS_CEILING the pages are dealt out round-robin (every query's best first, then every query's second, ...), so no query
+# or sub-segment is starved. A niche market (a handful of on-topic hits) is read in full, as before. Decoding a link costs about 2 s
+# (3 workers behind a 0.6 s gate: 12 links in 23 s, 13 in 27 s in the same log), so 48 links add about 100 s at most.
+_SECTION_GNEWS_PER_QUERY = 3
+_SECTION_GNEWS_CEILING = 48
+
+_STAT_QUERY_WORDS = frozenset({
+    "figure", "figures", "data", "survey", "surveys", "percent", "rate", "rates", "rise", "rises", "rising", "record", "sales",
+    "statistics", "spending", "usage", "association", "agency", "ministry", "department", "regulator", "growth", "demand",
+})
+_INSTANCE_QUERY_WORDS = frozenset({
+    "launch", "launches", "acquire", "acquires", "acquisition", "partner", "partners", "partnership", "open", "opens", "award",
+    "awards", "invest", "invests", "investment", "approve", "approves", "approval", "expand", "expands", "expansion", "contract",
+    "contracts", "rollout", "wins", "deal",
+})
+_STRONG_FIGURE_RE = re.compile(
+    r"\d[\d,.]*\s?(?:%|percent\b|per cent\b|million\b|billion\b|trillion\b|crore\b|lakh\b|bn\b)|[$€£₹¥]\s?\d|\b\d[\d,.]*\s?(?:m|bn|k)\b",
+    re.IGNORECASE)
+_PLAIN_NUMBER_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w.])")
+_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
+_ACTION_RE = re.compile(
+    r"\b(?:launch|unveil|introduc|acqui|partner|team|collaborat|open|award|invest|approv|expand|deploy|roll|sign|select|win|won|"
+    r"secur|raise|fund|build|establish)\w*", re.IGNORECASE)
+_NOT_AN_ACTOR = frozenset({
+    "the", "how", "why", "what", "who", "when", "new", "this", "that", "these", "here", "top", "best", "first", "latest", "an",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january", "february", "march", "april", "may",
+    "june", "july", "august", "september", "october", "november", "december",
+})
+
+
+def _query_kind(query: str) -> str:
+    """'stat' when the query asks for a figure, 'instance' when it asks for a named development, else 'either'."""
+    words = set(re.findall(r"[a-z]+", query.lower()))
+    s, i = len(words & _STAT_QUERY_WORDS), len(words & _INSTANCE_QUERY_WORDS)
+    return "stat" if s > i else "instance" if i > s else "either"
+
+
+def _figure_signal(text: str) -> int:
+    """2 for a percent / currency amount / magnitude figure in the text, 1 for another number that is not a year, else 0."""
+    if _STRONG_FIGURE_RE.search(text):
+        return 2
+    return 1 if any(not _YEAR_RE.match(m) for m in _PLAIN_NUMBER_RE.findall(text)) else 0
+
+
+def _instance_signal(text: str) -> int:
+    """2 for a named actor (a capitalised word that is no sentence opener) ahead of an action verb, 1 for the verb alone, else 0."""
+    m = _ACTION_RE.search(text)
+    if not m:
+        return 0
+    actor = any(w.lower() not in _NOT_AN_ACTOR for w in re.findall(r"\b[A-Z][A-Za-z&.'-]{2,}", text[:m.start()]))
+    return 2 if actor else 1
+
+
+def evidence_signal(hit: "search.SearchHit", kind: str) -> int:
+    text = f"{hit.title} {hit.snippet}"
+    if kind == "stat":
+        return _figure_signal(text)
+    if kind == "instance":
+        return _instance_signal(text)
+    return max(_figure_signal(text), _instance_signal(text))
+
+
+def budget_section_hits(
+    kept: list["search.SearchHit"], queries: list[str], logger: logging.Logger = _null_logger,
+    per_query: int = _SECTION_GNEWS_PER_QUERY, ceiling: int = _SECTION_GNEWS_CEILING,
+) -> list["search.SearchHit"]:
+    """The on-topic hits (each page once, found first by one query) to read: every query keeps its `per_query` best, ranked by the
+    evidence its kind of query asks for in the headline (a figure for a statistic query, a named actor with an action for an
+    instance query), then by date; above `ceiling` in all, the pages are dealt out round-robin, best first, so every query gets a
+    share. One log line per query."""
+    by_query: dict[str, list[search.SearchHit]] = {q: [] for q in queries}
+    for h in kept:
+        by_query.setdefault(h.query, []).append(h)
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    ranked: dict[str, list[search.SearchHit]] = {}
+    for q, hs in by_query.items():
+        kind = _query_kind(q)
+        ranked[q] = sorted(hs, key=lambda h: (evidence_signal(h, kind), h.date or oldest), reverse=True)[:per_query]
+    out: list[search.SearchHit] = []
+    for rank in range(per_query):
+        for q, hs in ranked.items():
+            if rank < len(hs) and len(out) < ceiling:
+                out.append(hs[rank])
+    taken = {id(h) for h in out}
+    for q, hs in by_query.items():
+        mine = [h for h in ranked[q] if id(h) in taken]
+        logger.info(f"[gnews] {q!r} ({_query_kind(q)}): {len(hs)} on topic, {len(mine)} read: "
+                    + (" | ".join(h.title[:70] for h in mine) or "-"))
+    return out
 
 
 def _section_gnews_hits(
@@ -736,7 +827,7 @@ def _section_gnews_hits(
     (2026-11-19): with queries anchored on the market's own product plus a statistic or instance word, Bing News answered 15 of
     35 queries for an assessment-services market with nothing, while Google News returned dozens per query, among them the
     market's real launches and programmes. Only the hits the full relevance filter (search.filter_hits) would keep get their
-    links decoded, at most _SECTION_GNEWS_RESOLVE of them, so the noise costs nothing. Best-effort: a failure here must not lose
+    links decoded (budget_section_hits: a share per query, a ceiling in all), so the noise costs nothing. Best-effort: a failure here must not lose
     the Bing and feed hits."""
     qs = [q for q in queries if set((query_sections or {}).get(q.lower()) or ()) & set(_SECTION_GNEWS)]
     if not qs:
@@ -749,9 +840,14 @@ def _section_gnews_hits(
                 for h in gnews.search(q):
                     h.add_sections(query_sections[q.lower()])
                     hits.append(h)
-        kept = search.filter_hits(hits, [market_name], limit=_SECTION_GNEWS_RESOLVE, key_players=list(key_players),
-                                  topic_terms=list(topic_terms))
-        logger.info(f"[gnews] trends/sub-segment queries: {len(hits)} raw hit(s) from {len(qs)} queries, {len(kept)} on topic to read")
+        # the same story from two queries is one page that carries both queries' sections; the relevance gate keeps every on-topic
+        # hit (no global limit), and the read budget is applied per query afterwards
+        hits = sections.merge_duplicate_hits(hits)
+        on_topic = search.filter_hits(hits, [market_name], limit=max(len(hits), 1), key_players=list(key_players),
+                                      topic_terms=list(topic_terms))
+        kept = budget_section_hits(on_topic, qs, logger)
+        logger.info(f"[gnews] trends/sub-segment queries: {len(hits)} distinct hit(s) from {len(qs)} queries, {len(on_topic)} on topic, "
+                    f"{len(kept)} to read (at most {_SECTION_GNEWS_PER_QUERY} per query, {_SECTION_GNEWS_CEILING} in all)")
         return resolve_hits(kept, logger)
     except Exception:
         logger.warning("[gnews] the trends/sub-segment queries failed", exc_info=True)

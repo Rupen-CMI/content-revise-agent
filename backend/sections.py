@@ -14,6 +14,7 @@ import logging
 import re
 
 import config
+import prompts
 import search
 
 # The sections whose queries run (a hit found by none of the specific ones is "market"), and the sections SELECT may assign.
@@ -255,6 +256,7 @@ def format_targets(plan: dict) -> str:
         us_lines = lines("us", "(no U.S. statements: ask what is happening with the market in the United States)")
         player_lines = lines("key_players", "(no known players: ask about the market's leading companies)")
         return "\n".join([
+            "EVIDENCE: " + prompts.EVIDENCE_DEFINITION,
             f"TRENDS ({allot('trends')} queries: TWO per target, one STATISTIC query and one INSTANCE query, see EVIDENCE KINDS "
             f"below). Each target is a growth driver or opportunity from the CMI report. The article opens each trend with the "
             f"driver and backs it with a statistic or a real-world instance about THIS market, so the queries look for that "

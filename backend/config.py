@@ -32,7 +32,7 @@ SEARCH_DDGS_MAX_QUERIES = int(os.getenv("SEARCH_DDGS_MAX_QUERIES", "4"))
 # Trimmed from 80/60 (2026-10): the evidence emphasis shifts toward the CMI report's own claims
 # (trends/subsegment/country_us via the report-claim backing stream), so the general market stream
 # feeds fewer articles into SELECT instead of flooding the same evidence groups.
-SEARCH_KEEP_HITS = int(os.getenv("SEARCH_KEEP_HITS", "50"))  # articles handed to SELECT
+SEARCH_KEEP_HITS = int(os.getenv("SEARCH_KEEP_HITS", "80"))  # articles handed to SELECT (was 50; the trends/sub-segment Google News reads, up to 48, would otherwise be re-cut here)
 SEARCH_MAX_SELECTED = int(os.getenv("SEARCH_MAX_SELECTED", "40"))  # most articles SELECT may pick as evidence
 SEARCH_MAX_PER_HOST = int(os.getenv("SEARCH_MAX_PER_HOST", "8"))  # per site, so one prolific publisher cannot fill the shortlist
 # Claim backing: Step 1 extracts the original article's unbacked claims, DDGS text search looks for backing, SELECT keeps

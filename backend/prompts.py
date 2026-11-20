@@ -284,6 +284,14 @@ _QUERY_RULES_SHARED = (SEARCH_QUERIES_USER[_QUERY_RULES_FROM:_QUERY_RULES_TO]
 # the SOURCE GROUPS and TOPIC TERMS blocks that close the shared rules (the natural rules need them too)
 _SOURCE_AND_TERMS = SEARCH_QUERIES_USER[SEARCH_QUERIES_USER.index("SOURCE GROUPS —"):_QUERY_RULES_TO]
 
+# One definition of evidence, in the same words wherever the model is told what to look for (the section query rules, the intro and
+# the targets of the query prompt) and what to keep (SELECT's section rules and test 3). No braces: it is inserted into templates.
+EVIDENCE_DEFINITION = ("Evidence is a measured statistic about the market (a figure someone counted: sales, units, installations, "
+                       "adoption, spending) or a dated market development by a named company or body (a launch, acquisition, "
+                       "partnership, opening, contract award, investment, approval or expansion). Not evidence: a person's preference "
+                       "or celebrity routine, an endorsement, a recommendation or ranking list, advice or how-to, an opinion piece, "
+                       "or a publication describing itself.")
+
 # The natural-query rules (config.QUERY_STYLE "natural", the default): the old "anchor phrase in quotes + one or two words"
 # shape produced stiff strings that landed few results, so every rule now pushes the queries toward what a journalist's
 # headline or a person's news search would contain. The rules that still hold from the shared block above are kept here
@@ -329,6 +337,15 @@ source), and never a rival research firm or its report.
 - INSTANCE query: a real-world event that shows the driver at work in this market (a launch, contract, rollout, programme, \
 regulation taking effect, investment, partnership), with the product or category plus one news word."""
 
+_QUERY_RULES_NATURAL += "\n\nEVIDENCE DEFINED. " + EVIDENCE_DEFINITION + " Every query looks for one of the two kinds above and for nothing that is listed as not evidence."
+
+_QUERY_RULES_NATURAL += (
+    "\n\nWRITE EACH TRENDS AND SUB-SEGMENT QUERY AS AN ANALYST OR A JOURNALIST WOULD TYPE IT to find one thing: a figure (what "
+    "sold, how many were installed or shipped, what percent of buyers did it) or a recent development (a named company or body "
+    "launching, acquiring, opening, signing, investing, expanding). The product the way the trade says it, then one figure word "
+    "(sales, shipments, installations, percent, rose, record) or one action word (launches, acquires, opens, signs, invests, "
+    "expands, wins). Never market size, market share, forecast or report wording, and no advice words (how to, best, guide).")
+
 # The per-section intro and the Return shape differ by style: in the natural style the model writes the U.S. and
 # key-player queries too (the code-built shapes stand in when it returns none for a section); in the terse style it does
 # not (the old behaviour, code builds them).
@@ -359,6 +376,7 @@ the category the way a news headline about it would — a plain everyday phrase 
 news. Never the literal "<category> <market> demand" shape: queries built that way from the category's report name matched \
 almost no real headline, because headlines do not talk like a report. Return them under the "subsegment" key, one entry \
 per sub-segment keyed by the sub-segment's name exactly as its block prints it."""
+_INTRO_NATURAL += "\n\nThe news you look for is evidence. " + EVIDENCE_DEFINITION
 
 _RETURN_TERSE = """Return JSON, the queries grouped by section: {{"queries": {{"trends": ["<query>", ...], "subsegment": \
 {{"<sub-segment name>": ["<query>", ...]}}, "market": ["<query>", ...]}}, \
@@ -484,6 +502,7 @@ source's — a source earns a place only by telling the reader what happened. Ea
 finding: a figure, a named event, or a specific claim someone made. Saying what a study, survey, report or site \
 covers is not a finding — if the fact would still be just as true and just as intact after the publication's name \
 and topic in it were swapped for another publication's, it describes coverage and carries no finding, so reject it.
+   Evidence, in one definition for the whole article: """ + EVIDENCE_DEFINITION + """ Reject what is not evidence, however favourable or on topic.
    Market sizing is not evidence either: reject any result whose fact is the size, forecast, growth rate or share of a market \
 or industry, whoever states it — a research firm, a blog or news page quoting one, or a vendor's own report — for any \
 year of the figure, including an earlier one, and for any other firm's own estimate of the same market. CMI's report is \
@@ -567,6 +586,7 @@ SELECT_SECTION_RULES = """
 SECTIONS (replaces everything said above about use_for with several entries and about "context": there is no "context"). The \
 results above are grouped by the section whose search found them ("also found for" names other sections whose queries found the \
 same page). Assign each selected result to EXACTLY ONE section: use_for is a list with ONE entry, one of:
+Every selected result is evidence, and only evidence: """ + EVIDENCE_DEFINITION + """
 - "trends": a DATED finding that backs a growth driver of THIS market with a measured figure or a real-world instance: a statistic \
 about the market's own product, service or technology (adoption, usage, volume, spending, production, installations) published \
 by a government body, regulator, industry association, research institution or official statistics, or reported by news; or a \

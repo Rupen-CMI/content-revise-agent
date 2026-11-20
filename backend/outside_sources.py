@@ -297,6 +297,10 @@ _PATTERNS: list[tuple[re.Pattern, int, str]] = [
               rf"(?i:published|released|carried|printed)\s+(?=(?:[A-Za-z0-9'’\-]+\s+){{0,3}}?{_STUDY_NOUNS}\b)"), 2, "leadpub"),
     # "a Nature Portfolio collection ... noted that ...", "a Deloitte survey found ...": the name goes, the article and noun stay
     (_compile(rf"\b(?P<art>[Aa]n?|[Tt]he)\s+(?P<name>{_LAZY_NAME})\s+(?P<noun>{_STUDY_NOUNS})\b"), 2, "namebefore"),
+    # "Kakao Style's Zigzag data showed skin mist sales rose 550%": a measured figure from a company's own data is usable, only its
+    # name goes ("Skin mist sales rose 550%"), so the sentence that carries the figure is cut, never removed
+    (_compile(rf"^\s*(?P<name>{_ORG})['’]s\s+(?:\w+\s+){{0,2}}?(?i:data|figures|numbers|findings|survey|research|analysis)\s+"
+              rf"{_VERBS}\s+(?:that\s+)?"), 2, "lead"),
     (_compile(rf"\b{_ANY_FRAME_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG})"), 1, "nonsep"),
     (_compile(rf"\bper\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?=\s*(?:[,.;:!?)]|$))"), 1, "nonsep"),
     (_compile(rf"(?P<name>{_ORG})['’]s\s+(?:\w+\s+){{0,2}}?(?i:report|study|survey|analysis|data|research|estimate|forecast|figures|index|"
@@ -457,30 +461,31 @@ _STAT_VERBS_RE = re.compile(r"\b(?:estimat\w*|project\w*|forecast\w*|predict\w*|
 
 
 def attributes_to_outside(text: str) -> list[str]:
-    """Names an evidence fact attributes a statistic to: a research-firm shape in any attribution, or any named source in a sentence that
-    carries a figure and an explicit attribution frame or a statistic verb ("per Statista, 62% ...", "Gartner estimates 40% of CIOs
-    ..."). A subject-verb clause about the speaker itself ("Adobe said its traffic rose 4%") is not one. Empty when the fact is clean.
-    Used where no fact sheet is known yet (SELECT), so no actor is exempt beyond that reflexive clause."""
+    """Rival research firms a fact credits a statistic to (SELECT-time ban, rule (i)): a firm-shaped name (Grand View Research, Mordor
+    Intelligence ...), a statistics-portal or analyst-house brand (rival_brand) in any attribution frame, with or without a figure.
+    Empty when the fact is clean. A figure relayed from any OTHER named source is a usable measured statistic and is not flagged:
+    a measurement panel (NielsenIQ, Circana, Kantar, Paren: they count actual sales and installs), a company or operator, an outlet,
+    an association, a government body. The one remaining ban on such a figure is a market size/forecast/CAGR (pipeline._MARKET_SIZING_RE),
+    whoever states it. The writer never names these sources (only a regulatory body, outside_sources.regulatory_body)."""
     out: list[str] = []
     for s in _sentences(text):
-        digit = bool(re.search(r"\d", s))
         for h in _scan(s, EMPTY, ()):
             if h.mode in ("firm", "source"):
                 continue    # a bare firm-shaped product name in news is not a citation; an attribution without a figure is cut at write time
-            # A company announcing its own numbers ("US holiday online sales to grow 6.7%, Adobe Analytics forecasts") is primary
-            # data, kept and later written without the name; only a relaying frame ("per Statista, 62% ...") or a research-firm
-            # shape marks a statistic borrowed from someone else.
-            if not firm_shaped(h.name) and not (digit and h.tier == 1):
-                continue
-            # A figure an official or institutional body publishes (a government department or agency, a regulator, an industry
-            # association, a university or institute) is the credible statistic the trends and sub-segment sections are built on
-            # (the content team's spec, 2026-11-19): "according to the American Association of Colleges of Nursing, 7.2% ..." stays.
-            # Only a rival research firm, a statistics portal or an unknown relayer is a borrowed statistic.
-            if official_body(h.name):
-                continue
-            if h.name not in out:
+            if (firm_shaped(h.name) or rival_brand(h.name)) and h.name not in out:
                 out.append(h.name)
     return out
+
+
+# Analyst houses that sell market sizes and forecasts as their product (they publish no measurement of their own activity),
+# so a figure credited to one is a rival's, like a statistics portal's. Panels that measure real activity are not here.
+_ANALYST_HOUSES = frozenset("gartner idc forrester emarketer euromonitor ibisworld frostsullivan omdia canalys counterpoint mintel".split())
+
+
+def mentions_rival(text: str) -> bool:
+    """A free-text credit ("CNBC, citing Statista and Morgan Stanley") that names a rival research firm anywhere in it."""
+    chunks = re.split(r",|;|\band\b|\bciting\b|\bvia\b|\bas reported by\b|\bby\b|\bfrom\b|\bper\b|\bwith\b", text or "")
+    return any(c.strip() and (firm_shaped(c.strip()) or rival_brand(c.strip())) for c in chunks)
 
 
 def rival_brand(name: str) -> bool:
@@ -490,7 +495,8 @@ def rival_brand(name: str) -> bool:
     import external_reports     # lazy: this module stays importable without the pipeline
     letters = re.sub(r"[^a-z]", "", (name or "").lower())
     labels = {re.sub(r"[^a-z]", "", h.split(".")[0]) for h in external_reports.RESEARCH_HOSTS}
-    return bool(letters) and any(letters == lab or (len(lab) >= 6 and letters.startswith(lab)) for lab in labels)
+    return bool(letters) and (letters in _ANALYST_HOUSES or letters.removesuffix("group") in _ANALYST_HOUSES
+                              or any(letters == lab or (len(lab) >= 6 and letters.startswith(lab)) for lab in labels))
 
 
 def official_body(name: str) -> bool:
