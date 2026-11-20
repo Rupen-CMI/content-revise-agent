@@ -400,7 +400,7 @@ def _text(d: DDGS, query: str, logger: logging.Logger = _null_logger) -> list[Se
     ]
     query_tokens = _content_tokens(query)
     if hits and query_tokens and not any(
-        query_tokens & _content_tokens(f"{hit.title} {hit.snippet}") for hit in hits
+        shared_words(query_tokens, _content_tokens(f"{hit.title} {hit.snippet}")) for hit in hits
     ):
         logger.warning(f"[search] text {query!r}: engine returned {len(hits)} result(s) unrelated to the query — batch discarded")
         return []
@@ -548,6 +548,113 @@ def _content_tokens(text: str) -> set[str]:
     return words | _short_word_pairs(text)
 
 
+# ---------------------------------------------------------------------------------------- word forms
+# ONE notion of "the same word" for every market-word comparison (the hit gate, topic-term patterns, key-player vs
+# market words, claim overlap, publisher-feed stems). Comparing exact surface tokens made a "charger" market miss
+# "EV charging demand grew 8%" (charging != charger) and made required ['electric', 'vehicle'] miss "EV": 166 hits of
+# one live run were dropped as "no topical overlap", many of them on-target.
+#
+# word_keys(w) is the set of family keys of one word; two words are the same word when their key sets intersect:
+#   - a plain word (or its plural) has the key  stem            ("charge", "charges" -> {"charg"})
+#   - an -ing / -ed form has both               stem and stem+  ("charging"          -> {"charg", "charg+"})
+#   - an agentive / -ation form has only        stem+           ("charger", "chargers" -> {"charg+"})
+# so charger ~ charging ~ charge-ing, printer ~ printing, scanner ~ scanning, translation ~ translator ~ translated,
+# testing ~ tests — but a bare word never equals its agentive derivative: "marketer" is not "market" coverage, and -or is
+# never stripped, so "projector" is not a "project" word. Every stripped form must leave a stem of >= 4 letters (-ing, -ed)
+# or >= 5 (-er, -ation), so "string", "bring", "order", "station" and short words stay whole.
+_AGENT_SUFFIXES = ("ator", "ation", "er")  # a plural -s is stripped before these are tried
+_INFLECT_SUFFIXES = ("ing", "ed")
+
+
+@lru_cache(maxsize=8192)
+def word_keys(word: str) -> frozenset[str]:
+    w = word.lower()
+    if len(w) <= 3 or not w.isalpha():
+        return frozenset({w})
+    if w.endswith("ies") and len(w) > 5:
+        w = w[:-3] + "y"
+    elif w.endswith(("ches", "shes", "xes", "sses", "zzes")):
+        w = w[:-2]
+    elif w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        w = w[:-1]
+
+    def clean(stem: str) -> str:
+        if len(stem) >= 5 and stem[-1] == stem[-2] and stem[-1] not in "aeiouls":
+            stem = stem[:-1]  # "scann" -> "scan", "runn" -> "run"
+        return stem[:-1] if len(stem) >= 5 and stem.endswith("e") else stem
+
+    for suf in _AGENT_SUFFIXES:
+        if w.endswith(suf):
+            # "-ation"/"-ator" keep the 'at' of the verb they came from: translation/translator -> "translat"
+            stem = w[:-len(suf)] + ("at" if suf in ("ation", "ator") else "")
+            if len(stem) >= 5:
+                return frozenset({clean(stem) + "+"})
+    for suf in _INFLECT_SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 4:
+            stem = clean(w[:-len(suf)])
+            return frozenset({stem, stem + "+"})
+    return frozenset({clean(w)})
+
+
+def same_word(a: str, b: str) -> bool:
+    return a == b or bool(word_keys(a) & word_keys(b))
+
+
+def has_word(word: str, tokens) -> bool:
+    """`word` is among `tokens` as the same word (whole word, plural, -ing/-er family, abbreviation expansion)."""
+    if word in tokens:
+        return True
+    keys = word_keys(word)
+    return any(keys & word_keys(t) for t in tokens)
+
+
+def shared_words(words, tokens) -> set[str]:
+    """The `words` that `tokens` carry as the same word (the family-aware form of `words & tokens`)."""
+    return {w for w in words if has_word(w, tokens)}
+
+
+# Abbreviations that stand for words of a market name. Besides these well-known ones, abbreviations are DERIVED from the
+# market's own name (abbreviations_for): the initials of consecutive words, 'electric vehicle' -> 'ev'.
+_KNOWN_ABBREVIATIONS = {
+    "ev": ("electric", "vehicle"), "ai": ("artificial", "intelligence"), "iot": ("internet", "things"),
+    "ml": ("machine", "learning"), "crm": ("customer", "relationship", "management"),
+    "erp": ("enterprise", "resource", "planning"), "hr": ("human", "resources"), "vr": ("virtual", "reality"),
+    "ar": ("augmented", "reality"), "bi": ("business", "intelligence"), "sme": ("small", "medium", "enterprise"),
+}
+# Uppercase letter pairs that are everyday words / times, never a market's abbreviation.
+_NOT_ABBREVIATIONS = frozenset({"am", "pm", "us", "uk", "eu", "tv", "or", "an", "as", "at", "be", "by", "do", "go",
+                                "he", "if", "in", "is", "it", "me", "my", "no", "of", "on", "so", "to", "up", "we"})
+
+
+def abbreviations_for(phrases: list[str]) -> dict[str, tuple[str, ...]]:
+    """abbreviation -> the words it stands for: the well-known ones plus the initials of every run of 2-4 consecutive
+    content words of the market names ('electric vehicle charger' -> 'ev' = electric vehicle). Initials of a run that
+    is an everyday word or time ('pm', 'tv') are skipped."""
+    out = dict(_KNOWN_ABBREVIATIONS)
+    for p in phrases:
+        words = [w for w in re.findall(r"[a-z0-9]+", p.lower()) if w not in _STOPWORDS and w not in _REGION_LETTERS
+                 and w not in ("global", "market", "markets")]
+        for n in (2, 3, 4):
+            for i in range(len(words) - n + 1):
+                run = words[i:i + n]
+                abbr = "".join(w[0] for w in run)
+                if all(w.isalpha() and len(w) > 2 for w in run) and abbr not in _NOT_ABBREVIATIONS:
+                    out.setdefault(abbr, tuple(run))
+    return out
+
+
+_ABBR_IN_TEXT_RE = re.compile(r"\b([A-Z]{2,5})s?\b")
+
+
+def abbreviation_words(raw_text: str, abbrs: dict[str, tuple[str, ...]]) -> set[str]:
+    """The words that abbreviations written in the CASED text stand for ("EV charging" -> electric, vehicle). Only an
+    uppercase token counts: 'ev'/'pm' in lower case are ordinary letter pairs."""
+    out: set[str] = set()
+    for m in _ABBR_IN_TEXT_RE.finditer(raw_text):
+        out.update(abbrs.get(m.group(1).lower(), ()))
+    return out
+
+
 def gate_terms(phrases: list[str]) -> tuple[set[str], list[str]]:
     """Single-word and full-phrase vocabulary derived from curated market/segment names."""
     tokens: set[str] = set()
@@ -666,16 +773,17 @@ def _gate_for_phrase(phrase: str, freq: dict[str, float]) -> tuple[str, list[str
 def _word_or_compound(token: str, hit_tokens: set[str]) -> bool:
     """The market word as a whole word, or at the start of a short compound built on it ("wealth" -> "wealthtech").
     Whole-word matching alone dropped "Leading Wealthtech Platform for Independent Advisors" for a wealth-platform market."""
-    return token in hit_tokens or (len(token) >= 5 and any(
+    return has_word(token, hit_tokens) or (len(token) >= 5 and any(
         w.startswith(token) and len(w) - len(token) <= 5 for w in hit_tokens
     ))
 
 
 def stem_hit(word: str, stem: str) -> bool:
-    """A word matches a market-identity stem as a whole word, or by prefix only when the stem is long enough to
-    identify something ("wealth" -> "wealthtech"). A 3-letter stem such as "web" must not match by prefix: it
-    matches "website" in every press release's boilerplate and "web shells" in every security story."""
-    return word == stem or (len(stem) >= 5 and word.startswith(stem))
+    """A word matches a market-identity stem as the same word (word_keys: plural, -ing/-er family), or by prefix only
+    when the stem is long enough to identify something ("wealth" -> "wealthtech"). A 3-letter stem such as "web" must
+    not match by prefix: it matches "website" in every press release's boilerplate and "web shells" in every security
+    story."""
+    return same_word(word, stem) or (len(stem) >= 5 and word.startswith(stem))
 
 
 def _word_plural_or_compound(token: str, hit_tokens: set[str]) -> bool:
@@ -684,7 +792,7 @@ def _word_plural_or_compound(token: str, hit_tokens: set[str]) -> bool:
     "projector" is a different product from a "project" market and "marketer" is not market
     coverage, so the extension must be long enough to be a word of its own rather than a
     grammatical ending."""
-    if token in hit_tokens or token + "s" in hit_tokens:
+    if has_word(token, hit_tokens):
         return True
     return len(token) >= 5 and any(
         w.startswith(token) and 4 <= len(w) - len(token) <= 8 for w in hit_tokens
@@ -702,18 +810,37 @@ def compile_topic_terms(terms: list[str]) -> list[tuple[str, re.Pattern]]:
         t = re.sub(r"\s+", " ", str(t).strip().lower())
         if len(t) < 3:
             continue
-        out.append((t, re.compile(r"\b" + re.escape(t) + r"s?\b", re.IGNORECASE)))
         words = t.split()
+        alts = [_word_alternation(w) for w in words]
+        out.append((t, re.compile(r"\b" + " ".join(alts) + r"\b", re.IGNORECASE)))
         if len(words) == 2:
             gap = r"(?:\W+\w+){0,2}\W+"
-            w1, w2 = (re.escape(w) for w in words)
-            out.append((t, re.compile(r"\b" + w1 + r"s?\b" + gap + r"\b" + w2 + r"s?\b", re.IGNORECASE)))
-            out.append((t, re.compile(r"\b" + w2 + r"s?\b" + gap + r"\b" + w1 + r"s?\b", re.IGNORECASE)))
+            out.append((t, re.compile(r"\b" + alts[0] + gap + alts[1] + r"\b", re.IGNORECASE)))
+            out.append((t, re.compile(r"\b" + alts[1] + gap + alts[0] + r"\b", re.IGNORECASE)))
     return out
 
 
+_FORM_SUFFIXES = ("", "s", "es", "ing", "ings", "ed", "er", "ers", "ation", "ations")
+
+
+def _word_alternation(word: str) -> str:
+    """Regex alternation of the written forms of one topic-term word that are the SAME word (word_keys): "charger" ->
+    charger|chargers|charging|charged ... so the term "ev charger" also matches "EV charging". Candidates are generated
+    from the word's stem and kept only when same_word agrees, so the patterns can never match more than the shared
+    comparison does. A word that is not plain letters keeps just an optional plural."""
+    if not word.isalpha() or len(word) <= 3:
+        return re.escape(word) + "s?"
+    stems = {word, word.rstrip("s")}
+    for k in word_keys(word):
+        base = k.rstrip("+")
+        stems |= {base, base + "e", base + base[-1], base + "at"}
+    forms = {s + suf for s in stems for suf in _FORM_SUFFIXES if s and same_word(s + suf, word)}
+    forms.add(word)
+    return "(?:" + "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True)) + ")"
+
+
 def _head_matched(head: str, hit_tokens: set[str]) -> bool:
-    if head in hit_tokens:
+    if has_word(head, hit_tokens):
         return True
     return head in _TECH_HEAD_SYNONYMS and bool(_TECH_HEAD_SYNONYMS & hit_tokens)
 
@@ -843,13 +970,13 @@ def _player_patterns(
         product = r"\s+(?i:(?:" + "|".join(re.escape(w) for w in words) + r")\b)"
     marker = r"(?:\.com|['’]s|" + corp + (f"|{product}" if product else "") + ")"
     out: list[tuple[str, re.Pattern]] = []
-    market_word_norms = {str(w).lower().rstrip("s") for w in market_words}
+    market_word_norms = [str(w).lower() for w in market_words]
     for player in key_players:
         for variant in player_name_variants(player):
             # A single-word variant that is the market's own word ("Assessment" out of "Open
             # Assessment Technologies" for an assessment-services market) names the player in every
             # headline carrying that word, so it must not count as a player signal on its own.
-            if len(variant.split()) == 1 and variant.lower().rstrip("s") in market_word_norms:
+            if len(variant.split()) == 1 and any(same_word(variant.lower(), w) for w in market_word_norms):
                 continue
             if variant.lower().endswith(".com"):  # the domain IS the marker: nothing may follow it
                 rx = re.compile(r"\b" + re.escape(variant), re.IGNORECASE)
@@ -905,6 +1032,7 @@ def filter_hits(
         t for _, (head, required, generic, non_head) in gates for t in (head, *non_head)
     })
     topic_res = compile_topic_terms(list(topic_terms))
+    abbrs = abbreviations_for(list(phrases))
     logger.info(f"[filter] topic terms ({len(topic_terms)}): {list(topic_terms)}")
     cutoff = datetime.now(timezone.utc) - _MAX_NEWS_AGE
     web_cutoff = datetime.now(timezone.utc) - _MAX_WEB_AGE
@@ -970,10 +1098,11 @@ def filter_hits(
         seen.update((fingerprint, hit.url))
 
         text = f"{hit.title} {hit.snippet}".lower()
-        matched_tokens = tokens & _content_tokens(text)
         matched_phrase = next((p for p in full_phrases if p in text), None)
-        hit_tokens = _content_tokens(text)
-        title_tokens = _content_tokens(hit.title)
+        # An abbreviation written in the hit ("EV") stands for the market words it abbreviates ("electric vehicle").
+        hit_tokens = _content_tokens(text) | abbreviation_words(f"{hit.title} {hit.snippet}", abbrs)
+        title_tokens = _content_tokens(hit.title) | abbreviation_words(hit.title, abbrs)
+        matched_tokens = shared_words(tokens, hit_tokens)
         # Each DISTINCT topic term the hit uses (a two-word term carries an exact and a proximity
         # pattern — see compile_topic_terms — so the terms are counted, not the patterns).
         matched_topic_terms = {t for t, rx in topic_res if rx.search(text)}
@@ -1038,7 +1167,7 @@ def filter_hits(
         product_ok = any(h in _TECH_HEAD_SYNONYMS for _, (h, _, _, _) in gates) \
             and bool(_PLAYER_PRODUCT_RE.search(text))
         market_signal = topic_hit is not None or product_ok or any(
-            _head_matched(head, hit_tokens) or any(t in hit_tokens for t in required)
+            _head_matched(head, hit_tokens) or any(has_word(t, hit_tokens) for t in required)
             for _, (head, required, _, _) in gates
         )
         player_ok = hit.is_news and named_player is not None and market_signal
@@ -1203,7 +1332,7 @@ def filter_claim_hits(
             dropped += 1
             continue
         seen.update((fingerprint, hit.url))
-        overlap = claim_tokens & _content_tokens(f"{hit.title} {hit.snippet} {hit.excerpt}")
+        overlap = shared_words(claim_tokens, _content_tokens(f"{hit.title} {hit.snippet} {hit.excerpt}"))
         if len(overlap) < _CLAIM_OVERLAP_MIN:
             dropped += 1
             logger.info(f"[filter:claim] DROP (no claim overlap) [{hit.host}] {hit.title!r}")

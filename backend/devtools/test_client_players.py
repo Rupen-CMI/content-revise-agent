@@ -92,8 +92,9 @@ check("inputs: the fs.players fact the plan and the FAQ read carries no client",
       "WebFX" not in inp.items["fs.players"]["text"] and "Semrush" in inp.items["fs.players"]["text"],
       inp.items["fs.players"]["text"])
 check("inputs: key-players evidence naming the client is left out of the plan", "W1" not in inp.items, str(list(inp.items)))
-check("inputs: the other key-players evidence survives (W2)",
-      "W2" in inp.items and inp.items["W2"]["sections"] == {"key_players"})
+check("inputs: the other key-players evidence survives, now also eligible for a trend or a sub-segment",
+      "W2" in inp.items and inp.items["W2"]["sections"] == {"key_players", "trends", "subsegment"},
+      str(inp.items.get("W2", {}).get("sections")))
 check("inputs: evidence of another section is never touched (W3)", "W3" in inp.items)
 check("inputs: evidence of any other section naming the client is left out too (W4, found live)", "W4" not in inp.items, str(list(inp.items)))
 check("inputs: the fs.players fact sits in the key-players section",

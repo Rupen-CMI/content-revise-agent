@@ -205,6 +205,99 @@ check("a sentence that restates the fact still cites it",
       "W44" in content_rules.evidence_cited_ids("In August 2026 the Federal Trade Commission opened an antitrust investigation "
                                                 "into Epic Systems.", [FTC], "Healthcare IT Market"))
 
+# ---- shared agency words identify no item (live: an Oregon DOT sentence "cited" five items, two true trend-3 sentences were cut) ----
+
+DOT = {
+    "W7": "The Ohio Department of Transportation announced 40 new fast-charging locations funded through the National Electric Vehicle Infrastructure (NEVI) program.",
+    "W29": "The Illinois Department of Transportation opened the first electric vehicle charging station built in the state through the National Electric Vehicle Infrastructure (NEVI) program, part of a $23.5 million investment in fast-charging corridors.",
+    "W36": "The Oregon Department of Transportation funded 126 new electric vehicle charging ports through a federal grant in April 2026, comprising 24 new DC fast charging stations and 102 Level 2 ports.",
+    "W40": "The District Department of Transportation launched a curbside electric vehicle charging pilot that puts public charging ports on residential streets.",
+    "W46": "Paren's third-quarter report counted 4,106 new fast-charging ports added across the United States, led by federal funding.",
+}
+DOT_ITEMS = [{"id": k, "fact": v} for k, v in DOT.items()]
+OREGON = ("The Oregon Department of Transportation funded 126 new electric vehicle charging ports through a federal grant in April 2026, "
+          "comprising 24 new DC fast charging stations and 102 Level 2 ports.")
+ILLINOIS = ("The Illinois Department of Transportation opened the first charging station built in the state through NEVI, "
+            "part of a $23.5 million investment in fast charging corridors.")
+OHIO = "The Ohio Department of Transportation announced 40 new fast-charging locations funded through the NEVI program."
+dot_facts, dot_own = content_rules._fact_stems(DOT_ITEMS, MARKET)
+check("a name keeps its lowercase connectors: 'Ohio Department of Transportation' is one entity",
+      ("ohio", "department", "transportation") == tuple(pipeline._fact_entities(DOT["W7"])[0][0])
+      and pipeline._fact_entities("Bank of America raised rates.")[0][1] == "bank of america")
+check("the Oregon sentence cites W36 alone (it cited W29, W36, W40, W46 and W7)",
+      content_rules._sentence_citations(OREGON, DOT_ITEMS, dot_facts, dot_own) == ["W36"],
+      str(content_rules._sentence_citations(OREGON, DOT_ITEMS, dot_facts, dot_own)))
+check("the Illinois sentence cites W29 alone (NEVI and the agency words are shared with W7)",
+      content_rules._sentence_citations(ILLINOIS, DOT_ITEMS, dot_facts, dot_own) == ["W29"])
+check("the Ohio sentence cites W7 alone", content_rules._sentence_citations(OHIO, DOT_ITEMS, dot_facts, dot_own) == ["W7"])
+check("a department name no other item distinguishes cites nothing: 'Department of Transportation' alone is no item",
+      not pipeline._evidence_used_ids("A state Department of Transportation said NEVI money funds charging ports.", DOT_ITEMS))
+check("a figure two items print counts for neither: '40' and 'NEVI' do not identify W7 in a sentence about Oregon",
+      "W7" not in pipeline._evidence_used_ids("Oregon's plan adds 40 NEVI sites, 126 ports and 24 stations.", DOT_ITEMS))
+
+TREND_LEAD = "Three trends are reshaping the Electric Vehicle Charger Market: funding, power and interoperability."
+dot_sections = lambda t3: [
+    {"heading": "What are the latest trends in the electric vehicle charger market?", "sop": ["trends"], "paragraphs": [
+        TREND_LEAD,
+        "### Higher power moves into homes", "CMI reports higher-power equipment is spreading to commercial sites.",
+        "### Federal funding opens corridors", "CMI reports corridor funding is widening rollout. " + OHIO,
+        "### Public programmes add ports", "CMI reports public programmes are adding capacity. " + t3,
+    ]},
+]
+dot_plan = {"sections": [{"sop": "trends", "facts": ["W7", "W36", "W29"], "trend_groups": [
+    {"trend": "power", "facts": []}, {"trend": "funding", "facts": ["W7"]}, {"trend": "ports", "facts": ["W36", "W29"]}]}]}
+dot_inp = SimpleNamespace(market_name=MARKET, items={k: {"id": k, "kind": "evidence", "text": v} for k, v in DOT.items()})
+true_t3 = OREGON + " " + ILLINOIS
+for label, plan in (("with the plan", dot_plan), ("without a plan", None)):
+    kept_dot = writer.strip_repeat_evidence(copy.deepcopy(dot_sections(true_t3)), dot_inp, LOG, plan)
+    check(f"{label}: trend 3's Oregon and Illinois sentences survive next to trend 2's Ohio one",
+          kept_dot[0]["paragraphs"] == dot_sections(true_t3)[0]["paragraphs"], str(kept_dot[0]["paragraphs"][-1][:120]))
+check("evidence_reuse (the check) agrees: no row for the live trend sentences, with and without the plan",
+      not content_rules.evidence_reuse(dot_sections(true_t3), DOT_ITEMS, MARKET, content_rules.evidence_homes(dot_plan))
+      and not content_rules.evidence_reuse(dot_sections(true_t3), DOT_ITEMS, MARKET))
+check("evidence_homes reads the plan: W7 in trend block 1, W29 in block 2",
+      content_rules.evidence_homes(dot_plan)["W7"] == ("trends", 1) and content_rules.evidence_homes(dot_plan)["W29"] == ("trends", 2))
+
+# a true repeat: W7 (planned for trend 2) restated in trend 3 is still removed, in the strip and in the check
+repeat_t3 = OREGON + " The Ohio Department of Transportation announced 40 new fast-charging locations funded through NEVI, which widens corridor coverage."
+for label, plan in (("with the plan", dot_plan), ("without a plan", None)):
+    got = writer.strip_repeat_evidence(copy.deepcopy(dot_sections(repeat_t3)), dot_inp, LOG, plan)
+    last = got[0]["paragraphs"][-1]
+    check(f"{label}: W7 restated in trend 3 is stripped and the Oregon sentence stays",
+          "Ohio" not in last and "Oregon Department of Transportation funded 126" in last, last[:140])
+check("the check reports the restated W7 (trend 2 and again in trend 3)",
+      any(r["id"] == "W7" for r in content_rules.evidence_reuse(dot_sections(repeat_t3), DOT_ITEMS, MARKET, content_rules.evidence_homes(dot_plan))))
+
+# a sentence that cites its own block's item is never a repeat even when it also brushes an item cited elsewhere
+own_t3 = OREGON + " Funding for fast charging through NEVI keeps the Ohio, Illinois and Oregon programmes moving."
+kept_own = writer.strip_repeat_evidence(copy.deepcopy(dot_sections(own_t3)), dot_inp, LOG, dot_plan)
+check("a sentence citing its own block's item stays", kept_own[0]["paragraphs"][-1].startswith("CMI reports public programmes are adding capacity. The Oregon"))
+
+# a name-only mention is still no citation (a company name reappearing without the fact)
+check("a name-only mention of a company cites nothing",
+      not content_rules.evidence_cited_ids("Paren is among the operators active in the market.", DOT_ITEMS, MARKET))
+
+# live 2026-11-20 (Agile PM Software): the key players list names a company whose acquisition backs a trend; the name may
+# reappear there, the fact may not
+AGILE = "Agile Project Management Software Market"
+W6 = [{"id": "W6", "fact": "Asana completed its acquisition of StackAI, a no-code platform for building AI agents, to run "
+                           "automated workflows across separate enterprise systems."}]
+check("a key players list that names the company cites nothing",
+      not content_rules.evidence_cited_ids(
+          "Asana, Atlassian JIRA, Microsoft, Monday and Pivotal Software are the key players CMI's report identifies, a group "
+          "that spans workplace suites, dedicated delivery platforms and enterprise tooling.", W6, AGILE))
+check("restating the event (both its names, its action in another word form) still cites it",
+      content_rules.evidence_cited_ids("Asana acquired StackAI to bring AI agents into automated workflows.", W6, AGILE) == {"W6"})
+
+# segmentation lists every split and category name; the sub-segment analysis names its own: that is no repeated point
+_seg = {"sop": ["segmentation"], "heading": "Segmentation", "paragraphs": [
+    "- Organization Size: small and medium-sized enterprises (SMEs) on one side and large enterprises on the other."]}
+_sub = {"sop": ["subsegment"], "heading": "Sub-segments", "paragraphs": [
+    "Small and medium-sized enterprises form the leading category in the organisation size split of the " + AGILE + "."]}
+check("a sub-segment naming its split and category does not repeat the segmentation list (names and spellings exempt)",
+      content_rules.repeated_point_problems([_seg, _sub], market_name=AGILE, own_terms=[
+          "SMEs", "Small and Medium-sized Enterprises (SMEs), Large Enterprises Organization Size"]) == [])
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S): {FAILURES}")

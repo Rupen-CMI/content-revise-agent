@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pipeline  # noqa: E402
+import planning  # noqa: E402
 import search  # noqa: E402
 import writer  # noqa: E402
 
@@ -47,7 +48,7 @@ for fact in ("The Ministry launched a technology rollout in October 2026 and rep
     pipeline._drop_non_event_facts(s2, hits, LOG)
     check(f"an event that happens to use the same words stays: {fact[:40]!r}", len(s2["evidence"]) == 1, str(s2))
 
-# ---- defect 4: a trends-search item is not taken from trends just because it happens in the U.S.
+# ---- defect 4: a U.S. filing is never moved out of its own section; the eligibility table lets the PLAN use it for a trend
 SUBS = [{"name": "Aptitude Tests"}, {"name": "Information technology (IT)"}]
 hits4 = [_mk("UH selects proctoring tool", ["trends"], "market", True),
          _mk("PrepSolution launches courses", ["us"], "us", True),
@@ -58,15 +59,19 @@ sel4 = {"evidence": [
 ]}
 pipeline._assign_sections(sel4, hits4, SUBS, LOG)
 sec = {e["id"]: e["section"] for e in sel4["evidence"]}
-check("a dated item the trends search found, filed as U.S., goes back to trends", sec.get("W1") == "trends", str(sec))
+check("a U.S. filing keeps the U.S. section as its home (no section is moved by a trends minimum)", sec.get("W1") == "us", str(sec))
 check("an item the U.S. search found stays in the U.S. section", sec.get("W2") == "us", str(sec))
 w1 = next(e for e in sel4["evidence"] if e["id"] == "W1")
-check("the moved item carries the trends tag everywhere", w1["use_for"] == "trends" and w1["use_for_all"] == ["trends"] and w1["subsegment"] == "", str(w1))
+check("the U.S. item keeps its U.S. tag; the eligibility table, not a section move, lets a trend use it",
+      w1["use_for"] == "us" and w1["use_for_all"] == ["us"] and w1["subsegment"] == "", str(w1))
+check("the table: a dated U.S. item may back a trend, an undated one may not, and the U.S. section is always its home",
+      planning.evidence_sections("us", True) == {"country_us", "trends"}
+      and planning.evidence_sections("us", False) == {"country_us"}, str(planning.evidence_sections("us", True)))
 many = {"evidence": [{"id": f"W{i}", "fact": f"Firm{i} launched a product.", "detail": "", "use_for": ["trends"]} for i in range(1, 7)]
         + [{"id": "W7", "fact": "A U.S. rollout started.", "detail": "", "use_for": ["us"]}]}
 hits_many = [_mk(f"Trend item {i}", ["trends"], "market", True) for i in range(1, 8)]
 pipeline._assign_sections(many, hits_many, SUBS, LOG)
-check("once trends has its minimum, a U.S. filing stays",
+check("a U.S. filing stays in the U.S. section whatever the trends count (the plan decides where its content serves)",
       next(e for e in many["evidence"] if e["id"] == "W7")["section"] == "us")
 
 # ---- defect 5: the key-players list sentence is content

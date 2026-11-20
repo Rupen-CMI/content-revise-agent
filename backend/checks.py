@@ -1532,36 +1532,71 @@ def category_named(name: str, seen: set[str]) -> bool:
     return bool(words) and all(has(w) for w in words)
 
 
-def v2_report_figure_problems(sections: list[dict], inp) -> list[str]:
-    """The market's main CMI figures reach the article: the size, forecast and growth rate, every stated segment share and
-    value, every segment split's categories and its leading category. A figure counts when its number is in the market
-    sections (a year does not count); a category counts when all its words sit in the segmentation or sub-segment text."""
+def _analysed_subsegments(inp, plan) -> list[dict]:
+    """The two sub-segments the article analyses, {"split", "name"}: the plan's own (validate_plan's sub_segments), else the pair
+    fixed before the news search (inp.subsegments), else the pair validate_plan's defaults would pick (planning.default_subsegments),
+    so the figure rule and the plan can never disagree about which categories are analysed."""
+    for p in (plan.get("sections") or []) if isinstance(plan, dict) else []:
+        if p.get("sop") == "subsegment" and p.get("sub_segments"):
+            return list(p["sub_segments"])
+    fixed = list(getattr(inp, "subsegments", None) or [])
+    if fixed:
+        return fixed
+    import planning
+    return planning.default_subsegments(list(getattr(inp, "segments", None) or []))
+
+
+def v2_report_figure_problems(sections: list[dict], inp, plan: dict | None = None) -> list[str]:
+    """The market's main CMI figures reach the article: the size, forecast and growth rate and the leading and fastest-growing
+    regions in the market-size section, the stated share or value of each analysed sub-segment in the sub-segment section, and
+    every segment split's categories by name. The segmentation section only names segment types and their sub-segments, so a
+    split's leader and shares are required only for the sub-segments the article analyses (in the sub-segment section), never for
+    a split it does not analyse. A figure counts when its number is in its own section (a year does not count); a category counts
+    when all its words sit in the segmentation or sub-segment text."""
     import facts
     import planning
     if inp is None:
         return []
     market = " ".join(p for s in sections if _is_market_section(s) for p in s["paragraphs"])
     market_numbers = _fact_numbers(market)
+    ctx_raw = " ".join(p for s in sections if s.get("sop") and s["sop"][0] == "report_context" for p in s["paragraphs"])
+    ctx_words = {facts._stem(w) for w in facts._norm(ctx_raw).split()}
+    sub_raw = " ".join(p for s in sections if s.get("sop") and s["sop"][0] == "subsegment" for p in s["paragraphs"])
+    sub_numbers = _fact_numbers(sub_raw)
     seg_text = facts._norm(" ".join(p for s in sections if s.get("sop") and s["sop"][0] in ("segmentation", "subsegment")
                                     for p in s["paragraphs"]))
     seg_words = {facts._stem(w) for w in seg_text.split()}
+    analysed = _analysed_subsegments(inp, plan)
+    analysed_items = {f"{g['id']}.i{k}" for g in inp.segments for v in analysed
+                      if facts._norm(g["type"]) == facts._norm(v.get("split", ""))
+                      for k, name in enumerate(g["items"]) if facts._norm(name) == facts._norm(v.get("name", ""))}
     out: list[str] = []
     for fid, it in inp.items.items():
-        if it["kind"] not in ("size", "forecast", "cagr", "segment_item"):
-            continue
-        figures = {n for n in _fact_numbers_with_words(it["text"]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
-        if it["kind"] == "segment_item":                      # "<category> (<split>): <figure>": the figure is after the colon
+        if it["kind"] in ("size", "forecast", "cagr"):
+            figures = {n for n in _fact_numbers_with_words(it["text"]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
+            missing = sorted(figures - market_numbers)
+            if missing:
+                out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the article")
+        elif it["kind"] == "segment_item":
+            if fid not in analysed_items:
+                continue
             figures = {n for n in _fact_numbers_with_words(it["text"].split(":", 1)[-1]) if not re.fullmatch(r"(?:19|20)\d\d", n)}
-        missing = sorted(figures - market_numbers)
-        if missing:
-            out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the article")
+            missing = sorted(figures - sub_numbers)          # the analysed sub-segment's share belongs to its own section
+            if missing:
+                out.append(f"{it['text']}: the figure {', '.join(missing)} is not stated in the sub-segment section")
+        elif it["kind"] == "regions" and "report_context" in it["sections"] and not it.get("auto"):
+            m = re.match(r"(?:Leading|Fastest-growing) region:\s*([^()]+?)\s*(?:\(|$)", it["text"])
+            if m and _category_stems(m.group(1)) and not category_named(m.group(1), ctx_words):
+                out.append(f"{m.group(1)} (the {it['text'].split(':', 1)[0].lower()}) is not named in the market-size section")
     for seg in inp.segments:
         absent = [c for c in seg["items"] if _category_stems(c) and not category_named(c, seg_words)]
         if absent:
             out.append(f"segmentation by {seg['type']}: {', '.join(absent)} not named in the segmentation or sub-segment text")
-        dom = seg.get("dominant")
-        if dom and _category_stems(dom["name"]) and not category_named(dom["name"], seg_words):
-            out.append(f"segmentation by {seg['type']}: the leading category {dom['name']} is not named")
+    sub_words = {facts._stem(w) for w in facts._norm(sub_raw).split()}
+    for v in analysed:
+        name = v.get("name", "")
+        if _category_stems(name) and not category_named(name, sub_words):
+            out.append(f"sub-segment {name} ({v.get('split', '')}) is not named in the sub-segment section")
     return out
 
 
@@ -1998,8 +2033,8 @@ def run_checks_v2(
     results.append(CheckResult("Sub-segments: two, each under its own heading with one paragraph", not sub_shape, "; ".join(sub_shape)))
     spec_notes = spec_paragraph_length_notes(raw_sections)
     results.append(CheckResult("Trend and sub-segment paragraphs about 100 words (soft)", not spec_notes, "; ".join(spec_notes)))
-    figure_problems = v2_report_figure_problems(sections, inp)
-    results.append(CheckResult("Report figures stated: market size, forecast, growth rate and every segment figure",
+    figure_problems = v2_report_figure_problems(sections, inp, plan)
+    results.append(CheckResult("Report figures stated: market size, forecast, growth rate, the regions and the analysed sub-segments' figures",
                                not figure_problems, "; ".join(figure_problems[:8])))
     us_words = sum(_words(p) for s in sections if "country_us" in s["sop"] for p in s["paragraphs"])
     results.append(CheckResult("U.S. analysis is 100-200 words", 100 <= us_words <= 200, f"{us_words} words"))
@@ -2030,13 +2065,16 @@ def run_checks_v2(
         not whole, "; ".join(whole[:4]) + (f" (+{len(whole) - 4} more)" if len(whole) > 4 else "") if whole else ""))
     repeated = content_rules.repeated_point_problems(
         sections, market_name=market_name,
-        own_terms=[s.get("name", "") for s in (getattr(inp, "subsegments", None) or [])])
+        # every split and category name: the segmentation section lists them all and the sub-segment analysis names its own
+        own_terms=[s.get("name", "") for s in (getattr(inp, "subsegments", None) or [])]
+        + [i["text"].split(":", 1)[-1] + " " + i["text"].split(":", 1)[0].replace("Segmentation", "")
+           for i in getattr(inp, "items", {}).values() if i.get("kind") == "segments"])
     results.append(CheckResult(
         "No point is made twice across sections",
         not repeated, "; ".join(repeated[:3]) + (f" (+{len(repeated) - 3} more)" if len(repeated) > 3 else "") if repeated else ""))
 
     news_items = [{"id": i["id"], "fact": i["text"]} for i in getattr(inp, "items", {}).values() if i.get("kind") == "evidence"]
-    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items, market_name) if news_items else []
+    reuse = content_rules.evidence_reuse_problems(raw_sections, news_items, market_name, content_rules.evidence_homes(plan)) if news_items else []
     results.append(CheckResult(
         "Each piece of news evidence is cited in one section and in one trend only",
         not reuse, "; ".join(reuse[:3]) + (f" (+{len(reuse) - 3} more)" if len(reuse) > 3 else "") if reuse else ""))

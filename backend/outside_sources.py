@@ -8,6 +8,9 @@ and it works on PATTERNS, never on a list of firm names (there are hundreds of r
 
   - attribution frames: "according to X", "per X", "as reported by X", "X reported / said / found / estimates that", "data from X",
     "a report / study / survey by X", "X's report / data", "(X, 2026)", "(source: X)", where X is a capitalised name or a host;
+  - the study-noun family, where a journal, magazine, newspaper or collection carries a study: "a study in Nature compared ...",
+    "a paper published in the journal Science found ...", "Nature published a study ...", "a Nature Portfolio collection noted
+    that ...", "Nature's journal carried ..." (a capitalised PLACE after "in" is a location, not a venue: "a study in China");
   - the shape of a research firm's name: a capitalised name ending in Research, Insights, Intelligence, Reports, Consulting,
     Strategies or Analytics Group (Grand View Research, Mordor Intelligence, Fortune Business Insights), or a host/compound whose
     letters hold research / insights / intelligence / marketreport / marketsandmarkets.
@@ -221,7 +224,7 @@ def source_names(inp, allowed: Allowed) -> list[str]:
 @dataclass
 class _Hit:
     name: str
-    mode: str           # lead | trail | mid | paren | byfrom | nonsep | source | firm
+    mode: str           # lead | trail | mid | paren | byfrom | pubin | namein | leadpub | namebefore | nonsep | source | firm
     match: re.Match | None
     start: int = 0
     end: int = 0
@@ -235,6 +238,32 @@ def _sentences(text: str) -> list[str]:
 
 
 _compile = re.compile
+
+# ------------------------------------------------------------------------------------------------ the study-noun family
+# A journal, magazine, newspaper or collection is named when it carries a study: "a study in Nature", "a paper published in the
+# journal Science", "Nature published a study", "a Nature Portfolio collection", "Nature's journal carried". The noun the venue
+# carries stays ("a study in Nature compared X" -> "a study compared X"; "a Nature Portfolio collection noted that Y" -> "a
+# collection noted that Y"); only the venue's name goes.
+_STUDY_NOUNS = (r"(?:stud(?:y|ies)|papers?|articles?|reviews?|collections?|surveys?|reports?|analysis|analyses|whitepapers?|"
+                r"preprints?|editorials?|commentar(?:y|ies)|letters?|research)")
+_VENUE_WORDS = r"(?:journal|magazine|newspaper|publication|proceedings|website)"
+_VENUE = rf"(?:(?:{_VENUE_WORDS})\s+(?:of\s+)?|pages\s+of\s+)?"
+_LAZY_NAME = rf"{_WORD}(?:\s+(?:{_WORD}|(?:of|and|&|for)\s+{_WORD})){{0,3}}?"
+# A capitalised place after "in" is where a study happened, not where it was published ("a study in China found ...").
+_PLACES = frozenset("""
+united states us usa america north america south america latin america europe asia africa oceania middle east gulf southeast asia
+china india japan korea south korea north korea taiwan singapore indonesia vietnam thailand malaysia philippines australia
+new zealand germany france united kingdom uk britain england scotland wales ireland netherlands belgium spain portugal italy greece
+poland austria switzerland sweden norway denmark finland russia turkey israel saudi arabia uae united arab emirates south africa
+nigeria egypt brazil mexico argentina chile colombia peru canada
+new york california texas florida illinois london tokyo shanghai beijing mumbai delhi bengaluru
+""".split())
+
+
+def _all_generic(name: str) -> bool:
+    """A name made only of generic words ("Global Market", "Business Intelligence"): the noun before it is a title, not a venue."""
+    words = [w.lower().strip(".,;:") for w in _trim_name(name).split()]
+    return bool(words) and all(w in _GENERIC_PREFIX or w in _NAME_LEAD_STOP for w in words)
 
 
 # (pattern, tier, mode). tier 1: an explicit attribution frame, any capitalised name that is not an allowed actor is flagged.
@@ -252,12 +281,27 @@ _PATTERNS: list[tuple[re.Pattern, int, str]] = [
     (_compile(rf"\s*\(\s*(?P<name>{_ORG}),?\s*(?:19|20)\d\d\s*\)"), 1, "paren"),
     (_compile(rf"\s*\(\s*(?i:source|sources|via)\s*:\s*(?P<name>{_ORG})[^)]*\)"), 1, "paren"),
     (_compile(rf"\s*\(\s*{_TRAIL_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?:\s+{_NOUNS})?\s*\)"), 1, "paren"),
+    (_compile(rf"^\s*(?i:in)\s+(?:the\s+)?(?:journal|magazine|newspaper|publication|proceedings|pages)\s+(?:of\s+)?"
+              rf"(?P<name>{_ORG})\s*,\s*"), 1, "lead"),
     (_compile(rf"\b(?i:reports?|stud(?:y|ies)|surveys?|analysis|research|polls?|forecasts?|estimates?|index|ranking|whitepaper|data|figures)"
               rf"\s+(?P<span>(?i:by|from|published by|conducted by|compiled by|released by|cited by|quoted by|reported by|covered by)\s+(?:(?i:the)\s+)?(?P<name>{_ORG}))"), 1, "byfrom"),
+    # "the findings were published in Nature": the venue goes, the clause and its date stay
+    (_compile(rf"\b(?i:was|were|is|are|has been|have been|had been)\s+(?:published|printed|carried|reported|featured)\s+"
+              rf"(?P<span>in\s+(?:(?:a|an|the)\s+)?{_VENUE}(?P<name>{_ORG}))"), 2, "pubin"),
+    # "a study in Nature compared ...", "a paper published in the journal Science found ...": the venue goes, the study noun stays
+    (_compile(rf"\b(?P<noun>{_STUDY_NOUNS})(?P<span>\s+(?:that\s+)?(?:was\s+|were\s+)?"
+              rf"(?:(?:published|appeared|appearing|reported|printed|carried|featured|detailed)\s+)?"
+              rf"in\s+(?:(?:a|an|the)\s+)?{_VENUE}(?P<name>{_ORG}))"), 2, "namein"),
+    # "Nature published a study on X", "Nature's journal carried a paper on X": the venue and the act go, the study stays
+    (_compile(rf"\b(?P<name>{_ORG})(?:['’]s)?\s+(?:{_VENUE_WORDS}\s+)?(?:(?:has|had|have|recently|also|now|then|today)\s+)*"
+              rf"(?i:published|released|carried|printed)\s+(?=(?:[A-Za-z0-9'’\-]+\s+){{0,3}}?{_STUDY_NOUNS}\b)"), 2, "leadpub"),
+    # "a Nature Portfolio collection ... noted that ...", "a Deloitte survey found ...": the name goes, the article and noun stay
+    (_compile(rf"\b(?P<art>[Aa]n?|[Tt]he)\s+(?P<name>{_LAZY_NAME})\s+(?P<noun>{_STUDY_NOUNS})\b"), 2, "namebefore"),
     (_compile(rf"\b{_ANY_FRAME_WORDS}\s+(?:(?i:the)\s+)?(?P<name>{_ORG})"), 1, "nonsep"),
     (_compile(rf"\bper\s+(?:(?i:the)\s+)?(?P<name>{_ORG}){_POSS}(?=\s*(?:[,.;:!?)]|$))"), 1, "nonsep"),
     (_compile(rf"(?P<name>{_ORG})['’]s\s+(?:\w+\s+){{0,2}}?(?i:report|study|survey|analysis|data|research|estimate|forecast|figures|index|"
-              rf"ranking|poll|findings|projection)s?\b"), 2, "nonsep"),
+              rf"ranking|poll|findings|projection|journal|magazine|newspaper|publication|proceedings|article|paper|review|collection|"
+              rf"editorial)s?\b"), 2, "nonsep"),
     (_compile(rf"(?P<name>{_ORG})\s+(?i:report|study|survey|analysis|estimates?|forecasts?|projections?)\b"), 2, "nonsep_firm"),
     (_compile(rf"(?P<name>{_ORG})\s+(?:(?:also|then|recently|now|has|have|had|previously|separately)\s+)*{_VERBS}\b"), 2, "subjverb"),
 ]
@@ -292,6 +336,12 @@ def _scan(sentence: str, allowed: Allowed, srcs: tuple | list) -> list[_Hit]:
                 continue
             if mode == "nonsep_firm" and not firm_shaped(_trim_name(name)):
                 continue    # "<Name> report" is a citation only when the name is a firm's
+            if tier == 2 and mode in ("nonsep", "subjverb", "lead", "leadwhen", "trail", "mid") and _norm(_trim_name(name)) in _PLACES:
+                continue    # "A study in China found ...": a place is where something happened, never the one who reports it
+            if mode in ("namein", "pubin", "namebefore") and (_norm(name) in _PLACES or
+                                                              (mode == "namebefore" and (_all_generic(name) or
+                                                                                         firm_shaped(_trim_name(name))))):
+                continue    # "a study in China", "A Global Market report": a place or a title, not a venue
             if mode == "lead":
                 new = sentence[m.end():]
                 hits.append(_Hit(name, "lead", m, 0, m.end(), (new[:1].upper() + new[1:]) if new else "", tier, m.group(0)))
@@ -304,8 +354,20 @@ def _scan(sentence: str, allowed: Allowed, srcs: tuple | list) -> list[_Hit]:
                 hits.append(_Hit(name, mode, m, m.start(), m.end(), "", tier, m.group(0)))
             elif mode == "mid":
                 hits.append(_Hit(name, "mid", m, m.start(), m.end(), ",", tier, m.group(0)))
-            elif mode == "byfrom":
-                hits.append(_Hit(name, "byfrom", m, m.start("span"), m.end("span"), "", tier, m.group(0)))
+            elif mode in ("byfrom", "pubin", "namein"):
+                hits.append(_Hit(name, mode, m, m.start("span"), m.end("span"), "", tier, m.group(0)))
+            elif mode == "leadpub":
+                # "<Name> published a study on X" -> "A study on X": the venue and the act go, the study and its object stay
+                repl = "" if m.start("name") == 0 else " "
+                hits.append(_Hit(name, "leadpub", m, m.start("name"), m.end(), repl, tier, m.group(0)))
+            elif mode == "namebefore":
+                # "a Nature Portfolio collection ..." -> "a collection ...": the article and the study noun stay, agreement kept
+                art, noun = m.group("art"), m.group("noun")
+                if art.lower() in ("a", "an"):
+                    art = ("an" if noun[:1].lower() in "aeiou" else "a")
+                    art = art[:1].upper() + art[1:] if m.group("art")[:1].isupper() else art
+                hits.append(_Hit(name, "namebefore", m, m.start("art"), m.start("noun"),
+                                 ("" if m.start("art") == 0 else " ") + art + " ", tier, m.group(0)))
             else:
                 hits.append(_Hit(name, "nonsep", m, 0, 0, "", tier, m.group(0)))
     for src in srcs:
@@ -354,7 +416,8 @@ def clean_sentence(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list =
     out cleanly or what is left is no sentence any more. `keep` (a sentence that carries a link) never reports `dropped`."""
     text, names = sentence.strip(), []
     for _ in range(6):
-        sep = next((h for h in _scan_named(text, allowed, srcs, regulatory_ok) if h.mode in ("lead", "trail", "mid", "paren", "byfrom")), None)
+        sep = next((h for h in _scan_named(text, allowed, srcs, regulatory_ok)
+                    if h.mode in ("lead", "trail", "mid", "paren", "byfrom", "pubin", "namein", "leadpub", "namebefore")), None)
         if sep is None:
             break
         names.append(sep.name)
@@ -362,6 +425,8 @@ def clean_sentence(sentence: str, allowed: Allowed = EMPTY, srcs: tuple | list =
         if sep.mode in ("trail", "mid") and not re.search(r"[.!?][\"')\]]*$", text.rstrip()):
             text = text.rstrip() + "."
         text = re.sub(r"\s+([,.;])", r"\1", text).strip()
+        if sep.start == 0 and text:
+            text = text[:1].upper() + text[1:]
     rest = _scan_named(text, allowed, srcs, regulatory_ok)
     names += [h.name for h in rest]
     dropped = bool(rest) or (bool(names) and len(re.findall(r"[A-Za-z0-9]+", text)) < 4)

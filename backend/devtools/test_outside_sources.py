@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import checks  # noqa: E402
 import faqs  # noqa: E402
 import outside_sources as osrc  # noqa: E402
 import pipeline  # noqa: E402
@@ -112,6 +113,76 @@ check("guard: 'Researchers found that ...' names nobody", clean("Researchers fou
 check("guard: 'per capita' and 'per U.S. household' are not a source",
       clean("Spend rose 4% in 2025, per capita.")[0] is not None and clean("Retailers pay $5 per U.S. household each month.")[0] is not None)
 check("guard: the market's own name is not a source", clean("The Customer Insights Software Market grows 5%.")[0] is not None)
+
+# ------------------------------------------------------------------ the study-noun family: a journal, magazine or collection carrying a study
+NATURE_STUDY = ("In March 2026, a study in Nature compared translations of Shen Congwen's novel Border Town produced by ChatGPT 4 "
+                "and another system using Multidimensional Quality Metrics.")
+NATURE_COLLECTION = ("In July 2026, a Nature Portfolio collection on mammalian cell systems for recombinant protein production "
+                     "noted that the Chinese hamster ovary cell line is a widely employed system for producing therapeutic proteins.")
+check("journal: 'a study in <journal> compared ...' cuts the journal and keeps the study (live sentence)",
+      clean(NATURE_STUDY)[0] == "In March 2026, a study compared translations of Shen Congwen's novel Border Town produced by "
+                               "ChatGPT 4 and another system using Multidimensional Quality Metrics.")
+check("journal: 'a <name> collection ... noted that ...' cuts only the name, the noun stays (live sentence)",
+      clean(NATURE_COLLECTION)[0] == "In July 2026, a collection on mammalian cell systems for recombinant protein production "
+                                    "noted that the Chinese hamster ovary cell line is a widely employed system for producing "
+                                    "therapeutic proteins.")
+check("journal: the check names the journal of both live sentences",
+      osrc.attributing_names(NATURE_STUDY) == ["Nature"]
+      and osrc.attributing_names(NATURE_COLLECTION) == ["Nature Portfolio"])
+check("journal: 'a paper published in the journal <name>' keeps the paper",
+      clean("A paper published in the journal Science found that 40% of trials fail.")[0]
+      == "A paper found that 40% of trials fail.")
+check("journal: 'a study appearing in <name>' keeps the study",
+      clean("A study appearing in Nature found that the method works.")[0] == "A study found that the method works.")
+check("journal: 'was published in <name>' keeps the clause and its date",
+      clean("The findings were published in Nature in July 2026.")[0] == "The findings were published in July 2026.")
+check("journal: '<name> published a study' leaves the study",
+      clean("Nature published a study comparing five translation systems.")[0] == "A study comparing five translation systems.")
+check("journal: '<name>'s journal carried a paper' leaves the paper",
+      clean("Nature's journal carried a paper on cell-line stability.")[0] == "A paper on cell-line stability.")
+check("journal: 'in the journal <name>, ...' cuts the venue lead",
+      clean("In the journal Nature, a study found that the method works.")[0] == "A study found that the method works.")
+check("journal: 'a <name> article' becomes 'an article'",
+      clean("A Science article on the method drew wide attention.")[0] == "An article on the method drew wide attention.")
+check("journal: 'a <firm> survey found' keeps the survey",
+      clean("A Deloitte survey found that 60% of firms use it.")[0] == "A survey found that 60% of firms use it.")
+check("journal: a study in a place names no venue",
+      osrc.attributing_names("A study in Europe compared two methods.") == []
+      and clean("A study in Europe compared two methods.") == ("A study in Europe compared two methods.", []))
+check("journal: 'a report in <month year>' is a date, not a venue",
+      clean("A report in May 2026 found that 60 percent of consumers enjoy receiving mail.")[0]
+      == "A report in May 2026 found that 60 percent of consumers enjoy receiving mail.")
+ACTORS = osrc.Allowed(frozenset({"microsoft", "thermo fisher scientific", "wuxi biologics"}), ())
+check("journal: an allowed actor launching a product stays named",
+      clean("Thermo Fisher Scientific launched the Gibco CHO-K1 Catalog Panel.", ACTORS)[0]
+      == "Thermo Fisher Scientific launched the Gibco CHO-K1 Catalog Panel."
+      and clean("Microsoft unveiled Copilot Workspaces.", ACTORS)[0] == "Microsoft unveiled Copilot Workspaces."
+      and clean("WuXi Biologics experts described the new platform.", ACTORS)[0]
+      == "WuXi Biologics experts described the new platform.")
+check("journal: an actor's own study stays named when the fact sheet carries the actor",
+      clean("A Microsoft survey found that 60% of firms use it.", ACTORS)[0]
+      == "A Microsoft survey found that 60% of firms use it.")
+_actor_inp = make_inputs()
+_actor_inp.items["W9"] = {"id": "W9", "kind": "evidence", "tags": ["context"], "historical": False, "sections": {"trends"},
+                          "detail": "", "source": "web",
+                          "text": "Thermo Fisher Scientific launched the Gibco CHO-K1 Catalog Panel. Microsoft unveiled Copilot "
+                                  "Workspaces. WuXi Biologics experts described the new platform."}
+_actor_allowed = osrc.allowed_names(_actor_inp)
+check("journal: the actor names a fact item carries (allowed_names) are never sources",
+      all(osrc.attributing_names(s, _actor_allowed) == [] for s in (
+          "Thermo Fisher Scientific launched the Gibco CHO-K1 Catalog Panel.",
+          "Microsoft unveiled Copilot Workspaces.",
+          "WuXi Biologics experts described the new platform.")))
+check("journal: the same study with no actor in the fact sheet loses the company",
+      clean("A Microsoft survey found that 60% of firms use it.", osrc.EMPTY)[0]
+      == "A survey found that 60% of firms use it.")
+OFFICE = "According to the Office for National Statistics, 18% of retail sales were online in 2025."
+check("journal: a regulatory body stays in the trends and sub-segment sections (regulatory_ok), and only there",
+      osrc.attributing_names(OFFICE, osrc.EMPTY, (), regulatory_ok=True) == []
+      and clean(OFFICE, osrc.EMPTY)[0] == "18% of retail sales were online in 2025.")
+_sections = [{"heading": "Trends", "sop": ["trends"], "paragraphs": [NATURE_STUDY]}]
+check("checks: the trends section that names a journal is reported",
+      any("Nature" in p for p in checks.v2_outside_source_problems(_sections, make_inputs())))
 
 # ------------------------------------------------------------------ the fact sheet decides who is an actor
 inp = make_inputs()
@@ -233,6 +304,11 @@ texts = [p["text"] for p in pts]
 check("points: a point that cites an outside source loses the clause, one that cannot be cut is dropped, a clean one is kept",
       texts == ["Turning a messy online page into plain readable text helps real shoppers.",
                 "Turning a messy online page into plain readable text helps real shoppers find what they want."], str(texts))
+
+# a place before a speech verb is where something happened, never a source ("A study in China found ...")
+for _s in ("A study in China found that adoption rose 12%.", "India said exports rose 12%.", "Adoption rose 12%, Germany reported."):
+    check(f"places: {_s!r} keeps its place and is not cut", osrc.clean_sentence(_s)[:2] == (_s, False), str(osrc.clean_sentence(_s)))
+check("places: a firm before the same verb is still cut", osrc.clean_sentence("Gartner found that 40% of CIOs plan cuts.")[0] == "40% of CIOs plan cuts.")
 
 print()
 if FAILURES:

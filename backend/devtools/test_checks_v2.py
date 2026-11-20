@@ -99,8 +99,8 @@ def good_draft() -> list[dict]:
         {"heading": plan_sec["subsegment"]["heading"], "sop": ["subsegment"], "paragraphs": [
             "### Cloud Based Tools Lead On Easy Deployment",
             pad(95, [f"Cloud Based tools form one part of the {MARKET} worth a closer look."]),
-            "### Data Aggregation Grows With Research Demand",
-            pad(95, ["Data Aggregation services form the other part worth a closer look."]),
+            "### Market Research Grows With Research Demand",
+            pad(95, ["Market Research services form the other part worth a closer look."]),
         ]},
         {"heading": plan_sec["country_us"]["heading"], "sop": ["country_us"], "paragraphs": [
             pad(70, [f"The U.S. leads the {MARKET}, and cloud based widget services by region is where that shows.",
@@ -929,7 +929,9 @@ def fig_sections(ctx: str, seg: str, sub: str = "") -> list[dict]:
 
 all_in = fig_sections("The market was worth USD 1.2 billion in 2025, is forecast at USD 3.4 billion by 2032 and grows at 13.1% a year.",
                       "The market splits by type into browser extension, cloud based and other tools, and by industry into engineering and "
-                      "manufacturing and media.", "Cloud based tools hold 48.2% of revenue and lead the split.")
+                      "manufacturing and media.",
+                      "Cloud based tools hold 48.2% of revenue and lead the split, while engineering and manufacturing "
+                      "is the other part analysed.")
 check("report figures: size, forecast, growth rate, categories and the share all stated -> no problem",
       checks.v2_report_figure_problems(all_in, fig_inp) == [], str(checks.v2_report_figure_problems(all_in, fig_inp)))
 no_forecast = fig_sections("The market was worth USD 1.2 billion in 2025 and grows at 13.1% a year.",
@@ -939,7 +941,8 @@ check("report figures: a forecast left out of the article is named", any("3.4" i
 no_share = fig_sections(all_in[0]["paragraphs"][0], all_in[1]["paragraphs"][0], "Cloud based tools lead the split.")
 probs = checks.v2_report_figure_problems(no_share, fig_inp)
 check("report figures: a segment share left out of the article is named", any("48.2" in p for p in probs), str(probs))
-no_cat = fig_sections(all_in[0]["paragraphs"][0], "The market splits by type into browser extension and cloud based tools.", all_in[2]["paragraphs"][0])
+no_cat = fig_sections(all_in[0]["paragraphs"][0], "The market splits by type into browser extension and cloud based tools.",
+                      "Cloud based tools hold 48.2% of revenue and lead the split.")
 probs = checks.v2_report_figure_problems(no_cat, fig_inp)
 check("report figures: a split's category left out is named, 'Others' is not required",
       any("Engineering & Manufacturing" in p for p in probs) and not any("Others" in p for p in probs), str(probs))
@@ -955,6 +958,30 @@ fig_inp.segments = fig_inp.segments + [{"id": "fs.segments.2", "type": "By Appli
 check("report figures: a parenthesis inside a category, and 'Others', are not required in the article",
       not any("Others" in p or "Banking" in p for p in checks.v2_report_figure_problems(all_in, fig_inp)),
       str(checks.v2_report_figure_problems(all_in, fig_inp)))
+
+# the analysed share belongs to the sub-segment section, and a split the article does not analyse needs no figure at all
+fig_inp.items["fs.segments.2.i0"] = test_planning.item("fs.segments.2.i0", "segment_item", "Media (By Application): 31.0%", {"subsegment"})
+check("report figures: a non-analysed split's share is not required anywhere",
+      not any("31.0" in p for p in checks.v2_report_figure_problems(all_in, fig_inp)),
+      str(checks.v2_report_figure_problems(all_in, fig_inp)))
+share_elsewhere = fig_sections(all_in[0]["paragraphs"][0],
+                               all_in[1]["paragraphs"][0] + " Cloud based tools hold 48.2% of revenue.",
+                               "Cloud based tools lead the split, while engineering and manufacturing is the other part analysed.")
+probs = checks.v2_report_figure_problems(share_elsewhere, fig_inp)
+check("report figures: the analysed sub-segment's share is required in its own section, not merely anywhere",
+      any("48.2" in p and "sub-segment section" in p for p in probs), str(probs))
+
+# the leading and fastest-growing regions belong to the market-size section
+fig_inp.items["fs.regions.leader"] = test_planning.item(
+    "fs.regions.leader", "regions", "Leading region: North America (42.6% share in 2026)", {"report_context"})
+probs = checks.v2_report_figure_problems(all_in, fig_inp)
+check("report figures: a region left out of the market-size section is named",
+      any("North America" in p and "market-size section" in p for p in probs), str(probs))
+with_region = fig_sections(all_in[0]["paragraphs"][0] + " North America leads with 42.6% of revenue.",
+                           all_in[1]["paragraphs"][0], all_in[2]["paragraphs"][0])
+check("report figures: the leading region stated in the market-size section passes",
+      not any("North America" in p for p in checks.v2_report_figure_problems(with_region, fig_inp)),
+      str(checks.v2_report_figure_problems(with_region, fig_inp)))
 
 # ------------------------------------------------------------------ the market's name is in the first 100 words (both modes)
 _lead = " ".join(["Professionals who adjust single pages so that engines can read them need background first."] * 8)   # 88 words, no name

@@ -668,7 +668,7 @@ check("select: a leftover 'context' goes to the section its hit was found for (t
 check("select: an undated hit is never a trend (its only section was trends, so it is dropped)", "W6" not in by_id)
 us_first = {"evidence": [ev(9, "us|trends")]}
 us_pool = pool()
-us_pool[8].scope = "us"            # found by the U.S. search, so the trends rule below (see _return_trend_items) does not move it
+us_pool[8].scope = "us"            # found by the U.S. search, so it keeps its U.S. home
 pipeline._assign_sections(us_first, us_pool, SUBS, LOG)
 check("select: a 'us|trends' string takes its first entry", us_first["evidence"] and us_first["evidence"][0]["section"] == "us", str(us_first))
 
@@ -712,8 +712,10 @@ check("evidence block: a sub-segment item carries its category in its tag and pa
       and not any(i["group"] == "segmentation" for i in parsed_items), str(parsed_items))
 inputs = planning.build_inputs(MARKET, FS, parsed_items, {"questions": []}, {}, 40, subsegments=SUBS)
 ev_items = {i["id"]: i for i in inputs.items.values() if i["kind"] == "evidence"}
-check("build_inputs: a trends item sits only in trends, a key-players item only in key_players, a U.S. one only in country_us",
-      ev_items["W1"]["sections"] == {"trends"} and ev_items["W5"]["sections"] == {"key_players"} and ev_items["W4"]["sections"] == {"country_us"},
+check("build_inputs: a trends item sits in trends, a key-players item may also back a trend or a sub-segment, and a U.S. item keeps the U.S. section while the report's own U.S. facts cover the reserve",
+      ev_items["W1"]["sections"] == {"trends"} and ev_items["W5"]["sections"] == {"key_players", "trends", "subsegment"}
+      and ev_items["W4"]["sections"] == {"country_us", "trends"}
+      and planning.us_lendable(inputs.items) == 2,
       str({k: v["sections"] for k, v in ev_items.items()}))
 check("build_inputs: a sub-segment item sits only in the sub-segment section and names its category; no evidence item sits in segmentation",
       ev_items["W2"]["sections"] == {"subsegment"} and ev_items["W2"]["subsegment"] == "Cloud"

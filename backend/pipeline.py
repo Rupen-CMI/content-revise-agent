@@ -1693,7 +1693,9 @@ def _assign_sections(selection: dict, hits: list[search.SearchHit], subsegments:
     one matching tag in `use_for_all`/`use_for` ("players" for key_players, "subsegment:<category>"). The model's first entry
     counts; an entry that names no section (the old "context", or the retired "segmentation") goes to its hit's first section;
     an undated item is never a trend (it moves to another section its hit was found for, else it is dropped); a sub-segment
-    that is not one of the two fixed is dropped, never filed elsewhere."""
+    that is not one of the two fixed is dropped, never filed elsewhere. The assigned section is the item's first home only: the
+    plan's eligibility table (planning._EVIDENCE_HOMES) lets a company's news back a trend or a sub-segment and a U.S. statistic
+    back a trend, so no item has to be moved between sections here to be usable."""
     kept = []
     for e in selection.get("evidence") or []:
         raw = e.get("use_for")
@@ -1721,31 +1723,7 @@ def _assign_sections(selection: dict, hits: list[search.SearchHit], subsegments:
         tag = sections.evidence_tag(section, name)
         e["section"], e["subsegment"], e["use_for_all"], e["use_for"] = section, name, [tag], tag
         kept.append(e)
-    _return_trend_items(kept, hits, logger)
     selection["evidence"] = kept
-
-
-def _return_trend_items(kept: list[dict], hits: list[search.SearchHit], logger: logging.Logger) -> None:
-    """A dated item the TRENDS search found and the U.S. search did not, which the model filed under "us" only because the event
-    happens in the U.S. (a U.S. university's rollout, a U.S. agency's programme), goes back to "trends" while trends is below
-    its minimum: the U.S. section is the U.S. search's, and a location is not what makes an item a U.S. finding (live 2026-11-19:
-    the Assessment run's trend candidate went to "us" and Trends was left with 0 items). Items the U.S. search found, and items
-    once trends has its minimum, stay where the model put them."""
-    def found_by(e: dict, section: str) -> bool:
-        hit = _hit_of(e, hits)
-        return hit is not None and section in (hit.sections or [])
-    trends = sum(1 for e in kept if e.get("section") == "trends")
-    for e in kept:
-        if trends >= sections.MINIMUMS["trends"]:
-            break
-        hit = _hit_of(e, hits)
-        if e.get("section") != "us" or hit is None or hit.date is None or hit.scope == "us" \
-                or not found_by(e, "trends") or found_by(e, "us"):
-            continue
-        e["section"], e["subsegment"], e["use_for_all"], e["use_for"] = "trends", "", ["trends"], "trends"
-        trends += 1
-        logger.info(f"[select] {e.get('id')} was filed under the U.S. section, but the trends search found it and trends is "
-                    f"short; it goes back to trends")
 
 
 def _merge_same_events(selection: dict, hits: list[search.SearchHit], logger: logging.Logger) -> None:
@@ -2526,7 +2504,7 @@ def run_fetch_confirmed_report(chosen: reports.CatalogEntry, logger: logging.Log
 # tag); a flat list with every item tagged for every section left the writer nothing to route by.
 _EVIDENCE_GROUPS = (
     ("trends", "MARKET TRENDS (back each of the three trends with at least one of these, two where space allows)"),
-    ("segmentation", "THE SEGMENTATION (why a split's leading category leads)"),
+    ("segmentation", "THE SEGMENTATION (segment types and their sub-segment names only; no evidence belongs here)"),
     ("subsegment", "THE TWO SUB-SEGMENTS (each item is tagged subsegment:<category>)"),
     ("us", "THE U.S. PARAGRAPH"),
     ("players", "KEY PLAYERS (each entry about one company explains that company's own move in the market and what it changes for buyers and its rivals)"),
@@ -2715,7 +2693,13 @@ _GENERIC_NAME_WORDS = frozenset({
 })
 
 
-_ENTITY_RE = re.compile(r"\b[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\b")
+# A name keeps the lowercase connectors between its capitalised words ("Ohio Department of Transportation", "Bank of
+# America", "Centers for Disease Control"), so one name is one run. Cut at every lowercase word, "Ohio Department" and a
+# lone "Transportation" were two names, and the lone word then matched any sentence about transportation (found live: an
+# Oregon DOT sentence cited five items). "and", "in" and "on" are not connectors: they join two names ("ABB and Siemens")
+# or a sentence-opening word and a name ("Funding in Ohio") far more often than they sit inside one name.
+_NAME_CONNECTORS = r"(?:of|for|the|de|du|la|del|van|von|da|di)"
+_ENTITY_RE = re.compile(rf"\b[A-Z][\w&.'-]*(?:\s+(?:{_NAME_CONNECTORS}\s+)*[A-Z][\w&.'-]*)*\b")
 
 # Capitalised runs made only of these words are regions, not anyone's name: a region recurs in any regional
 # discussion of the market, so matching one alone false-cites the evidence (found live: "North America" from a
@@ -2733,16 +2717,19 @@ def _fact_entities(fact: str) -> list[tuple[list[str], str]]:
     Two runs never are, whatever their words: a run whose every word is a region ("North America"), and a
     lone word the fact itself also uses in lowercase — "Pacific Gas and Electric ... offering an electric
     vehicle charger" leaves the run "Electric", a company-name tail and an ordinary word of the sentence,
-    which matched the market's own name and false-cited the fact in the size section (found live)."""
+    which matched the market's own name and false-cited the fact in the size section (found live).
+    A name is one run with its lowercase connectors ("Ohio Department of Transportation", see _ENTITY_RE); the
+    connectors are in the phrase but never in the specific words."""
     out = []
     for run in _ENTITY_RE.findall(fact):
         words = [w.strip(".'-") for w in run.split()]
-        if all(w.lower() in _REGION_RUN_WORDS for w in words):
+        named = [w for w in words if w[:1].isupper()]       # the capitalised words; the rest are connectors
+        if all(w.lower() in _REGION_RUN_WORDS for w in named):
             continue
         if len(words) == 1 and re.search(rf"(?<![A-Za-z]){re.escape(words[0].lower())}(?![A-Za-z])", fact):
             continue    # the word also sits in the fact as an ordinary lowercase word: not a name on its own
         specific = [
-            w.lower() for w in words
+            w.lower() for w in named
             if len(w) >= 3 and w.lower() not in _GENERIC_NAME_WORDS and w.lower() not in _MONTH_WORDS
             and w.lower() not in checks._FACT_GENERIC_CAPS
         ]
@@ -2751,31 +2738,79 @@ def _fact_entities(fact: str) -> list[tuple[list[str], str]]:
     return out
 
 
-def _evidence_used_ids(text: str, items: list[dict]) -> set[str]:
-    """Ids of evidence items that really appear in `text`. An item is used when one of its named entities does (a
-    single-word name as a word; a longer name as its whole phrase, or all of its specific words when there are two
-    or more), or when at least two of its figures do. A lone common word that happens to sit inside a name
-    ("Group" in "Acme Group") must NOT count: the first version of this matcher did, and reported 16 of 36
-    items used when a hand read of the draft found 9."""
+_IDENTITY_INDEX: dict[tuple, tuple] = {}
+
+
+def _identity_index(items: list[dict]) -> tuple[dict[str, list], dict[str, set[str]], dict[str, bool]]:
+    """What is DISTINCTIVE to each item among `items`: ({id: its entities}, {id: its own figures, those no other item
+    prints}, {id: whether any of its names has a word no other item's names use}). A name word shared by several items
+    (Department, Transportation, NEVI) identifies none of them; it is document frequency over the items present, so the
+    same word is distinctive in one run and not in another. Cached by the items' text: the matcher runs once per
+    sentence over the same items."""
+    key = tuple((it["id"], it["fact"]) for it in items)
+    hit = _IDENTITY_INDEX.get(key)
+    if hit is not None:
+        return hit
+    ents = {it["id"]: _fact_entities(it["fact"]) for it in items}
+    word_df: dict[str, int] = {}
+    figs = {it["id"]: {t for t in _strict_signature(it["fact"]) if any(c.isdigit() for c in t)} for it in items}
+    fig_df: dict[str, int] = {}
+    for eid, es in ents.items():
+        for w in {w for specific, _ in es for w in specific}:
+            word_df[w] = word_df.get(w, 0) + 1
+        for t in figs[eid]:
+            fig_df[t] = fig_df.get(t, 0) + 1
+    ents = {eid: [(specific, phrase, [w for w in specific if word_df[w] == 1]) for specific, phrase in es] for eid, es in ents.items()}
+    own_figs = {eid: {t for t in fs if fig_df[t] == 1} for eid, fs in figs.items()}
+    named_apart = {eid: any(d for _, _, d in es) for eid, es in ents.items()}
+    if len(_IDENTITY_INDEX) >= 32:
+        _IDENTITY_INDEX.clear()
+    _IDENTITY_INDEX[key] = (ents, own_figs, named_apart)
+    return _IDENTITY_INDEX[key]
+
+
+def _evidence_hits(text: str, items: list[dict]) -> dict[str, float]:
+    """{id: how strongly `text` identifies it} for the evidence items that really appear in `text`; the strength is the
+    count of identifying words and figures, so a caller can attribute a sentence to its best-supported item.
+    An item is identified by
+    - a named entity of its own that the text carries (a single-word name as a word; a longer name as its whole phrase,
+      or all of its specific words when there are two or more) AND that has at least one word no other item's names use
+      ("Ohio" of "Ohio Department of Transportation"). A name made only of words other items share cannot identify on its
+      own. The one exception is an item with no distinctive name at all (two items about the same company): its shared
+      name identifies it, weakly (0.5), and the caller's ranking settles which of them the sentence is about;
+    - two or more of its own figures, a figure another item also prints not counting.
+    A lone common word that happens to sit inside a name ("Group" in "Acme Group") must NOT count: the first version of
+    this matcher did, and reported 16 of 36 items used when a hand read of the draft found 9."""
     tokens, low = checks._market_tokens(text), text.lower()
-    used = set()
+    ents, own_figs, named_apart = _identity_index(items)
+    found: dict[str, float] = {}
     for it in items:
-        hit = False
-        for specific, phrase in _fact_entities(it["fact"]):
+        eid, strength = it["id"], 0.0
+        for specific, phrase, distinctive in ents[eid]:
             if len(phrase.split()) == 1:
                 hit = specific[0] in tokens
             elif len(specific) >= 2:
                 hit = phrase in low or all(w in tokens for w in specific)
             else:
                 hit = phrase in low
-            if hit:
-                break
-        if not hit:
-            figures = {t for t in _strict_signature(it["fact"]) if any(c.isdigit() for c in t)}
-            hit = sum(1 for t in figures if t in tokens or t in low) >= 2
-        if hit:
-            used.add(it["id"])
-    return used
+            if not hit:
+                continue
+            if distinctive:
+                strength += len(distinctive)
+            elif not named_apart[eid]:
+                strength = max(strength, 0.5)
+        matched = sum(1 for t in own_figs[eid] if t in tokens or t in low)
+        if matched >= 2:
+            strength += matched
+        if strength:
+            found[eid] = strength
+    return found
+
+
+def _evidence_used_ids(text: str, items: list[dict]) -> set[str]:
+    """Ids of evidence items that really appear in `text`, by the identity rule of _evidence_hits (a name or figure
+    that tells this item from the others, never a word several items share)."""
+    return set(_evidence_hits(text, items))
 
 
 def _evidence_problems(sections: list[dict], items: list[dict], min_total: int) -> list[str]:

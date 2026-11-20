@@ -892,14 +892,21 @@ untraced = writer.strip_untraced_figures(
     [{"heading": "Seg", "sop": ["segmentation"], "paragraphs": ["The market reached 99999 units."]}], inp, "", LOG)
 check("emptied: the same holds when the figure stripper removes every sentence", untraced[0]["paragraphs"] == [], str(untraced))
 
-# ------------------------------------------------------------------ segmentation and sub-segments explain why, not only what
+# ------------------------------------------------------------------ segmentation lists names; the sub-segments carry leaders, shares and reasons
 seg_shape, sub_shape = writer._SHAPES["segmentation"], writer._SHAPES["subsegment"]
-check("shapes: segmentation no longer bans explaining: each leading category gets one clause on why it leads, where a fact supports it",
-      "why it leads" in seg_shape and "the driver, the shift in demand or the adoption" in seg_shape
-      and "where no listed fact does, the line adds no reason" in seg_shape and "No line, and not the lead-in either, says what the segmentation lets" not in seg_shape,
+check("shapes: segmentation lists the segment types and their sub-segment names only, never a leader, a share or a reason",
+      "no line says which category leads" in seg_shape and "no figure, share, company or statistic" in seg_shape
+      and "names the market in that same sentence" in seg_shape and "split" not in seg_shape,
       seg_shape)
-check("shapes: segmentation still names the leader with its figure and keeps the earlier rules",
-      "states that leading category with its figure" in seg_shape and "names the market in that same sentence" in seg_shape and "split" not in seg_shape)
+check("shapes: the sub-segment analysis that follows carries the leaders, shares and reasons",
+      "the sub-segment analysis that follows carries the leaders, shares and reasons" in seg_shape
+      and "states that leading category with its figure" not in seg_shape, seg_shape)
+_share_item = {"id": "fs.segments.0.i1", "kind": "segment_item", "text": "Cloud Based (By Type): 48.2%",
+               "historical": False, "source": "CMI report"}
+check("required figures: an analysed sub-segment's share is marked REQUIRED, a split the article does not analyse is not",
+      "[REQUIRED: state this figure in the section]" in writer._fact_text(_share_item, required=True)
+      and "[REQUIRED: state this figure in the section]" not in writer._fact_text(_share_item),
+      writer._fact_text(_share_item, required=True))
 check("shapes: each sub-segment has a descriptive heading and one ~100-word paragraph: CMI share first, factors behind its dominance, a sourced statistic or instance",
       all(w in sub_shape for w in ('"heading": "<heading>"', "descriptive heading", "90 to 115 words", "market share with its year",
                                    "only from a CMI report fact", "key factors behind its dominance", "a source is named only when")), sub_shape)

@@ -1160,15 +1160,15 @@ def flatten_fact_sheet(fs: dict) -> list[dict]:
                         "text": f"{label}: {e['value']} ({e['when']})" if e["when"] else f"{label}: {e['value']}"})
     for seg in fs.get("segments") or []:
         figures = seg.get("figures") or {}
-        # The split's own fact lists names only (the segmentation section lists categories); figures travel in the
-        # per-category facts below, which the sub-segment section receives for the categories it analyses.
+        # The split's own fact lists names only (the segmentation section lists categories and nothing else); its leader and
+        # the figures travel in the facts below, which only the sub-segment section receives, for the categories it analyses.
         out.append({"id": seg["id"], "kind": "segments", "source": base, "historical": False,
                     "text": f"Segmentation {seg['type']}: " + ", ".join(seg["items"])})
         dom = seg.get("dominant")
         if dom:
             how = {"stated": "the report states it leads this split", "editor": "the editor confirmed it leads this split"}.get(
                 dom["basis"], "its stated figure is the largest in this split")
-            out.append({"id": f"{seg['id']}.dominant", "kind": "segments", "source": base, "historical": False,
+            out.append({"id": f"{seg['id']}.dominant", "kind": "segment_leader", "source": base, "historical": False,
                         "text": f"Dominant category in {seg['type']}: {dom['name']} ({how})"})
         for k, name in enumerate(seg["items"]):
             if name in figures:

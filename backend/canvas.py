@@ -436,7 +436,7 @@ def guard(run, si: int, j0: int, j1: int, new_paras: list[str], extra_numbers: s
         ("it carried a figure no listed fact or instruction supports",
          lambda: writer.strip_untraced_figures(secs, inp, allowed_text, logger, extra_allowed=extra_numbers)),
         ("it repeated a figure printed earlier", lambda: writer.strip_repeat_figures(secs, inp, logger)),
-        ("it cited evidence already used elsewhere", lambda: writer.strip_repeat_evidence(secs, inp, logger)),
+        ("it cited evidence already used elsewhere", lambda: writer.strip_repeat_evidence(secs, inp, logger, run.plan)),
     ]
     notes: list[str] = []
     for reason, run_step in steps:

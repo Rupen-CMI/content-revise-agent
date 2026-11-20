@@ -8,6 +8,7 @@ planning.compute_budgets (including a very long retained paragraph) and the prom
 """
 import copy
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -49,14 +50,14 @@ def make_inputs() -> planning.PlanInputs:
         item("fs.cagr", "cagr", "Growth rate: 13.1%", {"report_context"}),
         item("fs.drivers.0", "drivers", "Digital marketing adoption drives demand.", {"trends", "report_context"}),
         item("fs.restraints.0", "restraints", "Piracy hampers growth.", {"trends"}),
-        item("fs.segments.0", "segments", "Segmentation type: Browser Extension, Cloud Based", {"segmentation", "subsegment"}),
-        item("fs.segments.1", "segments", "Segmentation application: Data Aggregation, Market Research", {"segmentation", "subsegment"}),
+        item("fs.segments.0", "segments", "Segmentation type: Browser Extension, Cloud Based", planning._FACT_SECTIONS["segments"]),
+        item("fs.segments.1", "segments", "Segmentation application: Data Aggregation, Market Research", planning._FACT_SECTIONS["segments"]),
         item("fs.regions.leader", "regions", "Leading region: North America", {"country_us"}, historical=True),
         item("fs.us.0", "us", "A review of widget exports opened in the U.S.", {"country_us"}),
         item("fs.players", "players", "Key players: Acme, Beta", {"key_players"}),
         item("fs.opportunities.0", "opportunities", "Robo advisory opens room to grow.", {"conclusion", "trends"}),
         item("W1", "evidence", "Acme launched a new product.", {"trends", "key_players"}, tags=["trends", "players"], source="News Site"),
-        item("W2", "evidence", "Cloud pricing is metered by credit.", {"report_context", "segmentation", "subsegment", "conclusion"}, tags=["context"], source="Other Site"),
+        item("W2", "evidence", "Cloud pricing is metered by credit.", {"report_context", "subsegment", "conclusion"}, tags=["context"], source="Other Site"),
     ]}
     questions = [
         {"id": "Q1", "intent": "size", "section": "report_context", "question": "How big is the Zzz Widget Services Market?", "answerable": True},
@@ -333,7 +334,7 @@ def us_inputs(n_us: int, with_report_facts: bool = True) -> planning.PlanInputs:
         inp.items.pop(fid, None)
     inp.longtails = [lt for lt in inp.longtails if lt["fact"] in inp.items]
     us_items = [item("fs.us.0", "us", "A review of widget exports opened in the U.S.", {"country_us"}),
-                item("W3", "evidence", "A U.S. agency funded a widget pilot.", {"country_us"}, tags=["us"], source="US News")]
+                item("W3", "evidence", "A U.S. agency funded a widget pilot.", planning.evidence_sections("us", True), tags=["us"], source="US News, 2026-10")]
     for it in us_items[:n_us]:
         inp.items[it["id"]] = it
     if not with_report_facts:
@@ -377,32 +378,64 @@ p = us_plan(0, with_report_facts=False)
 check("U.S. none and no report fact: a qualitative U.S. analysis with the section's own budget, never an editor note",
       S(p, "country_us")["length"] == "us_from_report" and S(p, "country_us")["words"] >= 100, str((S(p, "country_us")["length"], S(p, "country_us")["words"])))
 
-# evidence tagged us always goes to the U.S. section and never to a trend
+# evidence tagged us: the U.S. section is its first home, and the reserve decides whether a trend may also use it
 inp = us_inputs(2)
+planning.apply_us_reserve(inp.items)          # as build_inputs does: two U.S. facts, so none may leave
 raw = good_plan()
 raw["sections"][1]["facts"] = ["fs.drivers.0", "W1", "W3"]
 raw["sections"][1]["trend_groups"] = [{"trend": "a", "facts": ["fs.drivers.0"]}, {"trend": "b", "facts": ["W1"]}, {"trend": "c", "facts": ["W3"]}]
 raw["sections"][4]["facts"] = ["fs.us.0"]
 p = plan_of(raw, inp)
-check("U.S. tag: evidence tagged us is dropped from the trends (and their groups) and lands in the U.S. section",
+check("U.S. reserve: with only two U.S. facts, a U.S. item is not eligible for trends, is dropped there and lands in the U.S. section",
       "W3" not in S(p, "trends")["facts"] and all("W3" not in g["facts"] for g in S(p, "trends")["trend_groups"])
-      and "W3" in S(p, "country_us")["facts"], str((S(p, "trends")["facts"], S(p, "country_us")["facts"])))
-check("U.S. tag: the skip is logged", any("W3" in r and "U.S." in r for r in p["repairs"]), str(p["repairs"]))
+      and "W3" in S(p, "country_us")["facts"] and any("W3" in r for r in p["repairs"]),
+      str((S(p, "trends")["facts"], S(p, "country_us")["facts"])))
+
+# a U.S. statistic MAY back a trend while the U.S. section keeps its own minimum (the content team's rule, 2026-11-20)
+inp = us_inputs(2)
+inp.items["W4"] = item("W4", "evidence", "Federal procurement rules changed in the U.S. this quarter.",
+                       planning.evidence_sections("us", True), tags=["us"], source="Trade News, 2026-10")
+planning.apply_us_reserve(inp.items)          # three U.S. facts, two of them news: one news item may leave
+check("U.S. rule: the reserve makes one of the two U.S. news items eligible for trends, and only that one",
+      inp.items["W3"]["sections"] == {"country_us", "trends"} and inp.items["W4"]["sections"] == {"country_us"}
+      and planning.us_lendable(inp.items) == 1, str({k: v["sections"] for k, v in inp.items.items() if v["kind"] == "evidence"}))
+raw = good_plan()
+raw["sections"][1]["facts"] = ["fs.drivers.0", "W1", "W3"]
+raw["sections"][1]["trend_groups"] = [{"trend": "a", "facts": ["fs.drivers.0"]}, {"trend": "b", "facts": ["W1"]}, {"trend": "c", "facts": ["W3"]}]
+raw["sections"][4]["facts"] = ["fs.us.0", "W4"]
+p = plan_of(raw, inp)
+check("U.S. rule: a U.S. statistic backs a trend, the U.S. section keeps two U.S. facts of its own, and the fact is stated once",
+      "W3" in S(p, "trends")["facts"] and "W3" not in S(p, "country_us")["facts"]
+      and {"fs.us.0", "W4"} <= set(S(p, "country_us")["facts"])
+      and not any("W3" in r and "dropped" in r for r in p["repairs"]),
+      str((S(p, "trends")["facts"], S(p, "country_us")["facts"], p["repairs"])))
+check("U.S. rule: the plan prompt states the same reserve the validator applies and prints it on the facts",
+      "at most 1 U.S. news item(s) may leave it" in planning.build_prompt(inp)
+      and "W3 [suits: trends, country_us]" in planning.build_prompt(inp)
+      and "W4 [suits: country_us]" in planning.build_prompt(inp),
+      planning.build_prompt(inp))
 
 built = planning.build_inputs(
     MARKET, {**facts_mod._empty_fact_sheet(), "us": [{"id": "fs.us.0", "text": "A U.S. statement.", "historical": False}]},
-    [{"id": "W9", "fact": "A U.S. firm expanded.", "tags": ["us", "trends"], "source": "S"},
+    [{"id": "W9", "fact": "A U.S. firm expanded.", "tags": ["us", "trends"], "source": "S, 2026-10"},
      {"id": "W8", "fact": "A firm launched.", "tags": ["trends"], "source": "S"}],
     {}, {}, 80)
-check("U.S. tag: build_inputs lets evidence tagged us sit in the U.S. section only, however else it was tagged",
-      built.items["W9"]["sections"] == {"country_us"} and "country_us" not in built.items["W8"]["sections"], str(built.items["W9"]["sections"]))
+check("U.S. tag: build_inputs lets a U.S.-tagged item sit in the U.S. section, and in trends only within the reserve",
+      built.items["W9"]["sections"] == {"country_us"} and "country_us" not in built.items["W8"]["sections"]
+      and planning.us_lendable(built.items) == 0, str(built.items["W9"]["sections"]))
+built3 = planning.build_inputs(
+    MARKET, {**facts_mod._empty_fact_sheet(), "us": [{"id": "fs.us.0", "text": "A U.S. statement.", "historical": False}]},
+    [{"id": "W9", "fact": "A U.S. firm expanded.", "tags": ["us", "trends"], "source": "S, 2026-10"},
+     {"id": "W10", "fact": "A U.S. agency funded a pilot.", "tags": ["us"], "source": "S, 2026-09"},
+     {"id": "W8", "fact": "A firm launched.", "tags": ["trends"], "source": "S"}],
+    {}, {}, 80)
+check("U.S. reserve: build_inputs marks only as many U.S. news items eligible for trends as the reserve allows",
+      built3.items["W9"]["sections"] == {"country_us", "trends"} and built3.items["W10"]["sections"] == {"country_us"}
+      and planning.us_lendable(built3.items) == 1,
+      str({k: v["sections"] for k, v in built3.items.items() if v["kind"] == "evidence"}))
 check("U.S. tag: has_us_facts is set from the U.S. facts", built.has_us_facts)
 
-# the PLAN prompt carries the rule
-check("U.S. tag: the plan prompt says a U.S.-tagged fact belongs to the U.S. section and to no trend",
-      "belongs to the U.S. section and to no trend" in prompts.PLAN_USER)
-
-# ------------------------------------------------------------------ segmentation and sub-segments explain why a category leads
+# ------------------------------------------------------------------ segmentation lists names; the sub-segment section carries the leaders and reasons
 def seg_inputs() -> planning.PlanInputs:
     """Three splits, each with a stated leader; a reason (segment_drivers) for the leader of By Type and of By End User."""
     inp = make_inputs()
@@ -412,8 +445,11 @@ def seg_inputs() -> planning.PlanInputs:
         {"id": "fs.segments.2", "type": "By End User", "items": ["Retail", "Banking"], "figures": {}, "dominant": {"name": "Retail", "basis": "stated"}},
     ]
     for n, (split, leader) in enumerate([("By Type", "Cloud Based"), ("By Application", "Data Aggregation"), ("By End User", "Retail")]):
-        inp.items[f"fs.segments.{n}"] = item(f"fs.segments.{n}", "segments", f"Segmentation {split}: x, y", {"segmentation", "subsegment"})
-        inp.items[f"fs.segments.{n}.dominant"] = item(f"fs.segments.{n}.dominant", "segments", f"Dominant category in {split}: {leader}", {"segmentation", "subsegment"})
+        inp.items[f"fs.segments.{n}"] = item(f"fs.segments.{n}", "segments", f"Segmentation {split}: x, y",
+                                             planning._FACT_SECTIONS["segments"])
+        inp.items[f"fs.segments.{n}.dominant"] = item(f"fs.segments.{n}.dominant", "segment_leader",
+                                                      f"Dominant category in {split}: {leader}",
+                                                      planning._FACT_SECTIONS["segment_leader"])
     for fid, split, name in [("fs.segment_drivers.0", "By Type", "Cloud Based"), ("fs.segment_drivers.1", "By End User", "Retail")]:
         it = item(fid, "segment_drivers", f"Why {name} stands out in {split}: remote teams want it.", planning._FACT_SECTIONS["segment_drivers"])
         it.update({"split": split, "name": name})
@@ -422,32 +458,43 @@ def seg_inputs() -> planning.PlanInputs:
 
 
 seg_raw = good_plan()
-seg_raw["sections"][2]["facts"] = ["fs.segments.0", "fs.segments.1", "fs.segments.2"]
-seg_raw["sections"][3]["facts"] = []
+# the planner tries to park leaders and reasons in segmentation, and a non-analysed split's leader in the sub-segment section
+seg_raw["sections"][2]["facts"] = ["fs.segments.0", "fs.segments.1", "fs.segments.2",
+                                   "fs.segments.2.dominant", "fs.segment_drivers.1"]
+seg_raw["sections"][3]["facts"] = ["fs.segments.0.dominant", "fs.segments.2.dominant", "fs.segment_drivers.0"]
 seg_raw["sections"][3]["sub_segments"] = [{"split": "By Type", "name": "Cloud Based"}, {"split": "By Application", "name": "Data Aggregation"}]
 p = plan_of(seg_raw, seg_inputs())
 seg_facts, sub_facts = S(p, "segmentation")["facts"], S(p, "subsegment")["facts"]
-check("segment reasons: the reason for a picked sub-segment goes to the sub-segment section", "fs.segment_drivers.0" in sub_facts, str(sub_facts))
-check("segment reasons: ... and is not repeated in segmentation", "fs.segment_drivers.0" not in seg_facts, str(seg_facts))
-check("segment reasons: the reason for the leader of a split no sub-segment covers goes to segmentation",
-      "fs.segment_drivers.1" in seg_facts and "fs.segment_drivers.1" not in sub_facts, str((seg_facts, sub_facts)))
-check("segment reasons: a split's leader line stays in segmentation even when its leader is a picked sub-segment",
-      {"fs.segments.0.dominant", "fs.segments.1.dominant", "fs.segments.2.dominant"} <= set(seg_facts)
-      and {"fs.segments.0.dominant", "fs.segments.1.dominant"} <= set(sub_facts), str((seg_facts, sub_facts)))
-check("segment reasons: a split's category list is still stated in segmentation only",
-      all(f in seg_facts for f in ("fs.segments.0", "fs.segments.1", "fs.segments.2")) and not [f for f in sub_facts if f in ("fs.segments.0", "fs.segments.1", "fs.segments.2")])
-check("segment reasons: drivers may now sit in segmentation and sub-segment as well as trends",
-      {"segmentation", "subsegment", "trends"} <= planning._FACT_SECTIONS["drivers"]
-      and planning._FACT_SECTIONS["segment_drivers"] == {"segmentation", "subsegment"})
+check("segmentation: the segment lists and nothing else (no leader, share or reason)",
+      set(seg_facts) == {"fs.segments.0", "fs.segments.1", "fs.segments.2"}, str(seg_facts))
+check("segmentation: a leader or reason the planner put there is dropped and logged",
+      "fs.segments.2.dominant" not in seg_facts and "fs.segment_drivers.1" not in seg_facts
+      and any("segmentation" in r and "does not belong" in r for r in p["repairs"]), str(p["repairs"]))
+check("sub-segment: the two analysed picks keep their leader and their report's reason",
+      {"fs.segments.0.dominant", "fs.segments.1.dominant", "fs.segment_drivers.0"} <= set(sub_facts), str(sub_facts))
+check("sub-segment: a leader or reason for a category the article does not analyse is dropped, never parked there",
+      "fs.segments.2.dominant" not in sub_facts and "fs.segment_drivers.1" not in sub_facts
+      and any("does not analyse" in r for r in p["repairs"]), str((sub_facts, p["repairs"])))
+check("sub-segment: a split's category list is stated in segmentation only",
+      not [f for f in sub_facts if f in ("fs.segments.0", "fs.segments.1", "fs.segments.2")], str(sub_facts))
+check("eligibility: segmentation takes segment lists only; leader, share and reason are the sub-segment section's",
+      planning._FACT_SECTIONS["segments"] == {"segmentation"}
+      and planning._FACT_SECTIONS["segment_leader"] == {"subsegment"}
+      and planning._FACT_SECTIONS["segment_item"] == {"subsegment"}
+      and planning._FACT_SECTIONS["segment_drivers"] == {"subsegment"}
+      and planning._FACT_SECTIONS["drivers"] == {"trends", "report_context", "subsegment"})
 seg_raw["sections"][2]["facts"] += ["fs.drivers.0"]
+seg_raw["sections"][3]["facts"] += ["fs.drivers.0"]
 seg_raw["sections"][1]["facts"] = ["W1"]
 seg_in = seg_inputs()
 seg_in.items["fs.drivers.0"]["sections"] = set(planning._FACT_SECTIONS["drivers"])      # as build_inputs sets it from the kind
 p = plan_of(seg_raw, seg_in)
-check("segment reasons: a general driver the planner gives the segmentation section is accepted there", "fs.drivers.0" in S(p, "segmentation")["facts"],
-      str(S(p, "segmentation")["facts"]))
-check("segment reasons: the plan prompt names the segmentation topic with why the leader leads",
-      "why the leading category in each split leads" in prompts.PLAN_USER)
+check("drivers: a general driver is dropped from segmentation (names only) and accepted in the sub-segment section",
+      "fs.drivers.0" not in S(p, "segmentation")["facts"] and "fs.drivers.0" in S(p, "subsegment")["facts"],
+      str((S(p, "segmentation")["facts"], S(p, "subsegment")["facts"])))
+check("segmentation prompt: the plan prompt asks for the segment types and sub-segment names only",
+      "the segment types and the sub-segment names under each" in prompts.PLAN_USER
+      and "why the leading category in each split leads" not in prompts.PLAN_USER)
 
 # ------------------------------------------------------------------ keywords
 raw = good_plan()
@@ -730,13 +777,13 @@ big.segments = [
     {"id": "fs.segments.2", "type": "By Mode", "items": ["Online", "Offline"],
      "figures": {"Online": {"figure": "55.9%"}}, "dominant": {"name": "Online", "basis": "stated"}},
 ]
-big.items["fs.segments.2"] = item("fs.segments.2", "segments", "Segmentation By Mode: Online, Offline", {"segmentation", "subsegment"})
+big.items["fs.segments.2"] = item("fs.segments.2", "segments", "Segmentation By Mode: Online, Offline", planning._FACT_SECTIONS["segments"])
 for g in big.segments:
-    big.items[f"{g['id']}.dominant"] = item(f"{g['id']}.dominant", "segments", f"Dominant category in {g['type']}: {g['dominant']['name']}", {"segmentation", "subsegment"})
+    big.items[f"{g['id']}.dominant"] = item(f"{g['id']}.dominant", "segment_leader", f"Dominant category in {g['type']}: {g['dominant']['name']}", planning._FACT_SECTIONS["segment_leader"])
     for k, name in enumerate(g["items"]):
         if name in g["figures"]:
             big.items[f"{g['id']}.i{k}"] = item(f"{g['id']}.i{k}", "segment_item", f"{name} ({g['type']}): {g['figures'][name]['figure']}",
-                                                {"subsegment", "segmentation"})
+                                                planning._FACT_SECTIONS["segment_item"])
 raw = good_plan()
 raw["sections"][0]["facts"] = ["fs.size"]                 # the planner left the forecast, growth rate and regions out
 raw["sections"][2]["facts"] = ["fs.segments.0"]           # and most segment splits
@@ -745,12 +792,117 @@ ctx_facts, seg_facts, sub_facts = S(p, "report_context")["facts"], S(p, "segment
 check("figures: size, forecast, growth rate and both regions always reach report_context",
       {"fs.size", "fs.forecast", "fs.cagr", "fs.regions.leader", "fs.regions.fastest"} <= set(ctx_facts), str(ctx_facts))
 check("figures: every segment split is in segmentation", {"fs.segments.0", "fs.segments.1", "fs.segments.2"} <= set(seg_facts), str(seg_facts))
-check("figures: the split with no sub-segment pick has its leader and share in segmentation",
-      {"fs.segments.2.dominant", "fs.segments.2.i0"} <= set(seg_facts), str(seg_facts))
+check("figures: segmentation carries the split lists only, never a leader or a share",
+      set(seg_facts) == {"fs.segments.0", "fs.segments.1", "fs.segments.2"}, str(seg_facts))
 check("figures: the two sub-segments keep their leader and share in subsegment, stated once",
       {"fs.segments.0.dominant", "fs.segments.0.i1", "fs.segments.1.dominant", "fs.segments.1.i1"} <= set(sub_facts)
       and not ({"fs.segments.0.i1", "fs.segments.1.i1"} & set(seg_facts)), f"{sub_facts} / {seg_facts}")
-check("figures: the facts that were added are logged as repairs", any("fs.forecast" in r for r in p["repairs"]) and any("fs.segments.2.i0" in r for r in p["repairs"]))
+check("figures: a split the article does not analyse has no leader or share required anywhere",
+      not ({"fs.segments.2.dominant", "fs.segments.2.i0"} & (set(seg_facts) | set(sub_facts))), f"{sub_facts} / {seg_facts}")
+check("figures: the facts that were added are logged as repairs",
+      any("fs.forecast" in r for r in p["repairs"]) and any("fs.segments.2" in r and "list" in r for r in p["repairs"]), str(p["repairs"]))
+
+# ------------------------------------------------------------------ a company's news may back a trend or a sub-segment
+def players_inputs() -> planning.PlanInputs:
+    """make_inputs() with a key-player item: a company's own move, which may also back a trend or a sub-segment."""
+    inp = make_inputs()
+    inp.items["W5"] = item("W5", "evidence", "Samsung Biologics expanded its in-house master cell bank services.",
+                           planning.evidence_sections("key_players", True), tags=["players"], source="Bio Wire, 2026-10")
+    return inp
+
+
+raw = good_plan()
+raw["sections"][1]["facts"] = ["fs.drivers.0", "W5"]
+raw["sections"][1]["trend_groups"] = [{"trend": "Outsourcing of cell line development", "facts": ["fs.drivers.0", "W5"]},
+                                      {"trend": "b", "facts": []}, {"trend": "c", "facts": []}]
+raw["sections"][5]["facts"] = ["fs.players", "W5"]
+p = plan_of(raw, players_inputs())
+check("players evidence: a company's news the planner puts in a trend stays there, and key players does not state it again",
+      "W5" in S(p, "trends")["facts"] and "W5" not in S(p, "key_players")["facts"]
+      and any("W5" in r and "already used" in r for r in p["repairs"]),
+      str((S(p, "trends")["facts"], S(p, "key_players")["facts"], p["repairs"])))
+raw = good_plan()
+raw["sections"][3]["facts"] = ["W2", "W5"]
+raw["sections"][5]["facts"] = ["fs.players", "W5"]
+p = plan_of(raw, players_inputs())
+check("players evidence: the same item may back a sub-segment instead, and key players then names the company only",
+      "W5" in S(p, "subsegment")["facts"] and "W5" not in S(p, "key_players")["facts"],
+      str((S(p, "subsegment")["facts"], S(p, "key_players")["facts"])))
+check("players evidence: the eligibility table and the prompt say so (a trend or a sub-segment, never the fact twice)",
+      planning._EVIDENCE_HOMES["key_players"] == ("key_players", "trends", "subsegment")
+      and "may back a trend or a sub-segment" in planning.build_prompt(players_inputs())
+      and "W5 [suits: trends, subsegment, key_players]" in planning.build_prompt(players_inputs()))
+
+# ------------------------------------------------------------------ a bare trend is refilled from free dated evidence
+inp = make_inputs()
+inp.items["W3"] = item("W3", "evidence", "Cloud proctoring services expanded at universities.", {"trends"}, tags=["trends"], source="Trade Wire, 2026-10")
+inp.items["W4"] = item("W4", "evidence", "A hospital network adopted adaptive testing.", {"trends"}, tags=["trends"], source="Health Wire, 2026-09")
+inp.items["W6"] = item("W6", "evidence", "Cloud proctoring services at universities grew again.", {"trends"}, tags=["trends"], source="Trade Wire")
+raw = good_plan()
+raw["sections"][1]["facts"] = ["fs.drivers.0", "W1"]
+raw["sections"][1]["trend_groups"] = [
+    {"trend": "Cloud proctoring at universities", "facts": ["fs.drivers.0"]},
+    {"trend": "Adaptive testing adoption", "facts": ["W1"]},
+    {"trend": "Cloud proctoring services at universities", "facts": []},
+]
+p = plan_of(raw, inp)
+groups = S(p, "trends")["trend_groups"]
+check("trend refill: a trend left with no news item takes the free, dated item sharing the most words with it",
+      "W3" in groups[2]["facts"] and "W3" in S(p, "trends")["facts"]
+      and any("had no news item" in r and "W3" in r for r in p["repairs"]), str(groups))
+check("trend refill: an undated item is never refilled into a trend", "W6" not in S(p, "trends")["facts"], str(S(p, "trends")["facts"]))
+check("trend refill: a refilled trend still holds no more than three facts", all(len(g["facts"]) <= 3 for g in groups), str(groups))
+
+# the live 2026-11-20 case: the planner's only trend evidence is a U.S. fact the reserve forbids, so the group is refilled
+inp = make_inputs()
+inp.items["W17"] = item("W17", "evidence", "U.S. public DC fast chargers grew from about 17,000 to 74,000.",
+                        planning.evidence_sections("us", True), tags=["us"], source="US News, 2026-10")
+inp.items["W18"] = item("W18", "evidence", "The UK Department for Transport estimates 280,000 to 720,000 public charge points by 2030.",
+                        {"trends"}, tags=["trends"], source="GOV.UK, 2026-10")
+planning.apply_us_reserve(inp.items)
+raw = good_plan()
+raw["sections"][1]["facts"] = ["W17", "W1", "fs.drivers.0"]
+raw["sections"][1]["trend_groups"] = [{"trend": "Public charge point rollout", "facts": ["W17"]},
+                                      {"trend": "b", "facts": ["W1"]}, {"trend": "c", "facts": ["fs.drivers.0"]}]
+p = plan_of(raw, inp)
+groups = S(p, "trends")["trend_groups"]
+check("U.S. drop: the U.S. item the reserve forbids leaves trends, stays in the U.S. section, and the emptied trend is refilled",
+      "W17" not in S(p, "trends")["facts"] and "W17" in S(p, "country_us")["facts"]
+      and "W18" in groups[0]["facts"] and any("W17" in r for r in p["repairs"]),
+      str((S(p, "trends")["facts"], S(p, "country_us")["facts"], groups)))
+
+# ------------------------------------------------------------------ one eligibility table: the prompt and the validator agree
+inp = make_inputs()
+inp.items["W3"] = item("W3", "evidence", "Acme expanded its widget services in October 2026.",
+                       planning.evidence_sections("key_players", True), tags=["players"], source="Trade Wire, 2026-10")
+inp.items["W4"] = item("W4", "evidence", "A U.S. agency funded a widget pilot in October 2026.",
+                       planning.evidence_sections("us", True), tags=["us"], source="US News, 2026-10")
+planning.apply_us_reserve(inp.items)
+text = planning.build_prompt(inp)
+suits = {m.group(1): set(m.group(2).split(", ")) for m in re.finditer(r"^- (\S+) \[suits: ([^\]]+)\]", text, re.M)}
+check("eligibility: every fact's printed suits are exactly its table sections (the prompt cannot over-promise)",
+      all(suits.get(fid) == set(it["sections"]) for fid, it in inp.items.items() if not it.get("auto") and it["sections"]),
+      str({fid: (suits.get(fid), it["sections"]) for fid, it in inp.items.items() if suits.get(fid) != set(it["sections"])}))
+check("eligibility: the prompt's rule is generated from the same table",
+      "the segmentation section takes only the segment lists" in text
+      and "may back a trend or a sub-segment" in text
+      and "A U.S. fact belongs to the U.S. section and to no other" in text)
+
+
+def kept_in(fid: str, sop: str, inputs: planning.PlanInputs) -> bool:
+    raw = good_plan()
+    for s in raw["sections"]:
+        s["facts"] = []
+    raw["sections"][1]["trend_groups"] = []
+    next(s for s in raw["sections"] if s["sop"] == sop)["facts"] = [fid]
+    return fid in S(plan_of(raw, inputs), sop)["facts"]
+
+
+check("eligibility: the validator keeps a fact in every section its suits list and drops it from the others",
+      kept_in("W3", "trends", inp) and kept_in("W3", "subsegment", inp) and kept_in("W3", "key_players", inp)
+      and not kept_in("W3", "report_context", inp)
+      and kept_in("fs.segments.0", "segmentation", inp) and not kept_in("fs.segments.0", "subsegment", inp)
+      and not kept_in("fs.size", "trends", inp))
 
 print()
 if FAILURES:

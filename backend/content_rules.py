@@ -87,9 +87,12 @@ def negative_wording_problems(sections: list[dict], faq: list[dict] = (), market
 
 
 def _content_stems(sentence: str) -> frozenset[str]:
+    # British and American spellings are one word ("organisation" / "organization", "optimise" / "optimize"); the same
+    # rewrite on both sides of every comparison, so a word it touches that has no American form ("enterprise") still matches
+    text = re.sub(r"is(ation|e|ed|es|ing)\b", r"iz\1", sentence.lower())
     return frozenset(
         w[:-1] if len(w) > 4 and w.endswith("s") else w
-        for w in re.findall(r"[a-z0-9]+", sentence.lower()) if len(w) > 3 and w not in _STOP
+        for w in re.findall(r"[a-z0-9]+", text) if len(w) > 3 and w not in _STOP
     )
 
 
@@ -139,28 +142,53 @@ _EVIDENCE_MIN_SHARED_WORDS = 3
 def _sentence_citations(
     sentence: str, items: list[dict], facts_of: dict[str, frozenset[str]], own: frozenset[str],
 ) -> list[str]:
-    """The evidence ids one sentence cites: an id the sentence's matcher finds (pipeline._evidence_used_ids)
-    whose fact the sentence also shares _EVIDENCE_MIN_SHARED_WORDS content words with, the market's own name
-    excluded from both sides. The market's name is in every section's lead and says nothing about which
-    evidence a sentence restates: counted as content, it satisfied the overlap test for any fact that
-    mentions the market's products, and a section that only named the market became the fact's "first
-    citation" (found live), whose later true citations the repeat-evidence stripper then removed."""
+    """The evidence ids one sentence cites: of the items the sentence's matcher identifies (pipeline._evidence_hits: a name
+    or figure that tells the item from the others, never a word several items share) those whose fact the sentence also
+    shares _EVIDENCE_MIN_SHARED_WORDS content words with, the market's own name excluded from both sides, and of those only
+    the best supported: the strongest identification, then the most shared words. A sentence is about one development, so
+    the other items it brushes against (the same sector's vocabulary, a shared agency name) are not its citations.
+    The market's name is in every section's lead and says nothing about which evidence a sentence restates: counted as
+    content, it satisfied the overlap test for any fact that mentions the market's products, and a section that only named
+    the market became the fact's "first citation" (found live), whose later true citations the repeat-evidence stripper
+    then removed. The same stripper cut true Oregon and Illinois transport-department sentences because a shared
+    "Transportation" and five on-topic words made each sentence cite five items (found live)."""
     import pipeline
     stems = _content_stems(sentence) - own
     fact_of = {it["id"]: it["fact"] for it in items}
-    return [eid for eid in sorted(pipeline._evidence_used_ids(sentence, items))
-            if _shared_words(stems & facts_of[eid], fact_of[eid]) >= _EVIDENCE_MIN_SHARED_WORDS]
+    scored = []
+    for eid, strength in pipeline._evidence_hits(sentence, items).items():
+        shared = _shared_words(stems, facts_of[eid], fact_of[eid])
+        # a short fact ("Acme launched a new product") has fewer words beyond its names than the minimum: all of them then
+        if shared >= min(_EVIDENCE_MIN_SHARED_WORDS, max(1, _shared_words(facts_of[eid], facts_of[eid], fact_of[eid]))):
+            scored.append((strength, shared, eid))
+    if not scored:
+        return []
+    best = max((strength, shared) for strength, shared, _ in scored)
+    return sorted(eid for strength, shared, eid in scored if (strength, shared) == best)
 
 
-def _shared_words(shared: frozenset[str], fact: str) -> int:
-    """How many words a sentence shares with a fact, a name of several words counting once: "Epic Systems" is one shared
-    name, not two shared words (found live: a roll of player names, "Epic Systems, Oracle Health, ...", shared "epic",
-    "system" and "health" with the FTC's investigation into Epic Systems and so cited it, and the item read as used)."""
+def _shared_words(sentence_stems: frozenset[str], fact_stems: frozenset[str], fact: str) -> int:
+    """How much of a fact's content a sentence restates. A name says who the fact is about, not what it states: a company's
+    name may reappear in another section (the key players list names a company whose launch backs a trend) as long as the
+    fact itself is not restated. So the first of the fact's names the sentence carries counts nothing, and each further one
+    counts one (two of the fact's names together, "Asana" and "StackAI", are the event itself), and the fact's other words
+    count when the sentence carries the same root ("acquisition" for "acquired", "expansion" for "expand"). Found live:
+    "Asana, Atlassian JIRA, Microsoft, Monday and Pivotal Software are the key players ..." cited Asana's StackAI acquisition,
+    used in a trend, on the name plus two generic words; earlier a roll of player names, "Epic Systems, Oracle Health, ...",
+    cited the FTC's investigation into Epic Systems on the name's own words."""
     import pipeline
-    n = len(shared)
-    for _, phrase in pipeline._fact_entities(fact):
-        n -= max(0, len(_content_stems(phrase) & shared) - 1)
-    return n
+    names = [_content_stems(phrase) for _, phrase in pipeline._fact_entities(fact)]
+    name_words = frozenset().union(*names)
+    present = sum(1 for n in names if n and n & sentence_stems)
+    words = sentence_stems - name_words
+    content = {w for w in fact_stems - name_words if any(_same_root(w, s) for s in words)}
+    return len(content) + max(0, present - 1)
+
+
+def _same_root(a: str, b: str) -> bool:
+    """One word family by its first five letters ("acquired" / "acquisition", "charging" / "charger"). Loose on its own,
+    so it only measures overlap with an item the sentence has already been tied to by a name or figure of its own."""
+    return a == b or (len(a) >= 5 and len(b) >= 5 and a[:5] == b[:5])
 
 
 def _fact_stems(items: list[dict], market_name: str = "") -> tuple[dict[str, frozenset[str]], frozenset[str]]:
@@ -180,16 +208,39 @@ def evidence_cited_ids(text: str, items: list[dict], market_name: str = "") -> s
     return out
 
 
-def evidence_reuse(sections: list[dict], items: list[dict], market_name: str = "") -> list[dict]:
+def evidence_homes(plan: dict | None) -> dict[str, tuple[str, int | None]]:
+    """Where the plan put each evidence id: {id: (section sop, trend block index or None)}. A trends fact sits in the trend
+    group the plan gave it (groups are the blocks, in order); any other section's fact sits in that section. An empty dict
+    when there is no plan, and evidence_reuse then judges by order alone."""
+    homes: dict[str, tuple[str, int | None]] = {}
+    for ps in (plan or {}).get("sections") or []:
+        sop = ps.get("sop")
+        if sop == "trends" and ps.get("trend_groups"):
+            for gi, g in enumerate(ps["trend_groups"]):
+                for fid in g.get("facts") or []:
+                    homes.setdefault(str(fid), (sop, gi))
+        for fid in ps.get("facts") or []:
+            homes.setdefault(str(fid), (sop, None))
+    return homes
+
+
+def evidence_reuse(sections: list[dict], items: list[dict], market_name: str = "",
+                   homes: dict[str, tuple[str, int | None]] | None = None) -> list[dict]:
     """The sentences that cite a piece of news evidence already cited earlier in ANOTHER market section, or (in the trends
-    section) in another trend block. `items` are the news evidence ({id, fact}); a sentence cites one when
-    pipeline._evidence_used_ids finds it there and the sentence shares at least _EVIDENCE_MIN_SHARED_WORDS content words
-    with the fact beyond the market's own name (a sentence that only names the same company is a different point; a
-    sentence that only names the market is no citation at all). The trends' lead-in belongs to the section
-    but to no trend block. `sections` carry the trend sub-headings (subheads) so the blocks can be told apart. Each row is
-    {id, first, where, at: (section, paragraph, line, sentence), sentence}; the first citation is never a row."""
+    section) in another trend block. `items` are the news evidence ({id, fact}); a sentence cites the best-supported of
+    those that pipeline._evidence_hits identifies in it and that it shares at least _EVIDENCE_MIN_SHARED_WORDS content words
+    with beyond the market's own name (see _sentence_citations: a sentence that only names the same company is a different
+    point; a sentence that only names the market is no citation at all). The trends' lead-in belongs to the section
+    but to no trend block. `sections` carry the trend sub-headings (subheads) so the blocks can be told apart.
+    `homes` (evidence_homes of the plan) says where each item was planned. A sentence that cites an item planned for the
+    place it stands in (its section, for a trend its trend block) is that item's citation there and never a repeat, and
+    then cites nothing else: what it shares with other items is vocabulary. Only a sentence that cites none of its own
+    place's items and an item already cited elsewhere is a repeat. A cited item's first citation is its planned place
+    once it stands there. Each row is {id, first, where, at: (section, paragraph, line, sentence), sentence}; the first
+    citation is never a row."""
     import subheads
     facts_of, own = _fact_stems(items, market_name)
+    homes = homes or {}
     cited: dict[str, tuple[str, int | None]] = {}
     rows: list[dict] = []
     for si, s in enumerate(sections):
@@ -202,7 +253,13 @@ def evidence_reuse(sections: list[dict], items: list[dict], market_name: str = "
                 continue
             for li, line in enumerate(paragraph.split("\n")):
                 for ci, sentence in enumerate(x for x in sentsplit.SPLIT_RE.split(line) if x.strip()):
-                    for eid in _sentence_citations(sentence, items, facts_of, own):
+                    found = _sentence_citations(sentence, items, facts_of, own)
+                    here = [e for e in found if homes.get(e) and homes[e][0] == sop and (sop != "trends" or homes[e][1] == block)]
+                    if here:
+                        for eid in here:
+                            cited[eid] = (sop, block)
+                        continue
+                    for eid in found:
                         first_sop, first_block = cited.setdefault(eid, (sop, block))
                         if first_sop == sop == "trends":
                             if block is None:
@@ -220,9 +277,10 @@ def evidence_reuse(sections: list[dict], items: list[dict], market_name: str = "
     return rows
 
 
-def evidence_reuse_problems(sections: list[dict], items: list[dict], market_name: str = "") -> list[str]:
+def evidence_reuse_problems(sections: list[dict], items: list[dict], market_name: str = "",
+                            homes: dict[str, tuple[str, int | None]] | None = None) -> list[str]:
     return [f"{r['id']} is cited in {r['first']} and again in {r['where']}: {r['sentence'][:80]!r}"
-            for r in evidence_reuse(sections, items, market_name)]
+            for r in evidence_reuse(sections, items, market_name, homes)]
 
 
 # ------------------------------------------------------------------------------------------- the text reads whole
